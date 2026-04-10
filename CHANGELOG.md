@@ -6,7 +6,7 @@ All notable changes to GBrain will be documented in this file.
 
 ### Fixed
 
-- **Apple Notes and files with spaces just work.** Filenames like `2017-05-03 ohmygreen.md` now auto-slugify to clean, URL-safe slugs (`apple-notes/2017-05-03-ohmygreen`). Spaces become hyphens, special characters are stripped, accented characters normalize to ASCII. All 5,861+ Apple Notes files import cleanly without manual renaming.
+- **Apple Notes and files with spaces just work.** Paths like `Apple Notes/2017-05-03 ohmygreen.md` now auto-slugify to clean slugs (`apple-notes/2017-05-03-ohmygreen`). Spaces become hyphens, parens and special characters are stripped, accented characters normalize to ASCII. All 5,861+ Apple Notes files import cleanly without manual renaming.
 - **Existing brains auto-migrate.** On first run after upgrade, a one-time migration renames all existing slugs with spaces or special characters to their clean form. Links are rewritten automatically. No manual cleanup needed.
 - **Import and sync produce identical slugs.** Both pipelines now use the same `slugifyPath()` function, eliminating the mismatch where sync preserved case but import lowercased.
 
