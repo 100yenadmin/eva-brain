@@ -1,5 +1,6 @@
 import matter from 'gray-matter';
 import type { PageType } from './types.ts';
+import { slugifyPath } from './sync.ts';
 
 export interface ParsedMarkdown {
   frontmatter: Record<string, unknown>;
@@ -148,17 +149,7 @@ function inferTitle(filePath?: string): string {
 
 function inferSlug(filePath?: string): string {
   if (!filePath) return 'untitled';
-
-  // Remove leading path components that are just the import root
-  // Keep the type directory + filename structure
-  let slug = filePath
-    .replace(/\.md$/i, '')
-    .replace(/\\/g, '/');
-
-  // Remove leading ./
-  if (slug.startsWith('./')) slug = slug.slice(2);
-
-  return slug.toLowerCase();
+  return slugifyPath(filePath);
 }
 
 function extractTags(frontmatter: Record<string, unknown>): string[] {

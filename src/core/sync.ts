@@ -97,21 +97,39 @@ export function isSyncable(path: string): boolean {
 }
 
 /**
- * Convert a repo-relative file path to a GBrain page slug.
+ * Slugify a single path segment: lowercase, strip special chars, spaces → hyphens.
+ */
+export function slugifySegment(segment: string): string {
+  return segment
+    .normalize('NFD')                     // Decompose accented chars
+    .replace(/[\u0300-\u036f]/g, '')      // Strip accent marks
+    .toLowerCase()
+    .replace(/[^a-z0-9.\s_-]/g, '')      // Keep alphanumeric, dots, spaces, underscores, hyphens
+    .replace(/[\s]+/g, '-')              // Spaces → hyphens
+    .replace(/-+/g, '-')                 // Collapse multiple hyphens
+    .replace(/^-|-$/g, '');              // Strip leading/trailing hyphens
+}
+
+/**
+ * Slugify a file path: strip .md, normalize separators, slugify each segment.
  *
  * Examples:
- *   people/pedro-franceschi.md → people/pedro-franceschi
- *   daily/2026-04-05.md → daily/2026-04-05
- *   notes.md → notes
+ *   Apple Notes/2017-05-03 ohmygreen.md → apple-notes/2017-05-03-ohmygreen
+ *   people/alice-smith.md → people/alice-smith
+ *   notes/v1.0.0.md → notes/v1.0.0
+ */
+export function slugifyPath(filePath: string): string {
+  let path = filePath.replace(/\.md$/i, '');
+  path = path.replace(/\\/g, '/');
+  path = path.replace(/^\.?\//, '');
+  return path.split('/').map(slugifySegment).filter(Boolean).join('/');
+}
+
+/**
+ * Convert a repo-relative file path to a GBrain page slug.
  */
 export function pathToSlug(filePath: string, repoPrefix?: string): string {
-  // Strip .md extension
-  let slug = filePath.replace(/\.md$/, '');
-  // Normalize separators
-  slug = slug.replace(/\\/g, '/');
-  // Strip leading slash
-  slug = slug.replace(/^\//, '');
-  // Add repo prefix for multi-repo setups
+  let slug = slugifyPath(filePath);
   if (repoPrefix) slug = `${repoPrefix}/${slug}`;
   return slug;
 }
