@@ -1,45 +1,12 @@
 # GBrain
 
-Your AI agent is smart but it doesn't know anything about your life. GBrain fixes that.
+Your AI agent is smart but it doesn't know anything about your life. GBrain fixes that. Meetings, emails, tweets, calendar events, voice calls, original ideas... all of it flows into a searchable knowledge base that your agent reads before every response and writes to after every conversation. The agent gets smarter every day.
 
-> **Requires a frontier model.** GBrain's skills and recipes are markdown that your
-> agent reads and implements. Tested with **Claude Opus 4.6** and **GPT-5.4 Thinking**.
-> Likely to break with smaller models.
+> **Requires a frontier model.** Tested with **Claude Opus 4.6** and **GPT-5.4 Thinking**. Likely to break with smaller models.
 
-## The Problem
+## Start here: paste this into your agent
 
-You have an OpenClaw or Hermes agent. It can reason, write code, browse the web. But ask it "who should I invite to dinner who knows both Pedro and Diana?" and it has nothing. It doesn't know who Pedro is. It doesn't know your meeting history, your email threads, your original ideas, or your deal pipeline.
-
-**GBrain gives your agent a brain.** Meetings, emails, tweets, calendar events, voice calls, Apple Notes, original ideas... all of it flows into a searchable knowledge base that your agent reads before every response and writes to after every conversation. The agent gets smarter every day. It compounds.
-
-## Getting Data In
-
-This is the #1 blocker. Your agent needs data. GBrain ships integration recipes that your agent sets up for you. It reads the recipe, asks for API keys, validates each one, and configures everything. [Markdown is code](docs/ethos/THIN_HARNESS_FAT_SKILLS.md)... the recipe IS the installer.
-
-Run `gbrain integrations` to see what's available:
-
-| Recipe | Requires | What It Does |
-|--------|----------|-------------|
-| [Public Tunnel](recipes/ngrok-tunnel.md) | — | Fixed URL for MCP + voice (ngrok Hobby $8/mo) |
-| [Credential Gateway](recipes/credential-gateway.md) | — | Gmail + Calendar access (ClawVisor or Google OAuth) |
-| [Voice-to-Brain](recipes/twilio-voice-brain.md) | ngrok-tunnel | Phone calls → brain pages (Twilio + OpenAI Realtime) |
-| [Email-to-Brain](recipes/email-to-brain.md) | credential-gateway | Gmail → entity pages (deterministic collector) |
-| [X-to-Brain](recipes/x-to-brain.md) | — | Twitter → brain pages (timeline + mentions + deletions) |
-| [Calendar-to-Brain](recipes/calendar-to-brain.md) | credential-gateway | Google Calendar → searchable daily pages |
-| [Meeting Sync](recipes/meeting-sync.md) | — | Circleback transcripts → brain pages with attendees |
-
-Run `gbrain integrations` to see status. Dependencies are resolved automatically:
-if you install voice-to-brain, the agent sets up ngrok-tunnel first.
-
-Your agent sets up each integration for you. It reads the recipe, asks for API keys, validates each one, and runs a smoke test. [Markdown is code](docs/ethos/THIN_HARNESS_FAT_SKILLS.md) — the recipe IS the installer.
-
-See [Getting Data In](docs/integrations/README.md) for the full guide and the [Skillpack](docs/GBRAIN_SKILLPACK.md) for all capabilities.
-
-## Install
-
-### With OpenClaw or Hermes Agent (recommended)
-
-Paste this block into [OpenClaw](https://openclaw.ai) or [Hermes Agent](https://github.com/NousResearch/hermes-agent). The agent will install GBrain, set up your database, import your files, and verify everything works.
+Copy this block into [OpenClaw](https://openclaw.ai) or [Hermes Agent](https://github.com/NousResearch/hermes-agent). The agent will install GBrain, set up your database, import your files, and verify everything works.
 
 ```
 GOAL: Install GBrain as my personal knowledge brain. When done, I should
@@ -156,6 +123,22 @@ gbrain query "what do we know about competitive dynamics?"
 ```
 
 Run `gbrain --help` for all commands. See [MCP setup](docs/mcp/DEPLOY.md) for connecting Claude Desktop, Perplexity, etc.
+
+## Getting Data In
+
+Once GBrain is installed, your agent needs data flowing in. GBrain ships integration recipes that your agent sets up for you. It reads the recipe, asks for API keys, validates each one, and runs a smoke test. [Markdown is code](docs/ethos/THIN_HARNESS_FAT_SKILLS.md)... the recipe IS the installer.
+
+| Recipe | Requires | What It Does |
+|--------|----------|-------------|
+| [Public Tunnel](recipes/ngrok-tunnel.md) | — | Fixed URL for MCP + voice (ngrok Hobby $8/mo) |
+| [Credential Gateway](recipes/credential-gateway.md) | — | Gmail + Calendar access (ClawVisor or Google OAuth) |
+| [Voice-to-Brain](recipes/twilio-voice-brain.md) | ngrok-tunnel | Phone calls → brain pages (Twilio + OpenAI Realtime) |
+| [Email-to-Brain](recipes/email-to-brain.md) | credential-gateway | Gmail → entity pages (deterministic collector) |
+| [X-to-Brain](recipes/x-to-brain.md) | — | Twitter → brain pages (timeline + mentions + deletions) |
+| [Calendar-to-Brain](recipes/calendar-to-brain.md) | credential-gateway | Google Calendar → searchable daily pages |
+| [Meeting Sync](recipes/meeting-sync.md) | — | Circleback transcripts → brain pages with attendees |
+
+Run `gbrain integrations` to see status. Dependencies resolve automatically. See [Getting Data In](docs/integrations/README.md) for the full guide.
 
 ## The Compounding Thesis
 
