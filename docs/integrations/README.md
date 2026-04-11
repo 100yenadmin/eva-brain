@@ -1,0 +1,100 @@
+# Getting Data Into Your Brain
+
+GBrain is the retrieval layer. But retrieval is only as good as what you put in.
+This directory covers how to get data flowing into your brain automatically.
+
+## How Data Flows In
+
+```
+Signal arrives (phone call, email, tweet, calendar event)
+  ↓
+Collector captures it (deterministic code, reliable)
+  ↓
+Agent analyzes it (LLM, judgment, entity detection)
+  ↓
+Brain pages created/updated (compiled truth + timeline)
+  ↓
+GBrain indexes it (chunking, embedding, search-ready)
+  ↓
+Next query is smarter (the compounding effect)
+```
+
+## Available Integrations
+
+### Self-Installing Recipes
+
+These are integration recipes your agent can set up for you. Run
+`gbrain integrations` to see what's available and their status.
+
+| Recipe | Category | What It Does | Setup Time |
+|--------|----------|-------------|------------|
+| [voice-to-brain](../../recipes/twilio-voice-brain.md) | Sense | Phone calls create brain pages via Twilio + OpenAI Realtime | 30 min |
+
+More recipes coming: email-to-brain, x-to-brain, calendar-to-brain.
+
+### Manual Integration Guides
+
+These require manual setup (no self-installing recipe yet):
+
+| Guide | What It Does |
+|-------|-------------|
+| [Credential Gateway](credential-gateway.md) | Set up ClawVisor or Hermes for Gmail, Calendar, Contacts access |
+| [Meeting & Call Webhooks](meeting-webhooks.md) | Circleback meeting transcripts + Quo/OpenPhone SMS/calls |
+
+## How to Read a Recipe
+
+Integration recipes are markdown files with YAML frontmatter. Your agent reads
+the recipe and walks you through setup.
+
+```yaml
+---
+id: voice-to-brain              # unique identifier
+name: Voice-to-Brain            # human-readable name
+version: 0.7.0                  # recipe version
+description: Phone calls...     # what it does
+category: sense                 # sense (data input) or reflex (automated response)
+requires: []                    # other recipes that must be set up first
+secrets:                        # API keys and credentials needed
+  - name: TWILIO_ACCOUNT_SID
+    description: Twilio account SID
+    where: https://console.twilio.com    # exact URL to get this key
+health_checks:                  # commands to verify the integration is working
+  - "curl -sf https://api.twilio.com/..."
+setup_time: 30 min              # estimated time to complete setup
+---
+
+[Setup instructions the agent follows step by step...]
+```
+
+**The recipe IS the installer.** Your agent (OpenClaw, Hermes, Claude Code) reads
+the markdown body and executes the setup steps. It asks you for API keys, validates
+each one, configures the integration, and runs a smoke test.
+
+## The Deterministic Collector Pattern
+
+When an LLM keeps failing at a mechanical task despite repeated prompt fixes,
+stop fighting the LLM. Move the mechanical work to code.
+
+**Code for data. LLMs for judgment.**
+
+- Email collection: code pulls emails with baked-in links (100% reliable).
+  LLM reads the digest, classifies, enriches brain entries (judgment).
+- Tweet collection: code pulls timeline, detects deletions, tracks engagement
+  (deterministic). LLM extracts entities, writes brain updates (judgment).
+- Calendar sync: code pulls events and attendees (deterministic). LLM enriches
+  attendee brain pages (judgment).
+
+This pattern prevents the "LLM forgot the links" failure mode. Mechanical work
+must be 100% reliable. Judgment work is where LLMs shine.
+
+See [Deterministic Collectors](../guides/deterministic-collectors.md) for the
+full pattern.
+
+## Architecture
+
+For details on the shared infrastructure that all integrations build on
+(import pipeline, chunking, embedding, search), see the
+[Infrastructure Layer](../architecture/infra-layer.md).
+
+For the philosophy behind thin harness + fat skills, see
+[Thin Harness, Fat Skills](../ethos/THIN_HARNESS_FAT_SKILLS.md).
