@@ -16,10 +16,13 @@
 
 import { test, expect } from 'bun:test';
 import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
-const OPS = '/Users/garrytan/conductor/workspaces/gbrain/davao/src/core/operations.ts';
-const HYBRID = '/Users/garrytan/conductor/workspaces/gbrain/davao/src/core/search/hybrid.ts';
-const IMPORT_FILE = '/Users/garrytan/conductor/workspaces/gbrain/davao/src/core/import-file.ts';
+// Resolve relative to this test file so it works on any machine + in CI.
+const REPO_ROOT = resolve(import.meta.dir, '../..');
+const OPS = resolve(REPO_ROOT, 'src/core/operations.ts');
+const HYBRID = resolve(REPO_ROOT, 'src/core/search/hybrid.ts');
+const IMPORT_FILE = resolve(REPO_ROOT, 'src/core/import-file.ts');
 
 test('operations.ts put_page does not gate embedding on OPENAI_API_KEY alone', () => {
   const src = readFileSync(OPS, 'utf-8');
