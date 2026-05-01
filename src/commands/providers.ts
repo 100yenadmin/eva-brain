@@ -49,13 +49,11 @@ function currentGatewayEnv(): Record<string, string | undefined> {
 }
 
 function configureGatewayForTestModel(modelArg: string): void {
-  const [providerId, ...modelParts] = modelArg.split(':');
-  const modelId = modelParts.join(':');
+  const [providerId] = modelArg.split(':');
   const recipe = getRecipe(providerId);
-  const modelDims = recipe?.touchpoints.embedding?.models[0] === modelId
-    ? recipe.touchpoints.embedding?.default_dims
-    : undefined;
-  const dims = modelDims ?? gatewayConfig.embedding_dimensions ?? recipe?.touchpoints.embedding?.default_dims ?? 1536;
+  const embedding = recipe?.touchpoints.embedding;
+  const recipeDims = embedding?.default_dims && embedding.default_dims > 0 ? embedding.default_dims : undefined;
+  const dims = recipeDims ?? gatewayConfig.embedding_dimensions ?? 1536;
   gatewayConfig = {
     ...gatewayConfig,
     embedding_model: modelArg,

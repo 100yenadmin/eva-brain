@@ -146,6 +146,11 @@ async function resolveAIOptions(
     }
   }
 
+  if (out.embedding_model && out.embedding_dimensions === undefined) {
+    console.error('Could not resolve embedding dimensions. Pass --embedding-dimensions <N>.');
+    process.exit(1);
+  }
+
   if (expansion) out.expansion_model = expansion;
 
   return out;
