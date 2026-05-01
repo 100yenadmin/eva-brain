@@ -42,7 +42,7 @@ the full doc map, use `llms.txt` at the same URL root.
 ```bash
 git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
 gbrain init --pglite --model voyage   # fresh local brain with Voyage 1024d embeddings
-gbrain providers test --model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
 gbrain import ~/notes/                # index your markdown
 gbrain query "what themes show up across my notes?"
 ```
