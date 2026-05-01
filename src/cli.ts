@@ -449,6 +449,11 @@ async function handleCliOnly(command: string, args: string[]) {
         await runImport(engine, args);
         break;
       }
+      case 'import-media': {
+        const { runImportMedia } = await import('./commands/import-media.ts');
+        await runImportMedia(engine, args);
+        break;
+      }
       case 'export': {
         const { runExport } = await import('./commands/export.ts');
         await runExport(engine, args);
@@ -673,6 +678,8 @@ SEARCH
 
 IMPORT/EXPORT
   import <dir> [--no-embed]          Import markdown directory
+  import-media --slug <slug> --content-file <md> --extraction <json>
+                                     Import normalized media evidence into a page
   sync [--repo <path>] [flags]       Git-to-brain incremental sync
   sync --watch [--interval N]        Continuous sync (loops until stopped)
   sync --install-cron                Install persistent sync daemon
