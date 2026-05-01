@@ -1,0 +1,13 @@
+{
+  "name": "@100yen/gbrain-completion-openclaw-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --format=esm --minify --outfile=dist/index.js"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "latest"
+  }
+}
