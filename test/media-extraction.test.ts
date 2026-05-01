@@ -35,15 +35,15 @@ describe('media evidence import', () => {
   beforeAll(async () => {
     await engine.connect({});
     await engine.initSchema();
-  });
+  }, 30000);
 
   beforeEach(async () => {
     await resetPgliteState(engine);
-  });
+  }, 30000);
 
   afterAll(async () => {
     await engine.disconnect();
-  });
+  }, 30000);
 
   test('stores normalized media evidence as raw_data sidecar', async () => {
     const content = `---\ntype: media\ntitle: Stripe login screenshot\n---\n\nStripe login screenshot evidence.`;
@@ -79,7 +79,12 @@ describe('media evidence import', () => {
       rmSync(dir, { recursive: true, force: true });
     }
 
-    const raw = await engine.getRawData('media/demo-video', 'media-extraction');
+    const page = await engine.getPage('media/demo-video');
+    expect(page?.title).toBe('Demo video');
+    expect(page?.compiled_truth).toBe('Demo video evidence page.');
+    expect(page?.frontmatter.evidence_schema).toBe('gbrain.media-evidence.v1');
+
+    const raw = await engine.getRawData('media/demo-video', 'gbrain.media-evidence.v1');
     expect(raw.length).toBe(1);
     const data = raw[0]?.data as any;
     expect(data.kind).toBe('video');
