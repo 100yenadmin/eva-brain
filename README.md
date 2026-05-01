@@ -39,10 +39,13 @@ the full doc map, use `llms.txt` at the same URL root.
 
 ```bash
 git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
-gbrain init                     # local brain, ready in 2 seconds
-gbrain import ~/notes/          # index your markdown
+gbrain init --pglite --model voyage   # fresh local brain with Voyage 1024d embeddings
+gbrain providers test --model voyage:voyage-3-large
+gbrain import ~/notes/                # index your markdown
 gbrain query "what themes show up across my notes?"
 ```
+
+If you already have a populated brain, the safest production path for provider/dimension changes is a fresh init plus explicit migration/backup. Preserve the old brain first with `gbrain migrate --to supabase|pglite` or a file backup/export, then re-init against an empty target.
 
 **Do NOT use `bun install -g github:garrytan/gbrain`.** Bun blocks the top-level
 postinstall hook on global installs, so schema migrations never run and the CLI
