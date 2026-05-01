@@ -1,10 +1,13 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { basename, extname } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
-import { importMediaEvidence } from '../core/import-file.ts';
-import { normalizeMediaExtraction, mediaExtractionToEvidence } from '../core/media-extraction.ts';
+import type { ChunkInput, PageInput } from '../core/types.ts';
+import { normalizeMediaExtraction, mediaExtractionToEvidence, type MediaEvidence, type MediaExtraction, type MediaExtractionKind } from '../core/media-extraction.ts';
+import { chunkText } from '../core/chunkers/recursive.ts';
+import { getMimeType, canAttachFiles, attachFileRecordWithEngine, type IngestMediaResult } from './files.ts';
 
 function usage(): never {
-  console.error('Usage: gbrain import-media --slug <slug> --content-file <file.md> --extraction <file.json> [--source <name>] [--raw-data-source <name>] [--no-embed]');
+  console.error('Usage: gbrain import-media --slug <slug> --content-file <file.md> --extraction <file.json> [--source <name>] [--raw-data-source <name>] [--media-file <path>] [--title <title>] [--type <kind>] [--no-file] [--no-embed]');
   process.exit(1);
 }
 
@@ -13,34 +16,178 @@ function getFlag(args: string[], name: string): string | undefined {
   return idx !== -1 ? args[idx + 1] : undefined;
 }
 
+function defaultMediaSlug(filename: string): string {
+  const stem = basename(filename, extname(filename))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'untitled';
+  return `media/evidence/${stem}`;
+}
+
+function defaultContent(title: string, evidence: MediaEvidence): string {
+  const fmType = evidence.kind === 'pdf' ? 'media' : 'media';
+  return `---\ntype: ${fmType}\ntitle: ${title}\n---\n\n${evidence.text}\n`;
+}
+
+function chunkEvidence(evidence: MediaEvidence): ChunkInput[] {
+  return chunkText(evidence.text).map((c, idx) => ({
+    chunk_index: idx,
+    chunk_text: c.text,
+    chunk_source: 'compiled_truth',
+  }));
+}
+
+function fileKindOverride(explicit: string | undefined, extraction: MediaExtraction, mimeType: string | null): MediaExtractionKind {
+  if (explicit && ['image', 'pdf', 'video', 'audio'].includes(explicit)) return explicit as MediaExtractionKind;
+  if (mimeType === 'application/pdf') return 'pdf';
+  return extraction.kind;
+}
+
+export async function importNormalizedMediaEvidence(
+  engine: BrainEngine,
+  opts: {
+    slug: string;
+    content: string;
+    evidence: MediaEvidence;
+    rawDataSource?: string;
+    mediaFilePath?: string;
+    pageTitle?: string;
+    noFile?: boolean;
+  },
+): Promise<IngestMediaResult> {
+  const pageTitle = opts.pageTitle || opts.evidence.sourceRef || opts.slug;
+  const compiledTruth = opts.evidence.text;
+  if (!compiledTruth.trim()) throw new Error('Normalized evidence text is empty.');
+
+  const filePath = opts.mediaFilePath;
+  const mimeType = filePath ? getMimeType(filePath) : null;
+  const stat = filePath && existsSync(filePath) ? statSync(filePath) : null;
+  const filename = filePath ? basename(filePath) : undefined;
+
+  const frontmatter: Record<string, unknown> = {
+    media_type: opts.evidence.kind,
+    source_ref: opts.evidence.sourceRef,
+    evidence_schema: opts.evidence.schemaVersion,
+    ...(filename ? { filename } : {}),
+    ...(mimeType ? { mime_type: mimeType } : {}),
+    ...(stat ? { size_bytes: stat.size } : {}),
+    ingestion: 'media-evidence-mvp',
+  };
+
+  const page: PageInput = {
+    title: pageTitle,
+    type: 'media',
+    compiled_truth: compiledTruth,
+    timeline: '',
+    frontmatter,
+  };
+
+  const existing = await engine.getPage(opts.slug);
+  await engine.transaction(async (tx) => {
+    if (existing) await tx.createVersion(opts.slug);
+    await tx.putPage(opts.slug, page);
+    await tx.putRawData(opts.slug, opts.rawDataSource ?? 'media-extraction', opts.evidence as unknown as object);
+    await tx.upsertChunks(opts.slug, chunkEvidence(opts.evidence));
+  });
+
+  let storagePath: string | null = null;
+  let fileAttached = false;
+  if (filePath && !opts.noFile) {
+    storagePath = `${opts.slug}/${basename(filePath)}`;
+    if (await canAttachFiles(engine)) {
+      await attachFileRecordWithEngine(engine, opts.slug, filePath, mimeType, stat?.size ?? 0);
+      fileAttached = true;
+    }
+  }
+
+  await engine.logIngest({
+    source_type: 'media',
+    source_ref: filePath || opts.slug,
+    pages_updated: [opts.slug],
+    summary: `Imported normalized ${opts.evidence.kind} evidence for ${opts.slug}`,
+  });
+
+  return {
+    slug: opts.slug,
+    fileAttached,
+    storagePath,
+    rawDataSource: opts.rawDataSource ?? 'media-extraction',
+    chunksExpected: chunkEvidence(opts.evidence).length,
+  };
+}
+
 export async function runImportMedia(engine: BrainEngine, args: string[]) {
   const slug = getFlag(args, '--slug');
   const contentFile = getFlag(args, '--content-file');
   const extractionFile = getFlag(args, '--extraction');
   const source = getFlag(args, '--source');
   const rawDataSource = getFlag(args, '--raw-data-source');
+  const mediaFilePath = getFlag(args, '--media-file');
+  const title = getFlag(args, '--title');
+  const type = getFlag(args, '--type');
   const noEmbed = args.includes('--no-embed');
+  const noFile = args.includes('--no-file');
 
-  if (!slug || !contentFile || !extractionFile) usage();
-  if (!existsSync(contentFile) || !existsSync(extractionFile)) usage();
+  if (!slug || !extractionFile) usage();
+  if ((contentFile && !existsSync(contentFile)) || !existsSync(extractionFile) || (mediaFilePath && !existsSync(mediaFilePath))) usage();
 
-  const content = readFileSync(contentFile, 'utf-8');
   const extractionJson = JSON.parse(readFileSync(extractionFile, 'utf-8')) as unknown;
-  const extraction = normalizeMediaExtraction(extractionJson);
-  const evidence = mediaExtractionToEvidence(extraction);
+  const normalized = normalizeMediaExtraction(extractionJson);
+  const evidence = mediaExtractionToEvidence({
+    ...normalized,
+    kind: fileKindOverride(type, normalized, mediaFilePath ? getMimeType(mediaFilePath) : null),
+    sourceRef: source || mediaFilePath || normalized.sourceRef || normalized.title,
+  });
 
-  const result = await importMediaEvidence(engine, slug, content, extraction, {
-    noEmbed,
-    source,
-    rawDataSource,
+  const finalTitle = title || normalized.title || (mediaFilePath ? basename(mediaFilePath) : slug);
+  const content = contentFile ? readFileSync(contentFile, 'utf-8') : defaultContent(finalTitle, evidence);
+
+  const result = await importNormalizedMediaEvidence(engine, {
+    slug,
+    content,
+    evidence,
+    rawDataSource: rawDataSource ?? 'gbrain.media-evidence.v1',
+    mediaFilePath,
+    pageTitle: finalTitle,
+    noFile,
   });
 
   console.log(JSON.stringify({
-    status: result.status,
+    status: 'imported',
     slug: result.slug,
-    chunks: result.chunks,
-    raw_data_source: rawDataSource ?? source ?? 'media-extraction',
+    raw_data_source: result.rawDataSource,
     segment_count: evidence.segments.length,
     evidence_text_length: evidence.text.length,
+    file_attached: result.fileAttached,
+    storage_path: result.storagePath,
+    no_embed: noEmbed,
   }, null, 2));
+}
+
+export async function runIngestMedia(engine: BrainEngine, args: string[]) {
+  const mediaFile = args.find(a => !a.startsWith('--'));
+  const extractionFile = getFlag(args, '--extract');
+  const slug = getFlag(args, '--slug');
+  const title = getFlag(args, '--title');
+  const source = getFlag(args, '--source');
+  const type = getFlag(args, '--type');
+  const noFile = args.includes('--no-file');
+  const noEmbed = args.includes('--no-embed');
+
+  if (!mediaFile || !extractionFile) {
+    console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <kind>] [--no-file] [--no-embed]');
+    process.exit(1);
+  }
+
+  await runImportMedia(engine, [
+    '--slug', slug || defaultMediaSlug(mediaFile),
+    '--extraction', extractionFile,
+    '--media-file', mediaFile,
+    '--raw-data-source', 'gbrain.media-evidence.v1',
+    ...(title ? ['--title', title] : []),
+    ...(source ? ['--source', source] : []),
+    ...(type ? ['--type', type] : []),
+    ...(noFile ? ['--no-file'] : []),
+    ...(noEmbed ? ['--no-embed'] : []),
+  ]);
 }

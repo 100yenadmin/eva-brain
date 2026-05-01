@@ -44,17 +44,42 @@ function fileHash(filePath: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-export interface IngestMediaOptions {
-  path: string;
-  slug?: string;
-  title?: string;
-  type?: string;
-  source?: string;
-  extractionPath?: string;
-  extractionSource?: string;
-  summary?: string;
-  noFile?: boolean;
+export { getMimeType };
+
+export async function canAttachFiles(engine: BrainEngine): Promise<boolean> {
+  try {
+    await engine.executeRaw('SELECT 1 FROM files LIMIT 1');
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+export async function attachFileRecordWithEngine(engine: BrainEngine, pageSlug: string, filePath: string, mimeType: string | null, sizeBytes: number): Promise<string> {
+  try {
+    return await attachFileRecord(pageSlug, filePath, mimeType, sizeBytes);
+  } catch {
+    const filename = basename(filePath);
+    const hash = fileHash(filePath);
+    const storagePath = `${pageSlug}/${filename}`;
+    const pageRows = await engine.executeRaw<{ id: number }>('SELECT id FROM pages WHERE slug = $1 LIMIT 1', [pageSlug]);
+    const pageId = pageRows[0]?.id ?? null;
+    await engine.executeRaw(
+      `INSERT INTO files (page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       ON CONFLICT (storage_path) DO UPDATE SET
+         page_slug = EXCLUDED.page_slug,
+         page_id = EXCLUDED.page_id,
+         content_hash = EXCLUDED.content_hash,
+         size_bytes = EXCLUDED.size_bytes,
+         mime_type = EXCLUDED.mime_type,
+         metadata = EXCLUDED.metadata`,
+      [pageSlug, pageId, filename, storagePath, mimeType, sizeBytes, hash, JSON.stringify({ ingest: 'media-evidence-mvp' })],
+    );
+    return storagePath;
+  }
+}
+
 
 export interface IngestMediaResult {
   slug: string;
@@ -104,9 +129,6 @@ export async function runFiles(engine: BrainEngine, args: string[]) {
     case 'status':
       await filesStatus(args.slice(1));
       break;
-    case 'ingest-media':
-      await ingestMediaCli(engine, args.slice(1));
-      break;
     default:
       console.error(`Usage: gbrain files <command> [args]`);
       console.error(`  list [slug]               List files for a page (or all)`);
@@ -121,245 +143,28 @@ export async function runFiles(engine: BrainEngine, args: string[]) {
       console.error(`  restore <dir>             Download from storage, recreate local files`);
       console.error(`  clean <dir> [--yes]       Delete redirect pointers (irreversible)`);
       console.error(`  status                    Show migration status of directories`);
-      console.error(`  ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>]`);
       process.exit(1);
   }
 }
 
-export async function ingestMediaEvidence(engine: BrainEngine, opts: IngestMediaOptions): Promise<IngestMediaResult> {
-  if (!opts.path || !existsSync(opts.path)) {
-    throw new Error(`Media file not found: ${opts.path}`);
-  }
-  if (!opts.extractionPath || !existsSync(opts.extractionPath)) {
-    throw new Error(`Extraction JSON not found: ${opts.extractionPath}`);
-  }
-
-  const extraction = JSON.parse(readFileSync(opts.extractionPath, 'utf-8')) as Record<string, unknown>;
-  const stat = statSync(opts.path);
-  const filename = basename(opts.path);
-  const mimeType = getMimeType(opts.path);
-  const mediaType = normalizeMediaType(opts.type, mimeType, filename);
-  const slug = opts.slug || defaultMediaSlug(filename);
-  const title = opts.title || filename;
-  const extractionSource = opts.extractionSource || opts.source || 'media-ingest';
-
-  const searchable = buildSearchableText(extraction, opts.summary);
-  if (!searchable.trim()) {
-    throw new Error('Extraction JSON did not contain searchable text.');
-  }
-
-  const frontmatter: Record<string, unknown> = {
-    media_type: mediaType,
-    source_path: opts.path,
-    filename,
-    mime_type: mimeType,
-    size_bytes: stat.size,
-    ingestion: 'media-evidence-mvp',
-  };
-
-  const page: PageInput = {
-    title,
-    type: 'media',
-    compiled_truth: searchable,
-    timeline: '',
-    frontmatter,
-  };
-
-  const existing = await engine.getPage(slug);
-  await engine.transaction(async (tx) => {
-    if (existing) await tx.createVersion(slug);
-    await tx.putPage(slug, page);
-    await tx.putRawData(slug, extractionSource, {
-      media: {
-        path: opts.path,
-        filename,
-        mime_type: mimeType,
-        size_bytes: stat.size,
-        media_type: mediaType,
-      },
-      extraction,
-    });
-    const chunks: ChunkInput[] = chunkText(searchable).map((c, idx) => ({
-      chunk_index: idx,
-      chunk_text: c.text,
-      chunk_source: 'compiled_truth',
-    }));
-    await tx.upsertChunks(slug, chunks);
-  });
-
-  let storagePath: string | null = null;
-  let fileAttached = false;
-  if (!opts.noFile) {
-    const fileSupport = await canAttachFiles(engine);
-    storagePath = `${slug}/${filename}`;
-    if (fileSupport) {
-      await attachFileRecordWithEngine(engine, slug, opts.path, mimeType, stat.size);
-      fileAttached = true;
-    }
-  }
-
-  await engine.logIngest({
-    source_type: 'media',
-    source_ref: opts.path,
-    pages_updated: [slug],
-    summary: opts.summary || `Ingested ${mediaType} evidence for ${slug}`,
-  });
-
-  return {
-    slug,
-    fileAttached,
-    storagePath,
-    rawDataSource: extractionSource,
-    chunksExpected: chunkEstimate(searchable),
-  };
-}
-
-async function ingestMediaCli(engine: BrainEngine, args: string[]) {
-  const filePath = args.find(a => !a.startsWith('--'));
-  const extractionPath = args.find((a, i) => args[i - 1] === '--extract');
-  const slug = args.find((a, i) => args[i - 1] === '--slug');
-  const title = args.find((a, i) => args[i - 1] === '--title');
-  const source = args.find((a, i) => args[i - 1] === '--source');
-  const type = args.find((a, i) => args[i - 1] === '--type');
-  const noFile = args.includes('--no-file');
-
-  if (!filePath || !extractionPath) {
-    console.error('Usage: gbrain files ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <type>] [--no-file]');
-    process.exit(1);
-  }
-
-  const result = await ingestMediaEvidence(engine, {
-    path: filePath,
-    extractionPath,
-    slug: slug || undefined,
-    title: title || undefined,
-    source: source || undefined,
-    type: type || undefined,
-    noFile,
-  });
-
-  console.log(JSON.stringify({ success: true, ...result }, null, 2));
-}
-
-function normalizeMediaType(explicit: string | undefined, mimeType: string | null, filename: string): string {
-  if (explicit && explicit.trim()) return explicit.trim();
-  if (mimeType?.startsWith('image/')) return 'image';
-  if (mimeType === 'application/pdf') return 'pdf';
-  if (mimeType?.startsWith('video/')) return 'video';
-  if (mimeType?.startsWith('audio/')) return 'audio';
-  const ext = extname(filename).toLowerCase();
-  if (ext === '.pdf') return 'pdf';
-  return 'media';
-}
-
-function defaultMediaSlug(filename: string): string {
-  const stem = basename(filename, extname(filename))
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'untitled';
-  return `media/evidence/${stem}`;
-}
-
-function buildSearchableText(extraction: Record<string, unknown>, summary?: string): string {
-  const parts: string[] = [];
-  if (summary?.trim()) parts.push(summary.trim());
-  collectText(extraction, parts);
-  const seen = new Set<string>();
-  return parts
-    .map(part => part.trim())
-    .filter(Boolean)
-    .filter(part => {
-      if (seen.has(part)) return false;
-      seen.add(part);
-      return true;
-    })
-    .join('\n\n');
-}
-
-function collectText(value: unknown, parts: string[]): void {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed) parts.push(trimmed);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectText(item, parts);
-    return;
-  }
-  if (value && typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) {
-      if (typeof child === 'string' && /(text|caption|ocr|transcript|summary|description|content)/i.test(key)) {
-        collectText(child, parts);
-      } else if (Array.isArray(child) || (child && typeof child === 'object')) {
-        collectText(child, parts);
-      }
-    }
-  }
-}
-
-async function attachFileRecordWithEngine(engine: BrainEngine, pageSlug: string, filePath: string, mimeType: string | null, sizeBytes: number): Promise<string> {
-  try {
-    return await attachFileRecord(pageSlug, filePath, mimeType, sizeBytes);
-  } catch {
-    const filename = basename(filePath);
-    const hash = fileHash(filePath);
-    const storagePath = `${pageSlug}/${filename}`;
-    const pageRows = await engine.executeRaw<{ id: number }>('SELECT id FROM pages WHERE slug = $1 LIMIT 1', [pageSlug]);
-    const pageId = pageRows[0]?.id ?? null;
-    await engine.executeRaw(
-      `INSERT INTO files (page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-       ON CONFLICT (storage_path) DO UPDATE SET
-         page_slug = EXCLUDED.page_slug,
-         page_id = EXCLUDED.page_id,
-         content_hash = EXCLUDED.content_hash,
-         size_bytes = EXCLUDED.size_bytes,
-         mime_type = EXCLUDED.mime_type,
-         metadata = EXCLUDED.metadata`,
-      [pageSlug, pageId, filename, storagePath, mimeType, sizeBytes, hash, JSON.stringify({ ingest: 'media-evidence-mvp' })],
-    );
-    return storagePath;
-  }
-}
-
 async function attachFileRecord(pageSlug: string, filePath: string, mimeType: string | null, sizeBytes: number): Promise<string> {
+  const sql = db.getConnection();
   const filename = basename(filePath);
   const hash = fileHash(filePath);
   const storagePath = `${pageSlug}/${filename}`;
 
-  // Prefer the shared postgres/sql path when available, but fall back to the
-  // engine's raw SQL support so PGLite tests and local brains work too.
-  try {
-    const sql = db.getConnection();
-    await sql`
-      INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
-      VALUES (${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${sizeBytes}, ${hash}, ${sql.json({ ingest: 'media-evidence-mvp' })})
-      ON CONFLICT (storage_path) DO UPDATE SET
-        page_slug = EXCLUDED.page_slug,
-        content_hash = EXCLUDED.content_hash,
-        size_bytes = EXCLUDED.size_bytes,
-        mime_type = EXCLUDED.mime_type,
-        metadata = EXCLUDED.metadata
-    `;
-    return storagePath;
-  } catch {
-    // caller will use engine fallback below
-  }
+  await sql`
+    INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+    VALUES (${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${sizeBytes}, ${hash}, ${sql.json({ ingest: 'media-evidence-mvp' })})
+    ON CONFLICT (storage_path) DO UPDATE SET
+      page_slug = EXCLUDED.page_slug,
+      content_hash = EXCLUDED.content_hash,
+      size_bytes = EXCLUDED.size_bytes,
+      mime_type = EXCLUDED.mime_type,
+      metadata = EXCLUDED.metadata
+  `;
 
-  throw new Error('attachFileRecord requires SQL connection fallback wiring');
-}
-
-async function canAttachFiles(engine: BrainEngine): Promise<boolean> {
-  try {
-    await engine.executeRaw('SELECT 1 FROM files LIMIT 1');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function chunkEstimate(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 1200));
+  return storagePath;
 }
 
 async function listFiles(slug?: string) {
