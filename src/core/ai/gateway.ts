@@ -191,6 +191,44 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
   }
 }
 
+async function embedVoyageNative(
+  modelId: string,
+  apiKey: string,
+  texts: string[],
+  dims: number,
+): Promise<Float32Array[]> {
+  const response = await fetch('https://api.voyageai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelId,
+      input: texts,
+      output_dimension: dims,
+    }),
+  });
+
+  const bodyText = await response.text();
+  let body: any;
+  try {
+    body = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    body = { detail: bodyText };
+  }
+
+  if (!response.ok) {
+    throw new AIConfigError(
+      `Voyage embedding request failed (${response.status}): ${body?.detail ?? body?.message ?? response.statusText}`,
+      'Check VOYAGE_API_KEY, model id, and output dimension support.',
+    );
+  }
+
+  const data = Array.isArray(body?.data) ? body.data : [];
+  return data.map((row: any) => new Float32Array(row.embedding));
+}
+
 /** Embed many texts. Truncates to 8000 chars. Throws AIConfigError or AITransientError. */
 export async function embed(texts: string[]): Promise<Float32Array[]> {
   if (!texts || texts.length === 0) return [];
@@ -198,25 +236,32 @@ export async function embed(texts: string[]): Promise<Float32Array[]> {
   const cfg = requireConfig();
   const { model, recipe, modelId } = await resolveEmbeddingProvider(getEmbeddingModel());
   const truncated = texts.map(t => (t ?? '').slice(0, MAX_CHARS));
+  const expected = cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
 
   try {
-    const result = await embedMany({
-      model,
-      values: truncated,
-      providerOptions: dimsProviderOptions(recipe.implementation, modelId, cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS),
-    });
+    const embeddings = recipe.id === 'voyage'
+      ? await embedVoyageNative(
+          modelId,
+          requireAuth(resolveProviderAuth(recipe, cfg), recipe, 'embedding'),
+          truncated,
+          expected,
+        )
+      : (await embedMany({
+          model,
+          values: truncated,
+          providerOptions: dimsProviderOptions(recipe.implementation, modelId, expected),
+        })).embeddings.map((e: number[]) => new Float32Array(e));
 
     // Verify dims match expectation; mismatch = likely misconfigured provider options.
-    const expected = cfg.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
-    const first = result.embeddings?.[0];
-    if (first && Array.isArray(first) && first.length !== expected) {
+    const first = embeddings?.[0];
+    if (first && first.length !== expected) {
       throw new AIConfigError(
         `Embedding dim mismatch: model ${modelId} returned ${first.length} but schema expects ${expected}.`,
-        `Run \`gbrain migrate --embedding-model ${getEmbeddingModel()} --embedding-dimensions ${first.length}\` or change models.`,
+        `Archive/backup the old brain, then run a fresh init with matching --embedding-model and --embedding-dimensions.`,
       );
     }
 
-    return result.embeddings.map((e: number[]) => new Float32Array(e));
+    return embeddings;
   } catch (err) {
     throw normalizeAIError(err, `embed(${recipe.id}:${modelId})`);
   }

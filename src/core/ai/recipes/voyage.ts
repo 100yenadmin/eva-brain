@@ -16,7 +16,10 @@ export const voyage: Recipe = {
   },
   touchpoints: {
     embedding: {
-      models: ['voyage-3-large', 'voyage-3', 'voyage-3-lite'],
+      // eva-brain's production path uses a 1024-dimensional schema. voyage-3-lite
+      // returns 512 dimensions and is intentionally excluded from the default
+      // supported list until per-model dimensions are exposed in provider config.
+      models: ['voyage-3-large', 'voyage-3'],
       default_dims: 1024,
       cost_per_1m_tokens_usd: 0.18,
       price_last_verified: '2026-04-20',
