@@ -11,6 +11,7 @@ import { extractCodeRefs } from './link-extraction.ts';
 import { embedBatch } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
 import type { ChunkInput, PageType } from './types.ts';
+import { buildMediaEvidenceRawData, type MediaEvidence } from './media-extraction.ts';
 
 /**
  * v0.20.0 Cathedral II Layer 8 D2 — markdown fence extraction helper.
@@ -165,6 +166,11 @@ export interface ImportResult {
    * Absent only on status='error' (early payload-size rejection).
    */
   parsedPage?: ParsedPage;
+}
+
+export interface ImportMediaEvidenceOptions {
+  source?: string;
+  rawDataSource?: string;
 }
 
 const MAX_FILE_SIZE = 5_000_000; // 5MB
@@ -400,6 +406,20 @@ export async function importFromFile(
  * Uses tree-sitter code chunker for semantic splitting.
  * Page type is 'code', slug includes file extension.
  */
+export async function importMediaEvidence(
+  engine: BrainEngine,
+  slug: string,
+  content: string,
+  extraction: unknown,
+  opts: { noEmbed?: boolean } & ImportMediaEvidenceOptions = {},
+): Promise<ImportResult> {
+  const evidence: MediaEvidence = buildMediaEvidenceRawData(extraction);
+  const result = await importFromContent(engine, slug, content, { noEmbed: opts.noEmbed });
+  if (result.status !== 'imported' && result.status !== 'skipped') return result;
+  await engine.putRawData(slug, opts.rawDataSource ?? opts.source ?? 'media-extraction', evidence as unknown as object);
+  return result;
+}
+
 export async function importCodeFile(
   engine: BrainEngine,
   relativePath: string,

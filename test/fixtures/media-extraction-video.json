@@ -1,0 +1,29 @@
+{
+  "kind": "video",
+  "sourceRef": "recordings/login-demo.mp4",
+  "title": "Login demo recording",
+  "summary": "Walkthrough of a login failure and fix.",
+  "transcriptText": "At 12 seconds we hit the invalid API key error. At 26 seconds we confirm the env var fix.",
+  "segments": [
+    {
+      "id": "frame-12s",
+      "kind": "frame",
+      "locator": { "frame": 360, "timecode": "00:00:12.000", "startMs": 12000, "endMs": 12000 },
+      "caption": "Login form with red invalid API key error",
+      "ocrText": "Invalid API key",
+      "matchReasons": [
+        { "kind": "visual", "detail": "Error banner visible in frame", "confidence": 0.86 }
+      ]
+    },
+    {
+      "id": "transcript-26s",
+      "kind": "transcript_segment",
+      "locator": { "timecode": "00:00:26.000", "startMs": 26000, "endMs": 31000 },
+      "transcriptText": "We fixed the issue by rotating the Stripe API key and reloading the app.",
+      "entities": [
+        { "text": "Stripe API key", "type": "secret", "confidence": 0.91 }
+      ],
+      "tags": ["fix"]
+    }
+  ]
+}

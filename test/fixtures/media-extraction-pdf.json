@@ -1,0 +1,29 @@
+{
+  "kind": "pdf",
+  "sourceRef": "docs/pricing-overview.pdf",
+  "title": "Pricing overview PDF",
+  "summary": "Three pricing tiers with enterprise add-ons.",
+  "segments": [
+    {
+      "id": "page-1",
+      "kind": "page",
+      "locator": { "page": 1, "pageLabel": "1" },
+      "summary": "Cover page summarizing pricing tiers",
+      "ocrText": "Starter, Growth, Enterprise",
+      "tags": ["pricing", "tiers"],
+      "matchReasons": [
+        { "kind": "ocr", "detail": "Page lists pricing tiers", "confidence": 0.95 }
+      ]
+    },
+    {
+      "id": "page-2",
+      "kind": "page",
+      "locator": { "page": 2, "pageLabel": "2" },
+      "summary": "Enterprise add-ons and support levels",
+      "ocrText": "Dedicated support, SSO, audit logs",
+      "entities": [
+        { "text": "SSO", "type": "feature", "confidence": 0.88 }
+      ]
+    }
+  ]
+}
