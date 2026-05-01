@@ -132,5 +132,18 @@ on user_shares_media(url_or_file):
 4. Ingest a tweet. Confirm the brain page includes the thread context, linked article summaries, and entity cross-references -- not just the tweet text.
 5. Run `gbrain search "{topic_from_video}"`. Confirm the media page appears in search results (verifies the content is indexed and searchable).
 
+## Next step for runtime architecture
+
+This guide describes the page-level ingestion behavior. For the runtime abstraction behind screenshots, PDFs, audio, and video, see [Media Evidence](media-evidence.md) and the companion [Media Evidence Architecture](../designs/MEDIA_EVIDENCE_ARCHITECTURE.md).
+
+Those docs define upstream-friendly concepts:
+- media artifacts
+- media segments
+- media evidence
+- media resolvers
+- match reasons
+
+That vocabulary lets a fork ship a practical MVP now while still aiming at a clean upstream seam later.
+
 ---
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*
