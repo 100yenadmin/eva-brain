@@ -44,6 +44,23 @@ function configureFromEnv(): void {
   configureGateway(gatewayConfig);
 }
 
+function currentGatewayEnv(): Record<string, string | undefined> {
+  return gatewayConfig?.env ?? { ...process.env };
+}
+
+function configureGatewayForTestModel(modelArg: string): void {
+  const [providerId] = modelArg.split(':');
+  const recipe = getRecipe(providerId);
+  const dims = recipe?.touchpoints.embedding?.default_dims ?? gatewayConfig.embedding_dimensions ?? 1536;
+  gatewayConfig = {
+    ...gatewayConfig,
+    embedding_model: modelArg,
+    embedding_dimensions: dims,
+    env: currentGatewayEnv(),
+  };
+  configureGateway(gatewayConfig);
+}
+
 function authResolution(recipe: Recipe) {
   return resolveProviderAuth(recipe, gatewayConfig);
 }
@@ -123,15 +140,7 @@ async function runTest(args: string[]): Promise<void> {
 
   // If --model passed, override gateway for this test
   if (modelArg) {
-    const [providerId, ...modelParts] = modelArg.split(':');
-    const modelId = modelParts.join(':');
-    const recipe = getRecipe(providerId);
-    const dims = recipe?.touchpoints.embedding?.default_dims ?? 1536;
-    configureGateway({
-      embedding_model: modelArg,
-      embedding_dimensions: dims,
-      env: { ...process.env },
-    });
+    configureGatewayForTestModel(modelArg);
   }
 
   if (!gwIsAvailable('embedding')) {
@@ -323,11 +332,13 @@ function consFor(r: Recipe): string[] {
 }
 
 function pickRecommended(options: ProviderOption[], env: Record<string, boolean>, ollamaReady: boolean): { id: string; reason: string } {
-  // Embedding recommendation: prefer env-ready native providers in this order.
   const embOpts = options.filter(o => o.touchpoint === 'embedding');
-  if (env.OPENAI_API_KEY) {
-    const openai = embOpts.find(o => o.id.startsWith('openai:'));
-    if (openai) return { id: openai.id, reason: 'OPENAI_API_KEY set — OpenAI default is high-quality and preserves existing 1536-dim schema.' };
+  const readyOpenAI = embOpts.find(o => o.id.startsWith('openai:') && o.env_ready);
+  if (readyOpenAI) {
+    const reason = readyOpenAI.auth_source === 'env'
+      ? 'OPENAI_API_KEY set — OpenAI default is high-quality and preserves existing 1536-dim schema.'
+      : `OpenAI auth resolved via ${readyOpenAI.auth_source} — default model stays compatible with the existing 1536-dim schema.`;
+    return { id: readyOpenAI.id, reason };
   }
   if (ollamaReady) {
     const ollama = embOpts.find(o => o.id.startsWith('ollama:'));
@@ -341,9 +352,8 @@ function pickRecommended(options: ProviderOption[], env: Record<string, boolean>
     const voyage = embOpts.find(o => o.id.startsWith('voyage:'));
     if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Voyage at 1024 dims.' };
   }
-  // Nothing ready. Recommend OpenAI as the lowest-friction path.
   return {
     id: 'openai:text-embedding-3-large',
-    reason: 'No provider env detected. OpenAI is the fastest setup — get a key at https://platform.openai.com/api-keys.',
+    reason: 'No provider auth detected. OpenAI is the fastest setup — get a key at https://platform.openai.com/api-keys or configure OpenClaw provider_auth.',
   };
 }

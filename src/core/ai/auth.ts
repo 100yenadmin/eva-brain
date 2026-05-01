@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { homedir } from 'os';
 
 import type { AIGatewayConfig, AuthResolution, ProviderAuthConfig, Recipe } from './types.ts';
@@ -71,7 +71,7 @@ function resolveEnvAuth(recipe: Recipe, env: Record<string, string | undefined>)
 
 function resolveOpenClawProfileAuth(recipe: Recipe, config: AIGatewayConfig, providerConfig: ProviderAuthConfig): AuthResolution {
   const profile = providerConfig.profile ?? defaultProfileForRecipe(recipe);
-  const path = providerConfig.openclawAuthPath ?? defaultOpenClawAuthPath();
+  const path = resolveOpenClawAuthPath(providerConfig.openclawAuthPath);
   const raw = readOpenClawAuthRecord(path, profile);
   if (!raw) {
     return missingResolution(recipe, providerConfig, `OpenClaw profile \"${profile}\" not found at ${path}`);
@@ -129,9 +129,17 @@ function defaultOpenClawAuthPath(): string {
   return join(homedir(), '.openclaw', 'auth.json');
 }
 
+function resolveOpenClawAuthPath(pathOverride?: string): string {
+  const explicit = pathOverride || process.env.GBRAIN_OPENCLAW_AUTH_PATH || process.env.OPENCLAW_AUTH_PATH;
+  if (!explicit) return defaultOpenClawAuthPath();
+  if (isAbsolute(explicit)) return explicit;
+  return join(homedir(), explicit.replace(/^~\//, ''));
+}
+
 function readOpenClawAuthRecord(path: string, profile: string): Record<string, unknown> | null {
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8'));
+    const resolvedPath = resolveOpenClawAuthPath(path);
+    const raw = JSON.parse(readFileSync(resolvedPath, 'utf-8'));
     return findProfileRecord(raw, profile);
   } catch {
     return null;
