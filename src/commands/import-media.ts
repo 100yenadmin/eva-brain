@@ -45,7 +45,7 @@ function chunkMediaPage(page: PageInput, evidence: MediaEvidence): ChunkInput[] 
 
 function mediaEvidenceHash(page: PageInput, evidence: MediaEvidence): string {
   return createHash('sha256')
-    .update(JSON.stringify({
+    .update(stableStringify({
       title: page.title,
       type: page.type,
       compiled_truth: page.compiled_truth,
@@ -95,10 +95,7 @@ function rawDataEqualsExisting(rows: Array<{ data: unknown }>, evidence: MediaEv
 
 function pageMatchesExisting(existing: Awaited<ReturnType<BrainEngine['getPage']>>, page: PageInput): boolean {
   if (!existing) return false;
-  return existing.title === page.title
-    && existing.type === page.type
-    && existing.compiled_truth === page.compiled_truth
-    && (existing.timeline || '') === (page.timeline || '');
+  return existing.content_hash === page.content_hash;
 }
 
 function fileKindOverride(explicit: string | undefined, extraction: MediaExtraction, mimeType: string | null): MediaExtractionKind {
@@ -249,14 +246,16 @@ export async function runIngestMedia(engine: BrainEngine, args: string[]) {
   const noFile = args.includes('--no-file');
   const noEmbed = args.includes('--no-embed');
 
+  const contentFile = getFlag(args, '--content-file');
   if (!mediaFile || !extractionFile) {
-    console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <kind>] [--no-file] [--no-embed]');
+    console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <kind>] [--content-file <file.md>] [--no-file] [--no-embed]');
     process.exit(1);
   }
 
   await runImportMedia(engine, [
     '--slug', slug || defaultMediaSlug(mediaFile),
     '--extraction', extractionFile,
+    ...(contentFile ? ['--content-file', contentFile] : []),
     '--media-file', mediaFile,
     '--raw-data-source', 'gbrain.media-evidence.v1',
     ...(title ? ['--title', title] : []),
