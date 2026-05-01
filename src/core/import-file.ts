@@ -252,16 +252,15 @@ export async function importFromContent(
     chunks.push(...fenceChunks);
   }
 
-  // Embed BEFORE the transaction (external API call)
+  // Embed BEFORE the transaction (external API call).
+  // v0.14+ provider-stack replay keeps hard failure semantics: silent drop is
+  // worse than surfacing the embedding problem to the caller.
+  // Caller can pass opts.noEmbed=true to explicitly skip (used by migrations).
   if (!opts.noEmbed && chunks.length > 0) {
-    try {
-      const embeddings = await embedBatch(chunks.map(c => c.chunk_text));
-      for (let i = 0; i < chunks.length; i++) {
-        chunks[i].embedding = embeddings[i];
-        chunks[i].token_count = Math.ceil(chunks[i].chunk_text.length / 4);
-      }
-    } catch (e: unknown) {
-      console.warn(`[gbrain] embedding failed for ${slug} (${chunks.length} chunks): ${e instanceof Error ? e.message : String(e)}`);
+    const embeddings = await embedBatch(chunks.map(c => c.chunk_text));
+    for (let i = 0; i < chunks.length; i++) {
+      chunks[i].embedding = embeddings[i];
+      chunks[i].token_count = Math.ceil(chunks[i].chunk_text.length / 4);
     }
   }
 
@@ -479,16 +478,12 @@ export async function importCodeFile(
 
   // Embed only the new/changed chunks.
   if (!opts.noEmbed && needsEmbedIndexes.length > 0) {
-    try {
-      const textsToEmbed = needsEmbedIndexes.map((i) => chunks[i]!.chunk_text);
-      const embeddings = await embedBatch(textsToEmbed);
-      for (let j = 0; j < needsEmbedIndexes.length; j++) {
-        const i = needsEmbedIndexes[j]!;
-        chunks[i]!.embedding = embeddings[j]!;
-        chunks[i]!.token_count = Math.ceil(chunks[i]!.chunk_text.length / 4);
-      }
-    } catch (e: unknown) {
-      console.warn(`[gbrain] embedding failed for code file ${slug}: ${e instanceof Error ? e.message : String(e)}`);
+    const textsToEmbed = needsEmbedIndexes.map((i) => chunks[i]!.chunk_text);
+    const embeddings = await embedBatch(textsToEmbed);
+    for (let j = 0; j < needsEmbedIndexes.length; j++) {
+      const i = needsEmbedIndexes[j]!;
+      chunks[i]!.embedding = embeddings[j]!;
+      chunks[i]!.token_count = Math.ceil(chunks[i]!.chunk_text.length / 4);
     }
   }
 

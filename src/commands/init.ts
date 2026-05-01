@@ -8,6 +8,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { saveConfig, loadConfig, toEngineConfig, gbrainPath, type GBrainConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
+import { getRecipe } from '../core/ai/recipes/index.ts';
+import { configureGateway } from '../core/ai/gateway.ts';
 
 export async function runInit(args: string[]) {
   const isSupabase = args.includes('--supabase');
@@ -21,6 +23,19 @@ export async function runInit(args: string[]) {
   const apiKey = keyIndex !== -1 ? args[keyIndex + 1] : null;
   const pathIndex = args.indexOf('--path');
   const customPath = pathIndex !== -1 ? args[pathIndex + 1] : null;
+
+  // v0.14: AI provider selection.
+  // --embedding-model PROVIDER:MODEL (verbose) or --model PROVIDER (shorthand, picks recipe default)
+  const embModelIdx = args.indexOf('--embedding-model');
+  const modelShortIdx = args.indexOf('--model');
+  const embDimsIdx = args.indexOf('--embedding-dimensions');
+  const expModelIdx = args.indexOf('--expansion-model');
+  const aiOpts = await resolveAIOptions(
+    embModelIdx !== -1 ? args[embModelIdx + 1] : null,
+    modelShortIdx !== -1 ? args[modelShortIdx + 1] : null,
+    embDimsIdx !== -1 ? parseInt(args[embDimsIdx + 1], 10) : null,
+    expModelIdx !== -1 ? args[expModelIdx + 1] : null,
+  );
 
   // Schema-only path: apply initSchema against the already-configured engine
   // without ever calling saveConfig. Used by apply-migrations, the stopgap
@@ -47,7 +62,7 @@ export async function runInit(args: string[]) {
       }
     }
 
-    return initPGLite({ jsonOutput, apiKey, customPath });
+    return initPGLite({ jsonOutput, apiKey, customPath, aiOpts });
   }
 
   // Supabase/Postgres mode
@@ -66,7 +81,79 @@ export async function runInit(args: string[]) {
     databaseUrl = await supabaseWizard();
   }
 
-  return initPostgres({ databaseUrl, jsonOutput, apiKey });
+  return initPostgres({ databaseUrl, jsonOutput, apiKey, aiOpts });
+}
+
+/**
+ * Resolve AI provider options from CLI flags. Verbose form (--embedding-model
+ * openai:text-embedding-3-large) overrides shorthand (--model openai which
+ * expands to the recipe's first embedding model).
+ */
+async function resolveAIOptions(
+  verbose: string | null,
+  shorthand: string | null,
+  dimsArg: number | null,
+  expansion: string | null,
+): Promise<{ embedding_model?: string; embedding_dimensions?: number; expansion_model?: string }> {
+  const out: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string } = {};
+
+  if (verbose) {
+    const [providerId, ...modelParts] = verbose.split(':');
+    const modelId = modelParts.join(':');
+    if (!providerId || !modelId) {
+      console.error('Invalid --embedding-model. Expected provider:model.');
+      process.exit(1);
+    }
+    const recipe = getRecipe(providerId);
+    if (!recipe) {
+      console.error(`Unknown provider: ${providerId}. Run \`gbrain providers list\` to see known providers.`);
+      process.exit(1);
+    }
+    const embedding = recipe.touchpoints.embedding;
+    if (!embedding) {
+      console.error(`Provider ${providerId} does not support embeddings.`);
+      process.exit(1);
+    }
+    if (embedding.models.length > 0 && !embedding.models.includes(modelId)) {
+      console.error(`Model ${modelId} is not listed for provider ${providerId}. Known models: ${embedding.models.join(', ')}`);
+      process.exit(1);
+    }
+    out.embedding_model = `${providerId}:${modelId}`;
+    if (embedding.default_dims) out.embedding_dimensions = embedding.default_dims;
+  } else if (shorthand) {
+    const recipe = getRecipe(shorthand);
+    if (!recipe) {
+      console.error(`Unknown provider: ${shorthand}. Run \`gbrain providers list\` to see known providers.`);
+      process.exit(1);
+    }
+    const firstModel = recipe.touchpoints.embedding?.models[0];
+    if (!firstModel) {
+      console.error(`Provider ${shorthand} has no embedding models listed. Use --embedding-model provider:model.`);
+      process.exit(1);
+    }
+    out.embedding_model = `${shorthand}:${firstModel}`;
+    out.embedding_dimensions = recipe.touchpoints.embedding!.default_dims;
+  }
+
+  if (dimsArg !== null && !Number.isNaN(dimsArg) && dimsArg > 0) {
+    out.embedding_dimensions = dimsArg;
+  } else if (out.embedding_model && out.embedding_dimensions === undefined) {
+    // Derive default dims from the resolved recipe when verbose form was used.
+    const providerId = out.embedding_model.split(':')[0];
+    const recipe = getRecipe(providerId);
+    if (recipe?.touchpoints.embedding?.default_dims) {
+      out.embedding_dimensions = recipe.touchpoints.embedding.default_dims;
+    }
+  }
+
+  if (out.embedding_model && out.embedding_dimensions === undefined) {
+    console.error('Could not resolve embedding dimensions. Pass --embedding-dimensions <N>.');
+    process.exit(1);
+  }
+
+  if (expansion) out.expansion_model = expansion;
+
+  return out;
 }
 
 /**
@@ -75,6 +162,17 @@ export async function runInit(args: string[]) {
  * to bump an existing brain's schema to the latest version without
  * clobbering the user's chosen engine.
  */
+function configureGatewayFromConfig(config: GBrainConfig): void {
+  configureGateway({
+    embedding_model: config.embedding_model,
+    embedding_dimensions: config.embedding_dimensions,
+    expansion_model: config.expansion_model,
+    base_urls: config.provider_base_urls,
+    provider_auth: config.provider_auth,
+    env: { ...process.env },
+  });
+}
+
 async function initMigrateOnly(opts: { jsonOutput: boolean }) {
   const config = loadConfig();
   if (!config) {
@@ -86,6 +184,8 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
     }
     process.exit(1);
   }
+
+  configureGatewayFromConfig(config);
 
   const engine = await createEngine(toEngineConfig(config));
   try {
@@ -102,9 +202,30 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
   }
 }
 
-async function initPGLite(opts: { jsonOutput: boolean; apiKey: string | null; customPath: string | null }) {
+async function initPGLite(opts: {
+  jsonOutput: boolean;
+  apiKey: string | null;
+  customPath: string | null;
+  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string };
+}) {
   const dbPath = opts.customPath || gbrainPath('brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
+
+  const mergedConfig: GBrainConfig = {
+    ...(loadConfig() ?? { engine: 'pglite', database_path: dbPath }),
+    engine: 'pglite',
+    database_path: dbPath,
+    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
+    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
+    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+  };
+
+  // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
+  if (mergedConfig.embedding_model) {
+    configureGatewayFromConfig(mergedConfig);
+    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
+    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
+  }
 
   const engine = await createEngine({ engine: 'pglite' });
   try {
@@ -112,8 +233,7 @@ async function initPGLite(opts: { jsonOutput: boolean; apiKey: string | null; cu
     await engine.initSchema();
 
     const config: GBrainConfig = {
-      engine: 'pglite',
-      database_path: dbPath,
+      ...mergedConfig,
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
     };
     saveConfig(config);
@@ -127,10 +247,11 @@ async function initPGLite(opts: { jsonOutput: boolean; apiKey: string | null; cu
       console.log(`${stats.page_count} pages. Engine: PGLite (local Postgres).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
-        console.log('  gbrain extract links --source db        (typed link backfill)');
-        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
-        console.log('  gbrain stats                            (verify links > 0)');
+        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
+        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
+        console.log('  gbrain migrate --to supabase            (copy into a fresh Postgres brain)');
+        console.log('  cp ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.bak   (quick local backup)');
+        console.log('Then re-run `gbrain init --pglite --model <provider>` on an empty brain.');
       } else {
         console.log('Next: gbrain import <dir>');
       }
@@ -143,8 +264,29 @@ async function initPGLite(opts: { jsonOutput: boolean; apiKey: string | null; cu
   }
 }
 
-async function initPostgres(opts: { databaseUrl: string; jsonOutput: boolean; apiKey: string | null }) {
+async function initPostgres(opts: {
+  databaseUrl: string;
+  jsonOutput: boolean;
+  apiKey: string | null;
+  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string };
+}) {
   const { databaseUrl } = opts;
+
+  const mergedConfig: GBrainConfig = {
+    ...(loadConfig() ?? { engine: 'postgres', database_url: databaseUrl }),
+    engine: 'postgres',
+    database_url: databaseUrl,
+    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
+    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
+    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+  };
+
+  // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
+  if (mergedConfig.embedding_model) {
+    configureGatewayFromConfig(mergedConfig);
+    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
+    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
+  }
 
   // Detect Supabase direct connection URLs and warn about IPv6
   if (databaseUrl.match(/db\.[a-z]+\.supabase\.co/) || databaseUrl.includes('.supabase.co:5432')) {
@@ -195,8 +337,7 @@ async function initPostgres(opts: { databaseUrl: string; jsonOutput: boolean; ap
     await engine.initSchema();
 
     const config: GBrainConfig = {
-      engine: 'postgres',
-      database_url: databaseUrl,
+      ...mergedConfig,
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
     };
     saveConfig(config);
@@ -210,10 +351,11 @@ async function initPostgres(opts: { databaseUrl: string; jsonOutput: boolean; ap
       console.log(`\nBrain ready. ${stats.page_count} pages. Engine: Postgres (Supabase).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
-        console.log('  gbrain extract links --source db        (typed link backfill)');
-        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
-        console.log('  gbrain stats                            (verify links > 0)');
+        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
+        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
+        console.log('  gbrain migrate --to pglite --force --path ~/.gbrain/brain.pglite   (copy into a fresh local brain)');
+        console.log('  gbrain export --dir ./gbrain-export     (portable markdown export)');
+        console.log('Then point init at a clean Postgres target and re-import if needed.');
       } else {
         console.log('Next: gbrain import <dir>');
       }

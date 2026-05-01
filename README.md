@@ -30,6 +30,8 @@ https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
 
 That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 29 skills, and configures recurring jobs. You answer a few questions about API keys. ~30 minutes.
 
+For provider choice, embedding dimensions, Voyage 1024d migration, and the current OpenClaw Codex OAuth dependency boundary, read [`docs/guides/provider-install-matrix.md`](docs/guides/provider-install-matrix.md).
+
 If your agent doesn't auto-read `AGENTS.md`, point it at that file first:
 `https://raw.githubusercontent.com/garrytan/gbrain/master/AGENTS.md` is the non-Claude
 agent operating protocol (install, read order, trust boundary, common tasks). For
@@ -39,10 +41,13 @@ the full doc map, use `llms.txt` at the same URL root.
 
 ```bash
 git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
-gbrain init                     # local brain, ready in 2 seconds
-gbrain import ~/notes/          # index your markdown
+gbrain init --pglite --model voyage   # fresh local brain with Voyage 1024d embeddings
+gbrain providers test --model voyage:voyage-3.5
+gbrain import ~/notes/                # index your markdown
 gbrain query "what themes show up across my notes?"
 ```
+
+If you already have a populated brain, the safest production path for provider/dimension changes is a fresh init plus explicit migration/backup. Preserve the old brain first with `gbrain migrate --to supabase|pglite` or a file backup/export, then re-init against an empty target.
 
 **Do NOT use `bun install -g github:garrytan/gbrain`.** Bun blocks the top-level
 postinstall hook on global installs, so schema migrations never run and the CLI

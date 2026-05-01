@@ -31,6 +31,7 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
 ## Common tasks
 
 - **Configure:** [`docs/ENGINES.md`](./docs/ENGINES.md),
+  [`docs/guides/provider-install-matrix.md`](./docs/guides/provider-install-matrix.md),
   [`docs/guides/live-sync.md`](./docs/guides/live-sync.md),
   [`docs/mcp/DEPLOY.md`](./docs/mcp/DEPLOY.md).
 - **Debug:** [`docs/GBRAIN_VERIFY.md`](./docs/GBRAIN_VERIFY.md),
