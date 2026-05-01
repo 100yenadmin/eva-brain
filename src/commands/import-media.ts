@@ -1,12 +1,14 @@
 import { createHash } from 'crypto';
-import { existsSync, readFileSync, statSync } from 'fs';
-import { basename, extname } from 'path';
+import { existsSync, readFileSync, statSync, mkdtempSync, writeFileSync } from 'fs';
+import { basename, extname, join } from 'path';
+import { tmpdir } from 'os';
 import type { BrainEngine } from '../core/engine.ts';
 import type { ChunkInput, PageInput } from '../core/types.ts';
 import { normalizeMediaExtraction, mediaExtractionToEvidence, type MediaEvidence, type MediaExtraction, type MediaExtractionKind } from '../core/media-extraction.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import { getMimeType, canAttachFiles, attachFileRecordWithEngine, type IngestMediaResult } from './files.ts';
+import { createConfiguredCodexExtractionClient } from '../core/ai/codex-extraction-client.ts';
 
 function usage(): never {
   console.error('Usage: gbrain import-media --slug <slug> --content-file <file.md> --extraction <file.json> [--source <name>] [--raw-data-source <name>] [--media-file <path>] [--title <title>] [--type <kind>] [--no-file] [--no-embed]');
@@ -236,6 +238,58 @@ export async function runImportMedia(engine: BrainEngine, args: string[]) {
   }, null, 2));
 }
 
+async function resolveIngestExtractionFile(mediaFile: string, extractionFile: string, kindHint: string | undefined, title: string | undefined): Promise<string> {
+  if (extractionFile !== 'openclaw') return extractionFile;
+
+  const client = createConfiguredCodexExtractionClient();
+  if (!client) {
+    throw new Error('gbrain ingest-media --extract openclaw requires GBRAIN_OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URL or GBRAIN_OPENCLAW_COMPLETION_COMMAND');
+  }
+
+  const maxTextBytes = 1_000_000;
+  const size = statSync(mediaFile).size;
+  if (size > maxTextBytes) {
+    throw new Error(`gbrain ingest-media --extract openclaw only supports text inputs up to ${maxTextBytes} bytes; got ${size}`);
+  }
+
+  const inputText = readFileSync(mediaFile, 'utf-8');
+  const inferredKind = kindHint ?? (getMimeType(mediaFile)?.startsWith('audio/') ? 'audio' : getMimeType(mediaFile)?.startsWith('video/') ? 'video' : extname(mediaFile).toLowerCase() === '.pdf' ? 'pdf' : 'pdf');
+  const extraction = await client.completeJson({
+    prompt: buildCodexMediaExtractionPrompt({
+      filename: basename(mediaFile),
+      title,
+      kind: inferredKind,
+      text: inputText,
+    }),
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'gbrain-codex-extraction-'));
+  const out = join(dir, 'extraction.json');
+  writeFileSync(out, JSON.stringify(extraction, null, 2) + '\n');
+  return out;
+}
+
+function buildCodexMediaExtractionPrompt(input: { filename: string; title?: string; kind: string; text: string }): string {
+  return `Extract this text-only media/help document into a JSON object matching gbrain.media-extraction.v1.
+
+Return ONLY JSON. Required shape:
+{
+  "schemaVersion": "gbrain.media-extraction.v1",
+  "kind": "image|pdf|video|audio",
+  "sourceRef": "...",
+  "title": "...",
+  "summary": "...",
+  "segments": [{ "id": "segment-0", "kind": "page|transcript_segment|asset", "summary": "...", "transcriptText": "...", "entities": [{"text":"...","type":"..."}], "tags": [{"value":"..."}] }]
+}
+
+Use kind "${input.kind}" unless the content clearly indicates another allowed media kind. Preserve important quotes and names. Keep segment ids stable and lowercase.
+
+Filename: ${input.filename}
+Title hint: ${input.title ?? '(none)'}
+
+Content:
+${input.text}`;
+}
+
 export async function runIngestMedia(engine: BrainEngine, args: string[]) {
   const mediaFile = args.find(a => !a.startsWith('--'));
   const extractionFile = getFlag(args, '--extract');
@@ -248,13 +302,15 @@ export async function runIngestMedia(engine: BrainEngine, args: string[]) {
 
   const contentFile = getFlag(args, '--content-file');
   if (!mediaFile || !extractionFile) {
-    console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <kind>] [--content-file <file.md>] [--no-file] [--no-embed]');
+    console.error('Usage: gbrain ingest-media <file> --extract <json|openclaw> [--slug <s>] [--title <t>] [--source <src>] [--type <kind>] [--content-file <file.md>] [--no-file] [--no-embed]');
     process.exit(1);
   }
 
+  const resolvedExtractionFile = await resolveIngestExtractionFile(mediaFile, extractionFile, type, title);
+
   await runImportMedia(engine, [
     '--slug', slug || defaultMediaSlug(mediaFile),
-    '--extraction', extractionFile,
+    '--extraction', resolvedExtractionFile,
     ...(contentFile ? ['--content-file', contentFile] : []),
     '--media-file', mediaFile,
     '--raw-data-source', 'gbrain.media-evidence.v1',

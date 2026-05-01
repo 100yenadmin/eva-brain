@@ -87,6 +87,39 @@ describe('ingest-media normalized integration', () => {
     }
   }, 30000);
 
+  test('can generate text-only extraction through GBRAIN_OPENCLAW_COMPLETION_COMMAND', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-ingest-media-openclaw-'));
+    const mediaPath = join(dir, 'help-doc.md');
+    const capturePath = join(dir, 'openclaw-request.json');
+    const prevCommand = process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND;
+    writeFileSync(mediaPath, '# Help Doc\n\nOpenClaw supports host-routed Codex extraction.');
+    process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND = `node -e "const fs=require('fs');let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{fs.writeFileSync(process.env.CAPTURE,s);process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',title:'Help Doc',summary:'Host-routed extraction.',segments:[{id:'segment-0',kind:'page',summary:'Codex extraction works',transcriptText:'OpenClaw supports host-routed Codex extraction.'}]}));});"`;
+    process.env.CAPTURE = capturePath;
+
+    let payload: any;
+    try {
+      await runIngestMedia(engine, [
+        mediaPath,
+        '--extract', 'openclaw',
+        '--slug', 'media/evidence/help-doc',
+        '--title', 'Help Doc',
+        '--no-file',
+      ]);
+      payload = JSON.parse(readFileSync(capturePath, 'utf-8'));
+    } finally {
+      if (prevCommand === undefined) delete process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND;
+      else process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND = prevCommand;
+      delete process.env.CAPTURE;
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    const page = await engine.getPage('media/evidence/help-doc');
+    expect(page?.compiled_truth).toContain('OpenClaw supports host-routed Codex extraction.');
+    expect(payload.modelRef).toBe('openai-codex/gpt-5.4-mini');
+    expect(payload.prompt).toContain('Help Doc');
+    expect(payload.apiKey).toBeUndefined();
+  }, 30000);
+
   test('updates page when frontmatter changes even if evidence and body are unchanged', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-ingest-media-frontmatter-'));
     const mediaPath = join(dir, 'receipt.png');
