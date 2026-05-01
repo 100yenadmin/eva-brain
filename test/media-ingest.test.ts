@@ -39,6 +39,19 @@ describe('ingest-media normalized integration', () => {
         '--slug', 'media/evidence/receipt',
         '--title', 'Store receipt',
       ]);
+
+      const versionsBefore = await engine.getVersions('media/evidence/receipt');
+      const ingestLogBefore = await engine.getIngestLog({ limit: 10 });
+      await runIngestMedia(engine, [
+        mediaPath,
+        '--extract', extractionPath,
+        '--slug', 'media/evidence/receipt',
+        '--title', 'Store receipt',
+      ]);
+      const versionsAfter = await engine.getVersions('media/evidence/receipt');
+      const ingestLogAfter = await engine.getIngestLog({ limit: 10 });
+      expect(versionsAfter.length).toBe(versionsBefore.length);
+      expect(ingestLogAfter.length).toBe(ingestLogBefore.length);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -63,6 +76,7 @@ describe('ingest-media normalized integration', () => {
     const chunks = await engine.getChunks('media/evidence/receipt');
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks.some(c => c.chunk_text.includes('Stripe API key invalid'))).toBe(true);
+    expect(chunks.every(c => c.embedding === null)).toBe(true);
 
     const filesTableAvailable = await engine.executeRaw<{ exists: boolean }>(
       `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='files') AS exists`,

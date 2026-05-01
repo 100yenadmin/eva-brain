@@ -1,9 +1,11 @@
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { basename, extname } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import type { ChunkInput, PageInput } from '../core/types.ts';
 import { normalizeMediaExtraction, mediaExtractionToEvidence, type MediaEvidence, type MediaExtraction, type MediaExtractionKind } from '../core/media-extraction.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
+import { parseMarkdown } from '../core/markdown.ts';
 import { getMimeType, canAttachFiles, attachFileRecordWithEngine, type IngestMediaResult } from './files.ts';
 
 function usage(): never {
@@ -37,6 +39,64 @@ function chunkEvidence(evidence: MediaEvidence): ChunkInput[] {
   }));
 }
 
+function mediaEvidenceHash(page: PageInput, evidence: MediaEvidence): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      title: page.title,
+      type: page.type,
+      compiled_truth: page.compiled_truth,
+      timeline: page.timeline || '',
+      frontmatter: page.frontmatter || {},
+      evidence,
+    }))
+    .digest('hex');
+}
+
+function parseMediaPageContent(content: string, slug: string, fallbackTitle: string, evidence: MediaEvidence): PageInput {
+  const parsed = parseMarkdown(content, `${slug}.md`);
+  return {
+    title: parsed.title || fallbackTitle,
+    type: 'media',
+    compiled_truth: parsed.compiled_truth || evidence.text,
+    timeline: parsed.timeline || '',
+    frontmatter: {
+      ...parsed.frontmatter,
+      media_type: evidence.kind,
+      source_ref: evidence.sourceRef,
+      evidence_schema: evidence.schemaVersion,
+      ingestion: 'media-evidence-mvp',
+    },
+  };
+}
+
+function stableStringify(value: unknown): string {
+  if (value === undefined) return '';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function rawDataEqualsExisting(rows: Array<{ data: unknown }>, evidence: MediaEvidence): boolean {
+  if (rows.length !== 1) return false;
+  const existing = typeof rows[0]?.data === 'string'
+    ? JSON.parse(rows[0].data as string)
+    : rows[0]?.data;
+  return stableStringify(existing) === stableStringify(evidence);
+}
+
+function pageMatchesExisting(existing: Awaited<ReturnType<BrainEngine['getPage']>>, page: PageInput): boolean {
+  if (!existing) return false;
+  return existing.title === page.title
+    && existing.type === page.type
+    && existing.compiled_truth === page.compiled_truth
+    && (existing.timeline || '') === (page.timeline || '');
+}
+
 function fileKindOverride(explicit: string | undefined, extraction: MediaExtraction, mimeType: string | null): MediaExtractionKind {
   if (explicit && ['image', 'pdf', 'video', 'audio'].includes(explicit)) return explicit as MediaExtractionKind;
   if (mimeType === 'application/pdf') return 'pdf';
@@ -64,54 +124,60 @@ export async function importNormalizedMediaEvidence(
   const stat = filePath && existsSync(filePath) ? statSync(filePath) : null;
   const filename = filePath ? basename(filePath) : undefined;
 
-  const frontmatter: Record<string, unknown> = {
-    media_type: opts.evidence.kind,
-    source_ref: opts.evidence.sourceRef,
-    evidence_schema: opts.evidence.schemaVersion,
+  const fileFrontmatter: Record<string, unknown> = {
     ...(filename ? { filename } : {}),
     ...(mimeType ? { mime_type: mimeType } : {}),
     ...(stat ? { size_bytes: stat.size } : {}),
-    ingestion: 'media-evidence-mvp',
   };
 
-  const page: PageInput = {
-    title: pageTitle,
-    type: 'media',
-    compiled_truth: compiledTruth,
-    timeline: '',
-    frontmatter,
+  const rawDataSource = opts.rawDataSource ?? 'media-extraction';
+  const page: PageInput = parseMediaPageContent(opts.content, opts.slug, pageTitle, opts.evidence);
+  page.frontmatter = {
+    ...(page.frontmatter || {}),
+    ...fileFrontmatter,
   };
+  const contentHash = mediaEvidenceHash(page, opts.evidence);
+  page.content_hash = contentHash;
 
   const existing = await engine.getPage(opts.slug);
-  await engine.transaction(async (tx) => {
-    if (existing) await tx.createVersion(opts.slug);
-    await tx.putPage(opts.slug, page);
-    await tx.putRawData(opts.slug, opts.rawDataSource ?? 'media-extraction', opts.evidence as unknown as object);
-    await tx.upsertChunks(opts.slug, chunkEvidence(opts.evidence));
-  });
+  const existingRawData = existing ? await engine.getRawData(opts.slug, rawDataSource) : [];
+  const filesTableAvailable = filePath && !opts.noFile ? await canAttachFiles(engine) : false;
+  const unchanged = pageMatchesExisting(existing, page) && rawDataEqualsExisting(existingRawData, opts.evidence);
+  if (!unchanged) {
+    await engine.transaction(async (tx) => {
+      if (existing && !unchanged) await tx.createVersion(opts.slug);
+      await tx.putPage(opts.slug, page);
+      await tx.putRawData(opts.slug, rawDataSource, opts.evidence as unknown as object);
+      const chunks = chunkEvidence(opts.evidence);
+      if (chunks.length > 0) await tx.upsertChunks(opts.slug, chunks);
+      else await tx.deleteChunks(opts.slug);
+    });
+  }
 
   let storagePath: string | null = null;
   let fileAttached = false;
   if (filePath && !opts.noFile) {
     storagePath = `${opts.slug}/${basename(filePath)}`;
-    if (await canAttachFiles(engine)) {
+    if (filesTableAvailable) {
       await attachFileRecordWithEngine(engine, opts.slug, filePath, mimeType, stat?.size ?? 0);
       fileAttached = true;
     }
   }
 
-  await engine.logIngest({
-    source_type: 'media',
-    source_ref: filePath || opts.slug,
-    pages_updated: [opts.slug],
-    summary: `Imported normalized ${opts.evidence.kind} evidence for ${opts.slug}`,
-  });
+  if (!unchanged) {
+    await engine.logIngest({
+      source_type: 'media',
+      source_ref: filePath || opts.slug,
+      pages_updated: [opts.slug],
+      summary: `Imported normalized ${opts.evidence.kind} evidence for ${opts.slug}`,
+    });
+  }
 
   return {
     slug: opts.slug,
     fileAttached,
     storagePath,
-    rawDataSource: opts.rawDataSource ?? 'media-extraction',
+    rawDataSource,
     chunksExpected: chunkEvidence(opts.evidence).length,
   };
 }
