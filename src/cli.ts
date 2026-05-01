@@ -465,28 +465,8 @@ async function handleCliOnly(command: string, args: string[]) {
         break;
       }
       case 'ingest-media': {
-        const { ingestMediaEvidence } = await import('./commands/files.ts');
-        const filePath = args.find(a => !a.startsWith('--'));
-        const extractionPath = args.find((a, i) => args[i - 1] === '--extract');
-        const slug = args.find((a, i) => args[i - 1] === '--slug');
-        const title = args.find((a, i) => args[i - 1] === '--title');
-        const source = args.find((a, i) => args[i - 1] === '--source');
-        const type = args.find((a, i) => args[i - 1] === '--type');
-        const noFile = args.includes('--no-file');
-        if (!filePath || !extractionPath) {
-          console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <type>] [--no-file]');
-          process.exit(1);
-        }
-        const result = await ingestMediaEvidence(engine, {
-          path: filePath,
-          extractionPath,
-          slug: slug || undefined,
-          title: title || undefined,
-          source: source || undefined,
-          type: type || undefined,
-          noFile,
-        });
-        console.log(JSON.stringify({ success: true, ...result }, null, 2));
+        const { runIngestMedia } = await import('./commands/import-media.ts');
+        await runIngestMedia(engine, args);
         break;
       }
       case 'embed': {
@@ -705,7 +685,7 @@ IMPORT/EXPORT
   import <dir> [--no-embed]          Import markdown directory
   import-media --slug <slug> --content-file <md> --extraction <json>
                                      Import normalized media evidence into a page
-  ingest-media <file> --extract <j>  Ingest media evidence into a media page
+  ingest-media <file> --extract <j>  Alias for normalized media evidence ingest
   sync [--repo <path>] [flags]       Git-to-brain incremental sync
   sync --watch [--interval N]        Continuous sync (loops until stopped)
   sync --install-cron                Install persistent sync daemon
