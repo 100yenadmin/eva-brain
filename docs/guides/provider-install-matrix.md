@@ -28,7 +28,7 @@ So the honest integrated install story is:
 ## Recommended production target
 
 - embedding provider: **Voyage**
-- model: **`voyage:voyage-3-large`**
+- model: **`voyage:voyage-3.5`**
 - embedding dimension: **1024**
 - install style: **fresh init**
 - old state handling: **archive, never destructive delete first**
@@ -53,10 +53,10 @@ export VOYAGE_API_KEY=...
 # 3) verify provider before init
 gbrain providers list
 gbrain providers explain
-gbrain providers test --model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
 
 # 4) fresh init at 1024d
-gbrain init --pglite --embedding-model voyage:voyage-3-large
+gbrain init --pglite --embedding-model voyage:voyage-3.5
 
 # 5) verify the fresh brain
 gbrain doctor --json
@@ -106,8 +106,8 @@ A fresh init is faster and safer than trying to repair every old state shape.
 
 ```bash
 export VOYAGE_API_KEY=...
-gbrain providers test --model voyage:voyage-3-large
-gbrain init --pglite --embedding-model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
+gbrain init --pglite --embedding-model voyage:voyage-3.5
 gbrain doctor --json
 gbrain stats
 ```
@@ -121,9 +121,9 @@ Do not point a new 1024d install at an old 1536d database.
 export VOYAGE_API_KEY=...
 export GBRAIN_DATABASE_URL='postgresql://...'
 
-gbrain providers test --model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
 gbrain init --supabase --non-interactive \
-  --embedding-model voyage:voyage-3-large \
+  --embedding-model voyage:voyage-3.5 \
   --url "$GBRAIN_DATABASE_URL"
 
 gbrain doctor --json
@@ -136,7 +136,7 @@ The embedding dimension is schema-level state.
 
 For the providers currently documented here:
 - OpenAI `text-embedding-3-large` → **1536**
-- Voyage `voyage-3-large` → **1024**
+- Voyage `voyage-3.5` → **1024**
 - Google `text-embedding-004` → **768**
 - Ollama `nomic-embed-text` recipe default → **768**
 - LiteLLM → **must be declared explicitly by the operator**
@@ -187,7 +187,7 @@ Run these immediately after fresh init:
 ```bash
 gbrain providers list
 gbrain providers explain
-gbrain providers test --model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
 gbrain doctor --json
 gbrain stats
 ```
@@ -257,7 +257,7 @@ Response:
 
 ```bash
 gbrain providers env voyage
-gbrain providers test --model voyage:voyage-3-large
+gbrain providers test --model voyage:voyage-3.5
 ```
 
 Fix the env/setup first, then rerun init.
