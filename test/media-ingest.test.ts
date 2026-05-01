@@ -86,4 +86,43 @@ describe('ingest-media normalized integration', () => {
       expect(page?.frontmatter.mime_type).toBe('image/png');
     }
   }, 30000);
+
+  test('updates page when frontmatter changes even if evidence and body are unchanged', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-ingest-media-frontmatter-'));
+    const mediaPath = join(dir, 'receipt.png');
+    const extractionPath = join(dir, 'receipt.extraction.json');
+    const firstContent = join(dir, 'first.md');
+    const secondContent = join(dir, 'second.md');
+    writeFileSync(mediaPath, 'fake-image-binary');
+    writeFileSync(extractionPath, readFileSync(join(FIXTURES, 'media-extraction-image.json'), 'utf-8'));
+    writeFileSync(firstContent, '---\ntitle: Store receipt\nreviewed: false\n---\n\nSame curated receipt narrative.\n');
+    writeFileSync(secondContent, '---\ntitle: Store receipt\nreviewed: true\n---\n\nSame curated receipt narrative.\n');
+
+    try {
+      await runIngestMedia(engine, [
+        mediaPath,
+        '--extract', extractionPath,
+        '--slug', 'media/evidence/receipt',
+        '--title', 'Store receipt',
+        '--content-file', firstContent,
+      ]);
+      const before = await engine.getPage('media/evidence/receipt');
+      expect(before?.frontmatter.reviewed).toBe(false);
+
+      await runIngestMedia(engine, [
+        mediaPath,
+        '--extract', extractionPath,
+        '--slug', 'media/evidence/receipt',
+        '--title', 'Store receipt',
+        '--content-file', secondContent,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    const after = await engine.getPage('media/evidence/receipt');
+    expect(after?.frontmatter.reviewed).toBe(true);
+    const versions = await engine.getVersions('media/evidence/receipt');
+    expect(versions.length).toBe(1);
+  }, 30000);
 });
