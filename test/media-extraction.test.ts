@@ -79,6 +79,11 @@ describe('media evidence import', () => {
       rmSync(dir, { recursive: true, force: true });
     }
 
+    const page = await engine.getPage('media/demo-video');
+    expect(page?.title).toBe('Demo video');
+    expect(page?.compiled_truth).toBe('Demo video evidence page.');
+    expect(page?.frontmatter.evidence_schema).toBe('gbrain.media-evidence.v1');
+
     const raw = await engine.getRawData('media/demo-video', 'gbrain.media-evidence.v1');
     expect(raw.length).toBe(1);
     const data = raw[0]?.data as any;
