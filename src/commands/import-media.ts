@@ -31,8 +31,12 @@ function defaultContent(title: string, evidence: MediaEvidence): string {
   return `---\ntype: ${fmType}\ntitle: ${title}\n---\n\n${evidence.text}\n`;
 }
 
-function chunkEvidence(evidence: MediaEvidence): ChunkInput[] {
-  return chunkText(evidence.text).map((c, idx) => ({
+function chunkMediaPage(page: PageInput, evidence: MediaEvidence): ChunkInput[] {
+  const parts = [page.compiled_truth, evidence.text]
+    .map(part => part.trim())
+    .filter(Boolean);
+  const searchableText = Array.from(new Set(parts)).join('\n\n');
+  return chunkText(searchableText).map((c, idx) => ({
     chunk_index: idx,
     chunk_text: c.text,
     chunk_source: 'compiled_truth',
@@ -148,7 +152,7 @@ export async function importNormalizedMediaEvidence(
       if (existing && !unchanged) await tx.createVersion(opts.slug);
       await tx.putPage(opts.slug, page);
       await tx.putRawData(opts.slug, rawDataSource, opts.evidence as unknown as object);
-      const chunks = chunkEvidence(opts.evidence);
+      const chunks = chunkMediaPage(page, opts.evidence);
       if (chunks.length > 0) await tx.upsertChunks(opts.slug, chunks);
       else await tx.deleteChunks(opts.slug);
     });
@@ -178,7 +182,7 @@ export async function importNormalizedMediaEvidence(
     fileAttached,
     storagePath,
     rawDataSource,
-    chunksExpected: chunkEvidence(opts.evidence).length,
+    chunksExpected: chunkMediaPage(page, opts.evidence).length,
   };
 }
 
@@ -206,7 +210,12 @@ export async function runImportMedia(engine: BrainEngine, args: string[]) {
   });
 
   const finalTitle = title || normalized.title || (mediaFilePath ? basename(mediaFilePath) : slug);
-  const content = contentFile ? readFileSync(contentFile, 'utf-8') : defaultContent(finalTitle, evidence);
+  const existing = await engine.getPage(slug);
+  const content = contentFile
+    ? readFileSync(contentFile, 'utf-8')
+    : existing
+      ? `---\ntype: ${existing.type}\ntitle: ${existing.title}\n---\n\n${existing.compiled_truth}\n`
+      : defaultContent(finalTitle, evidence);
 
   const result = await importNormalizedMediaEvidence(engine, {
     slug,
