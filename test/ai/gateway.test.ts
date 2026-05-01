@@ -86,6 +86,17 @@ describe('gateway.isAvailable (silent-drop regression surface)', () => {
     expect(isAvailable('embedding')).toBe(false);
   });
 
+
+  test('litellm embedding is available when user supplies an explicit model', () => {
+    configureGateway({
+      embedding_model: 'litellm:text-embedding-3-small',
+      embedding_dimensions: 1536,
+      base_urls: { litellm: 'http://localhost:4000/v1' },
+      env: {},
+    });
+    expect(isAvailable('embedding')).toBe(true);
+  });
+
   test('expansion available when ANTHROPIC_API_KEY set', () => {
     configureGateway({
       expansion_model: 'anthropic:claude-haiku-4-5-20251001',

@@ -14,11 +14,16 @@ export interface ProbeResult {
  * port-open is insufficient — a broken daemon can accept connections but
  * serve garbage. We validate the response is JSON with the expected shape.
  */
+function openAICompatModelsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  return trimmed.endsWith('/v1') ? `${trimmed}/models` : `${trimmed}/v1/models`;
+}
+
 export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 1000): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(new URL('v1/models', baseUrl).toString(), {
+    const res = await fetch(openAICompatModelsUrl(baseUrl), {
       signal: controller.signal,
       headers: { accept: 'application/json' },
     });

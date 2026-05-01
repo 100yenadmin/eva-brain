@@ -88,7 +88,6 @@ export function loadConfig(): GBrainConfig | null {
     merged.provider_auth = {
       ...(merged.provider_auth ?? {}),
       openai: {
-        ...(merged.provider_auth?.openai ?? {}),
         prefer: process.env.GBRAIN_OPENAI_AUTH_SOURCE,
         ...(process.env.GBRAIN_OPENAI_AUTH_PROFILE ? { profile: process.env.GBRAIN_OPENAI_AUTH_PROFILE } : {}),
         ...(process.env.GBRAIN_OPENCLAW_AUTH_PATH ? { openclawAuthPath: process.env.GBRAIN_OPENCLAW_AUTH_PATH } : {}),

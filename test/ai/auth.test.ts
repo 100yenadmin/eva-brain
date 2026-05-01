@@ -67,9 +67,8 @@ describe('provider auth resolver', () => {
 
   test('env override path resolves openclaw auth record', () => {
     writeFileSync(authPath, JSON.stringify({ profiles: { 'openclaw-codex': { OPENAI_API_KEY: 'oc-secret' } } }));
-    process.env.GBRAIN_OPENCLAW_AUTH_PATH = authPath;
     const resolution = resolveProviderAuth(openai, config({
-      env: {},
+      env: { GBRAIN_OPENCLAW_AUTH_PATH: authPath },
       provider_auth: { openai: { prefer: 'openclaw-codex' } },
     }));
     expect(resolution.source).toBe('openclaw-codex');

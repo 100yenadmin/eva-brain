@@ -14,6 +14,8 @@ describe('getPGLiteSchema', () => {
     const sql = getPGLiteSchema(768, 'gemini-embedding-001');
     expect(sql).toMatch(/vector\(768\)/);
     expect(sql).toMatch(/'gemini-embedding-001'/);
+    expect(sql).toMatch(/\('embedding_model', 'gemini-embedding-001'\)/);
+    expect(sql).toMatch(/\('embedding_dimensions', '768'\)/);
     expect(sql).not.toMatch(/vector\(1536\)/);
   });
 
@@ -21,6 +23,8 @@ describe('getPGLiteSchema', () => {
     const sql = getPGLiteSchema(1024, 'voyage-3-large');
     expect(sql).toMatch(/vector\(1024\)/);
     expect(sql).toMatch(/'voyage-3-large'/);
+    expect(sql).toMatch(/\('embedding_model', 'voyage-3-large'\)/);
+    expect(sql).toMatch(/\('embedding_dimensions', '1024'\)/);
   });
 
   test('PGLITE_SCHEMA_SQL back-compat constant is the default-dim schema', () => {

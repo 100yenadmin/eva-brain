@@ -77,7 +77,10 @@ function resolveOpenClawProfileAuth(recipe: Recipe, config: AIGatewayConfig, pro
     return missingResolution(recipe, providerConfig, `OpenClaw profile \"${profile}\" not found at ${path}`);
   }
 
-  const envHints = PROFILE_ENV_HINTS[profile] ?? recipe.auth_env?.required ?? [];
+  const envHints = Array.from(new Set([
+    ...(PROFILE_ENV_HINTS[profile] ?? []),
+    ...(recipe.auth_env?.required ?? []),
+  ]));
   const found = envHints.find(key => typeof raw[key] === 'string' && raw[key]);
   if (!found) {
     return missingResolution(recipe, providerConfig, `OpenClaw profile \"${profile}\" missing expected token field`);
