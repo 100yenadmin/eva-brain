@@ -15,6 +15,7 @@ import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
 import * as db from './db.ts';
+import { hasOpenAIAuth } from './ai/auth.ts';
 
 // --- Types ---
 
@@ -326,11 +327,9 @@ const put_page: Operation = {
     }
 
     if (ctx.dryRun) return { dry_run: true, action: 'put_page', slug: p.slug };
-    // Skip embedding when no OpenAI key is configured. importFromContent's existing
-    // try/catch around embed only catches; without a key the OpenAI client would
-    // attempt 5 retries with exponential backoff (up to ~2 minutes total) before
-    // giving up. Detect early.
-    const noEmbed = !process.env.OPENAI_API_KEY;
+    // Skip embedding when no OpenAI-compatible credential is configured. This
+    // accepts env, gbrain config, and OpenClaw-managed auth profile bridges.
+    const noEmbed = !hasOpenAIAuth({ config: ctx.config });
     const result = await importFromContent(ctx.engine, slug, p.content as string, { noEmbed });
 
     // Auto-link post-hook: runs AFTER importFromContent (which is its own

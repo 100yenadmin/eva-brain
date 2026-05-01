@@ -8,6 +8,8 @@
  */
 
 import OpenAI from 'openai';
+import { loadConfig } from './config.ts';
+import { resolveOpenAIAuth } from './ai/auth.ts';
 
 const MODEL = 'text-embedding-3-large';
 const DIMENSIONS = 1536;
@@ -18,12 +20,24 @@ const MAX_DELAY_MS = 120000;
 const BATCH_SIZE = 100;
 
 let client: OpenAI | null = null;
+let clientCredentialKey: string | null = null;
 
 function getClient(): OpenAI {
-  if (!client) {
-    client = new OpenAI();
+  const auth = resolveOpenAIAuth({ config: loadConfig() });
+  if (!auth.value) {
+    throw new Error(auth.missingReason ?? 'OpenAI credentials are not configured');
+  }
+  const key = `${auth.source}:${auth.credentialKey ?? ''}:${auth.profileId ?? ''}`;
+  if (!client || clientCredentialKey !== key) {
+    client = new OpenAI({ apiKey: auth.value });
+    clientCredentialKey = key;
   }
   return client;
+}
+
+export function resetEmbeddingClientForTests(): void {
+  client = null;
+  clientCredentialKey = null;
 }
 
 export async function embed(text: string): Promise<Float32Array> {
