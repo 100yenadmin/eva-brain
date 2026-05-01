@@ -18,11 +18,10 @@ export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 100
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(new URL('/v1/models', baseUrl).toString(), {
+    const res = await fetch(new URL('v1/models', baseUrl).toString(), {
       signal: controller.signal,
       headers: { accept: 'application/json' },
     });
-    clearTimeout(timer);
     if (!res.ok) return { reachable: true, models_endpoint_valid: false, error: `HTTP ${res.status}` };
     const body = await res.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -31,8 +30,9 @@ export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 100
     const isList = (body as any).object === 'list' && Array.isArray((body as any).data);
     return { reachable: true, models_endpoint_valid: isList };
   } catch (e) {
-    clearTimeout(timer);
     return { reachable: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

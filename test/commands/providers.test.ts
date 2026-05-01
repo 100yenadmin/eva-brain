@@ -18,6 +18,7 @@ const resolveProviderAuthMock = mock((recipe: { id: string }) => {
       isConfigured: true,
       credentialKey: 'OPENAI_API_KEY',
       meta: { profile: 'openclaw-codex' },
+      secret: 'oc-secret',
     };
   }
   if (recipe.id === 'anthropic') {
@@ -53,7 +54,7 @@ mock.module('../../src/core/config.ts', () => ({
 
 mock.module('../../src/core/ai/auth.ts', () => ({
   resolveProviderAuth: resolveProviderAuthMock,
-  redactAuthResolution: (resolution: unknown) => resolution,
+  redactAuthResolution: (resolution: any) => ({ ...resolution, value: undefined, secret: undefined }),
 }));
 
 describe('providers command auth hardening', () => {
