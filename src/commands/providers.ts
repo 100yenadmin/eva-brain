@@ -116,9 +116,12 @@ async function runTest(args: string[]): Promise<void> {
     const modelId = modelParts.join(':');
     const recipe = getRecipe(providerId);
     const dims = recipe?.touchpoints.embedding?.default_dims ?? 1536;
+    const config = loadConfig();
     configureGateway({
       embedding_model: modelArg,
       embedding_dimensions: dims,
+      expansion_model: config?.expansion_model,
+      base_urls: config?.provider_base_urls,
       env: { ...process.env },
     });
   }

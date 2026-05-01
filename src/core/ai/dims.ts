@@ -15,8 +15,9 @@ import type { Implementation } from './types.ts';
  * Build the providerOptions blob for embedMany() that pins output dimensions.
  *
  * Matryoshka providers (OpenAI text-embedding-3, Gemini embedding-001) can be
- * asked to return reduced-dim vectors. openai-compatible + anthropic do not
- * take a dimension parameter.
+ * asked to return reduced-dim vectors. Anthropic does not take a dimension
+ * parameter. Most openai-compatible providers do not either, but Voyage's
+ * OpenAI-compatible embeddings endpoint accepts `output_dimension`.
  */
 export function dimsProviderOptions(
   implementation: Implementation,
@@ -41,8 +42,12 @@ export function dimsProviderOptions(
       // Anthropic has no embedding model.
       return undefined;
     case 'openai-compatible':
-      // Ollama, LM Studio, vLLM, Voyage-compat, LiteLLM: no standard dim param.
-      // Users pick a model that natively outputs the dims they want.
+      // Most openai-compatible providers (Ollama, LM Studio, vLLM, LiteLLM)
+      // do not expose a standard dimensions knob. Voyage's compat endpoint is
+      // the exception: it accepts output_dimension and defaults to 1024 dims.
+      if (modelId.startsWith('voyage-')) {
+        return { openaiCompatible: { output_dimension: dims } };
+      }
       return undefined;
   }
 }

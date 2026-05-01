@@ -209,10 +209,11 @@ async function initPGLite(opts: {
       console.log(`${stats.page_count} pages. Engine: PGLite (local Postgres).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
-        console.log('  gbrain extract links --source db        (typed link backfill)');
-        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
-        console.log('  gbrain stats                            (verify links > 0)');
+        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
+        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
+        console.log('  gbrain migrate --to supabase            (copy into a fresh Postgres brain)');
+        console.log('  cp ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.bak   (quick local backup)');
+        console.log('Then re-run `gbrain init --pglite --model <provider>` on an empty brain.');
       } else {
         console.log('Next: gbrain import <dir>');
       }
@@ -313,10 +314,11 @@ async function initPostgres(opts: {
       console.log(`\nBrain ready. ${stats.page_count} pages. Engine: Postgres (Supabase).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
-        console.log('  gbrain extract links --source db        (typed link backfill)');
-        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
-        console.log('  gbrain stats                            (verify links > 0)');
+        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
+        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
+        console.log('  gbrain migrate --to pglite --force --path ~/.gbrain/brain.pglite   (copy into a fresh local brain)');
+        console.log('  gbrain export --dir ./gbrain-export     (portable markdown export)');
+        console.log('Then point init at a clean Postgres target and re-import if needed.');
       } else {
         console.log('Next: gbrain import <dir>');
       }
