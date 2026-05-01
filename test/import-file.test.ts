@@ -409,22 +409,28 @@ ${longText}
   });
 
   test('code-file import fails closed when embedding fails', async () => {
-    mock.module('../src/core/embedding.ts', async () => {
-      const actual = await import('../src/core/embedding.ts');
-      return {
-        ...actual,
-        embedBatch: mock(() => {
-          throw new Error('boom');
-        }),
-      };
+    const originalEmbedBatch = (await import('../src/core/embedding.ts')).embedBatch;
+    const embedBatchMock = mock(async () => {
+      throw new Error('boom');
     });
 
-    const { importCodeFile } = await import('../src/core/import-file.ts');
-    const engine = mockEngine();
-    await expect(importCodeFile(engine, 'src/example.ts', 'export const x = 1;')).rejects.toThrow('boom');
-    const calls = (engine as any)._calls;
-    expect(calls.find((c: any) => c.method === 'putPage')).toBeUndefined();
-    expect(calls.find((c: any) => c.method === 'upsertChunks')).toBeUndefined();
-    mock.restore();
+    mock.module('../src/core/embedding.ts', () => ({
+      embedBatch: embedBatchMock,
+    }));
+
+    try {
+      const { importCodeFile } = await import(`../src/core/import-file.ts?embedding-failure=${Date.now()}`);
+      const engine = mockEngine();
+      await expect(importCodeFile(engine, 'src/example.ts', 'export const x = 1;')).rejects.toThrow('boom');
+      const calls = (engine as any)._calls;
+      expect(calls.find((c: any) => c.method === 'putPage')).toBeUndefined();
+      expect(calls.find((c: any) => c.method === 'upsertChunks')).toBeUndefined();
+      expect(embedBatchMock).toHaveBeenCalled();
+    } finally {
+      mock.module('../src/core/embedding.ts', () => ({
+        embedBatch: originalEmbedBatch,
+      }));
+      mock.restore();
+    }
   });
 });

@@ -4,18 +4,23 @@ All notable changes to GBrain will be documented in this file.
 
 ## [0.27.0] - 2026-04-28
 
-## **GBrain runs on any embedding stack. OpenAI, Google Gemini, Ollama, Voyage, or anything via LiteLLM — one config line away.**
-## **The AI layer is now Vercel AI SDK. Six providers on day one. The silent-drop bug that made non-OpenAI users invisible is fixed.**
+### GBrain runs on any embedding stack
 
-8 community PRs asked for pluggable embedding providers. v0.14 ships the answer: one `src/core/ai/gateway.ts` module routes every AI call through Vercel AI SDK. Users pick providers per touchpoint via `provider:model` config strings. OpenAI stays default with zero migration required. Gemini, Ollama, Voyage, and any OpenAI-compatible endpoint (LM Studio, vLLM, E5, MiniMax) are one flag away. Anthropic handles expansion. The whole thing is one recipe-contribution away from adding the next provider.
+OpenAI, Google Gemini, Ollama, Voyage, or anything via LiteLLM — one config line away.
 
-Also fixes the silent-drop bug that quietly made non-OpenAI brains return zero vectors on every `put_page`. Three separate sites in v0.13 (`operations.ts:237`, `hybrid.ts:81`, `import-file.ts:112`) all keyed off `!process.env.OPENAI_API_KEY`. v0.14 replaces every one with a single `gateway.isAvailable('embedding')` check that honors whichever provider the user actually configured. If you set `GBRAIN_EMBEDDING_MODEL=google:gemini-embedding-001` and `GOOGLE_GENERATIVE_AI_API_KEY`, gbrain uses Gemini end-to-end. That never worked before v0.14. It works now.
+### The AI layer is now Vercel AI SDK
+
+Six providers on day one. The silent-drop bug that made non-OpenAI users invisible is fixed.
+
+8 community PRs asked for pluggable embedding providers. v0.27.0 ships the answer: one `src/core/ai/gateway.ts` module routes every AI call through Vercel AI SDK. Users pick providers per touchpoint via `provider:model` config strings. OpenAI stays default with zero migration required. Gemini, Ollama, Voyage, and any OpenAI-compatible endpoint (LM Studio, vLLM, E5, MiniMax) are one flag away. Anthropic handles expansion. The whole thing is one recipe-contribution away from adding the next provider.
+
+Also fixes the silent-drop bug that quietly made non-OpenAI brains return zero vectors on every `put_page`. Three separate sites before v0.27.0 (`operations.ts`, `hybrid.ts`, `import-file.ts`) all keyed off `!process.env.OPENAI_API_KEY`. v0.27.0 replaces every one with a single `gateway.isAvailable('embedding')` check that honors whichever provider the user actually configured. If you set `GBRAIN_EMBEDDING_MODEL=google:gemini-embedding-001` and `GOOGLE_GENERATIVE_AI_API_KEY`, gbrain uses Gemini end-to-end. That never worked before v0.27.0. It works now.
 
 ### The numbers that matter
 
-Tested against the real v0.13 → v0.14 upgrade path on a working brain:
+Tested against the real pre-provider → v0.27.0 upgrade path on a working brain:
 
-| Metric | Before (v0.13) | After (v0.14) | Δ |
+| Metric | Before provider gateway | After v0.27.0 | Δ |
 |--------|----------------|----------------|---|
 | Embedding provider coverage (native) | 1 (OpenAI only) | 3 (OpenAI, Google, + OpenAI-compat anything) | +200% |
 | Expansion provider coverage | 1 (Anthropic only) | 3 (Anthropic, OpenAI, Google) | +200% |
@@ -26,11 +31,12 @@ Tested against the real v0.13 → v0.14 upgrade path on a working brain:
 | Test count | 1397 | 1425 | +28 new AI tests |
 | Existing tests broken | — | 0 | clean |
 
-The dim-preservation fix is load-bearing: OpenAI `text-embedding-3-large` defaults to 3072 dims on the API side, not 1536. Without explicit `providerOptions.openai.dimensions: 1536`, every existing brain's vector column would mismatch on first put_page. v0.14 passes this through on every call.
+The dim-preservation fix is load-bearing: OpenAI `text-embedding-3-large` defaults to 3072 dims on the API side, not 1536. Without explicit `providerOptions.openai.dimensions: 1536`, every existing brain's vector column would mismatch on first put_page. v0.27.0 passes this through on every call.
 
 ### What this means for you
 
 Switch to Gemini:
+
 ```bash
 gbrain init --pglite \
   --embedding-model google:gemini-embedding-001 \
@@ -38,6 +44,7 @@ gbrain init --pglite \
 ```
 
 Run local + free on Ollama:
+
 ```bash
 ollama serve && ollama pull nomic-embed-text
 gbrain init --pglite --model ollama
@@ -45,25 +52,31 @@ gbrain init --pglite --model ollama
 
 Agent builders: `gbrain providers explain --json` returns a schema-versioned choice matrix the agent can parse + pick for the user. Every provider shows auth status, dims, cost, pros, cons. Agent picks, re-invokes with flags, reports to the user.
 
-## To take advantage of v0.14
+## To take advantage of v0.27.0
 
 `gbrain upgrade` should do this automatically for existing OpenAI brains (defaults preserve v0.13 behavior — 1536 dims + text-embedding-3-large). If you want to switch providers:
 
 1. **Verify your environment:**
+
    ```bash
    gbrain providers explain
    ```
+
 2. **Test a provider:**
+
    ```bash
    gbrain providers test --model google:gemini-embedding-001
    ```
+
 3. **Re-init with the new provider:**
+
    ```bash
    gbrain init --pglite \
      --embedding-model google:gemini-embedding-001 \
      --embedding-dimensions 768
    ```
-   Existing brains: use the upcoming `gbrain migrate --embedding-model ...` in v0.14.1 for an HNSW-aware dim migration. For v0.14, re-init a fresh brain at a new path if switching.
+
+   Existing brains: use the upcoming `gbrain migrate --embedding-model ...` in a future migration release for an HNSW-aware dim migration. For v0.27.0, re-init a fresh brain at a new path if switching.
 4. **If anything fails,** file an issue: https://github.com/garrytan/gbrain/issues with output of `gbrain doctor` + `gbrain providers explain --json`.
 
 ### Itemized changes

@@ -95,7 +95,10 @@ describe('providers command auth hardening', () => {
     const { runProviders } = await import('../../src/commands/providers.ts');
     await runProviders('explain', []);
 
-    const output = logSpy.mock.calls.map(call => String(call[0])).join('\n');
+    const output = logSpy.mock.calls
+      .flatMap(call => call)
+      .map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+      .join('\n');
     expect(output).toContain('Recommended: openai:text-embedding-3-large');
     expect(output).toContain('OpenAI auth resolved via openclaw-codex');
     expect(output).not.toContain('oc-secret');
