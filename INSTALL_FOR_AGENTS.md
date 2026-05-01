@@ -31,17 +31,34 @@ restart the shell or add the PATH export to the shell profile.
 > aborts with `Aborted()` when it opens PGLite. Use the `git clone + bun link` path
 > above. Tracking issue: [#218](https://github.com/garrytan/gbrain/issues/218).
 
-## Step 2: API Keys
+## Step 2: AI Provider Setup
 
-Ask the user for these:
+Default path:
 
 ```bash
-export OPENAI_API_KEY=sk-...          # required for vector search
+export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
 ```
 
-Save to shell profile or `.env`. Without OpenAI, keyword search still works.
-Without Anthropic, search works but skips query expansion.
+Save to shell profile or `.env`.
+
+Before initializing the brain, verify the provider you plan to use:
+
+```bash
+gbrain providers list
+gbrain providers explain
+gbrain providers test --model openai:text-embedding-3-large
+```
+
+Without an embedding provider, keyword search still works but semantic/hybrid retrieval will not.
+Without Anthropic, search works but skips Anthropic-backed expansion.
+
+If you want Voyage, Google, Ollama, or LiteLLM instead of OpenAI, read:
+
+- `docs/guides/provider-install-matrix.md` — provider matrix, exact init commands, dimension contract, rollback notes
+- `docs/GBRAIN_VERIFY.md` — post-install verification checklist
+
+**OpenClaw Codex OAuth note:** this install guide only documents verified API-key-backed provider setup today. Durable OpenClaw-managed Codex/OpenAI OAuth wiring is tracked separately in `100yenadmin/eva-brain#2`.
 
 ## Step 3: Create the Brain
 
