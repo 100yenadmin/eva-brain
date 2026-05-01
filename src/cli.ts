@@ -19,7 +19,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'providers']);
+const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'providers', 'ingest-media']);
 
 async function main() {
   // Parse global flags (--quiet / --progress-json / --progress-interval)
@@ -464,6 +464,31 @@ async function handleCliOnly(command: string, args: string[]) {
         await runFiles(engine, args);
         break;
       }
+      case 'ingest-media': {
+        const { ingestMediaEvidence } = await import('./commands/files.ts');
+        const filePath = args.find(a => !a.startsWith('--'));
+        const extractionPath = args.find((a, i) => args[i - 1] === '--extract');
+        const slug = args.find((a, i) => args[i - 1] === '--slug');
+        const title = args.find((a, i) => args[i - 1] === '--title');
+        const source = args.find((a, i) => args[i - 1] === '--source');
+        const type = args.find((a, i) => args[i - 1] === '--type');
+        const noFile = args.includes('--no-file');
+        if (!filePath || !extractionPath) {
+          console.error('Usage: gbrain ingest-media <file> --extract <json> [--slug <s>] [--title <t>] [--source <src>] [--type <type>] [--no-file]');
+          process.exit(1);
+        }
+        const result = await ingestMediaEvidence(engine, {
+          path: filePath,
+          extractionPath,
+          slug: slug || undefined,
+          title: title || undefined,
+          source: source || undefined,
+          type: type || undefined,
+          noFile,
+        });
+        console.log(JSON.stringify({ success: true, ...result }, null, 2));
+        break;
+      }
       case 'embed': {
         const { runEmbed } = await import('./commands/embed.ts');
         await runEmbed(engine, args);
@@ -680,6 +705,7 @@ IMPORT/EXPORT
   import <dir> [--no-embed]          Import markdown directory
   import-media --slug <slug> --content-file <md> --extraction <json>
                                      Import normalized media evidence into a page
+  ingest-media <file> --extract <j>  Ingest media evidence into a media page
   sync [--repo <path>] [flags]       Git-to-brain incremental sync
   sync --watch [--interval N]        Continuous sync (loops until stopped)
   sync --install-cron                Install persistent sync daemon
