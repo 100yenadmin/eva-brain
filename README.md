@@ -30,6 +30,8 @@ https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
 
 That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 29 skills, and configures recurring jobs. You answer a few questions about API keys. ~30 minutes.
 
+For provider choice, embedding dimensions, Voyage 1024d migration, and the current OpenClaw Codex OAuth dependency boundary, read [`docs/guides/provider-install-matrix.md`](docs/guides/provider-install-matrix.md).
+
 If your agent doesn't auto-read `AGENTS.md`, point it at that file first:
 `https://raw.githubusercontent.com/garrytan/gbrain/master/AGENTS.md` is the non-Claude
 agent operating protocol (install, read order, trust boundary, common tasks). For
