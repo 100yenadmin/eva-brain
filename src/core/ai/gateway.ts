@@ -182,7 +182,7 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       const client = createOpenAICompatible({
         name: recipe.id,
         baseURL: baseUrl,
-        apiKey: apiKey ?? 'unauthenticated',
+        apiKey,
       });
       return client.textEmbeddingModel(modelId);
     }
@@ -313,7 +313,7 @@ function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayCon
       return createOpenAICompatible({
         name: recipe.id,
         baseURL: baseUrl,
-        apiKey: apiKey ?? 'unauthenticated',
+        apiKey,
       }).languageModel(modelId);
     }
   }

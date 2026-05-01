@@ -8,6 +8,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 import { saveConfig, loadConfig, toEngineConfig, type GBrainConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
+import { getRecipe } from '../core/ai/recipes/index.ts';
+import { configureGateway } from '../core/ai/gateway.ts';
 
 export async function runInit(args: string[]) {
   const isSupabase = args.includes('--supabase');
@@ -96,9 +98,29 @@ async function resolveAIOptions(
   const out: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string } = {};
 
   if (verbose) {
-    out.embedding_model = verbose;
+    const [providerId, ...modelParts] = verbose.split(':');
+    const modelId = modelParts.join(':');
+    if (!providerId || !modelId) {
+      console.error('Invalid --embedding-model. Expected provider:model.');
+      process.exit(1);
+    }
+    const recipe = getRecipe(providerId);
+    if (!recipe) {
+      console.error(`Unknown provider: ${providerId}. Run \`gbrain providers list\` to see known providers.`);
+      process.exit(1);
+    }
+    const embedding = recipe.touchpoints.embedding;
+    if (!embedding) {
+      console.error(`Provider ${providerId} does not support embeddings.`);
+      process.exit(1);
+    }
+    if (embedding.models.length > 0 && !embedding.models.includes(modelId)) {
+      console.error(`Model ${modelId} is not listed for provider ${providerId}. Known models: ${embedding.models.join(', ')}`);
+      process.exit(1);
+    }
+    out.embedding_model = `${providerId}:${modelId}`;
+    if (embedding.default_dims) out.embedding_dimensions = embedding.default_dims;
   } else if (shorthand) {
-    const { getRecipe } = await import('../core/ai/recipes/index.ts');
     const recipe = getRecipe(shorthand);
     if (!recipe) {
       console.error(`Unknown provider: ${shorthand}. Run \`gbrain providers list\` to see known providers.`);
@@ -117,7 +139,6 @@ async function resolveAIOptions(
     out.embedding_dimensions = dimsArg;
   } else if (out.embedding_model && out.embedding_dimensions === undefined) {
     // Derive default dims from the resolved recipe when verbose form was used.
-    const { getRecipe } = await import('../core/ai/recipes/index.ts');
     const providerId = out.embedding_model.split(':')[0];
     const recipe = getRecipe(providerId);
     if (recipe?.touchpoints.embedding?.default_dims) {
@@ -136,6 +157,17 @@ async function resolveAIOptions(
  * to bump an existing brain's schema to the latest version without
  * clobbering the user's chosen engine.
  */
+function configureGatewayFromConfig(config: GBrainConfig): void {
+  configureGateway({
+    embedding_model: config.embedding_model,
+    embedding_dimensions: config.embedding_dimensions,
+    expansion_model: config.expansion_model,
+    base_urls: config.provider_base_urls,
+    provider_auth: config.provider_auth,
+    env: { ...process.env },
+  });
+}
+
 async function initMigrateOnly(opts: { jsonOutput: boolean }) {
   const config = loadConfig();
   if (!config) {
@@ -147,6 +179,8 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
     }
     process.exit(1);
   }
+
+  configureGatewayFromConfig(config);
 
   const engine = await createEngine(toEngineConfig(config));
   try {
@@ -172,18 +206,20 @@ async function initPGLite(opts: {
   const dbPath = opts.customPath || join(homedir(), '.gbrain', 'brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
 
+  const mergedConfig: GBrainConfig = {
+    ...(loadConfig() ?? { engine: 'pglite', database_path: dbPath }),
+    engine: 'pglite',
+    database_path: dbPath,
+    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
+    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
+    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+  };
+
   // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (opts.aiOpts?.embedding_model) {
-    const { configureGateway } = await import('../core/ai/gateway.ts');
-    configureGateway({
-      embedding_model: opts.aiOpts.embedding_model,
-      embedding_dimensions: opts.aiOpts.embedding_dimensions,
-      expansion_model: opts.aiOpts.expansion_model,
-      provider_auth: loadConfig()?.provider_auth,
-      env: { ...process.env },
-    });
-    console.log(`  Embedding: ${opts.aiOpts.embedding_model} (${opts.aiOpts.embedding_dimensions ?? '?'}d)`);
-    if (opts.aiOpts.expansion_model) console.log(`  Expansion: ${opts.aiOpts.expansion_model}`);
+  if (mergedConfig.embedding_model) {
+    configureGatewayFromConfig(mergedConfig);
+    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
+    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
   }
 
   const engine = await createEngine({ engine: 'pglite' });
@@ -235,18 +271,20 @@ async function initPostgres(opts: {
 }) {
   const { databaseUrl } = opts;
 
+  const mergedConfig: GBrainConfig = {
+    ...(loadConfig() ?? { engine: 'postgres', database_url: databaseUrl }),
+    engine: 'postgres',
+    database_url: databaseUrl,
+    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
+    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
+    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+  };
+
   // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (opts.aiOpts?.embedding_model) {
-    const { configureGateway } = await import('../core/ai/gateway.ts');
-    configureGateway({
-      embedding_model: opts.aiOpts.embedding_model,
-      embedding_dimensions: opts.aiOpts.embedding_dimensions,
-      expansion_model: opts.aiOpts.expansion_model,
-      provider_auth: loadConfig()?.provider_auth,
-      env: { ...process.env },
-    });
-    console.log(`  Embedding: ${opts.aiOpts.embedding_model} (${opts.aiOpts.embedding_dimensions ?? '?'}d)`);
-    if (opts.aiOpts.expansion_model) console.log(`  Expansion: ${opts.aiOpts.expansion_model}`);
+  if (mergedConfig.embedding_model) {
+    configureGatewayFromConfig(mergedConfig);
+    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
+    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
   }
 
   // Detect Supabase direct connection URLs and warn about IPv6

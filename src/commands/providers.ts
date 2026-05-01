@@ -49,9 +49,13 @@ function currentGatewayEnv(): Record<string, string | undefined> {
 }
 
 function configureGatewayForTestModel(modelArg: string): void {
-  const [providerId] = modelArg.split(':');
+  const [providerId, ...modelParts] = modelArg.split(':');
+  const modelId = modelParts.join(':');
   const recipe = getRecipe(providerId);
-  const dims = recipe?.touchpoints.embedding?.default_dims ?? gatewayConfig.embedding_dimensions ?? 1536;
+  const modelDims = recipe?.touchpoints.embedding?.models[0] === modelId
+    ? recipe.touchpoints.embedding?.default_dims
+    : undefined;
+  const dims = modelDims ?? gatewayConfig.embedding_dimensions ?? recipe?.touchpoints.embedding?.default_dims ?? 1536;
   gatewayConfig = {
     ...gatewayConfig,
     embedding_model: modelArg,
@@ -137,6 +141,11 @@ function runList(_args: string[]): void {
 async function runTest(args: string[]): Promise<void> {
   const modelIdx = args.indexOf('--model');
   const modelArg = modelIdx >= 0 ? args[modelIdx + 1] : undefined;
+
+  if (modelIdx >= 0 && (!modelArg || modelArg.startsWith('-'))) {
+    console.error('Missing value for --model. Expected provider:model.');
+    process.exit(1);
+  }
 
   // If --model passed, override only the embedding model/dimensions for this test
   // while preserving configured base URLs, expansion model, env, and provider_auth.

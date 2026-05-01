@@ -74,7 +74,12 @@ export function loadConfig(): GBrainConfig | null {
     ...(dbUrl ? { database_url: dbUrl } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
     ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
-    ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
+    ...(() => {
+      const raw = process.env.GBRAIN_EMBEDDING_DIMENSIONS;
+      if (!raw) return {};
+      const value = Number(raw);
+      return Number.isInteger(value) && value > 0 ? { embedding_dimensions: value } : {};
+    })(),
     ...(process.env.GBRAIN_EXPANSION_MODEL ? { expansion_model: process.env.GBRAIN_EXPANSION_MODEL } : {}),
   };
   if (process.env.GBRAIN_OPENAI_AUTH_SOURCE === 'openclaw-codex' || process.env.GBRAIN_OPENAI_AUTH_SOURCE === 'openclaw-openai') {
