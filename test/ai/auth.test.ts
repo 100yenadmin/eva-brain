@@ -14,15 +14,23 @@ if (!openai) throw new Error('openai recipe missing');
 describe('provider auth resolver', () => {
   let tempDir: string;
   let authPath: string;
+  const originalEnv = {
+    GBRAIN_OPENCLAW_AUTH_PATH: process.env.GBRAIN_OPENCLAW_AUTH_PATH,
+    OPENCLAW_AUTH_PATH: process.env.OPENCLAW_AUTH_PATH,
+  };
 
   beforeEach(() => {
     resetGateway();
     tempDir = mkdtempSync(join(tmpdir(), 'gbrain-auth-'));
     mkdirSync(join(tempDir, '.openclaw'), { recursive: true });
     authPath = join(tempDir, '.openclaw', 'auth.json');
+    delete process.env.GBRAIN_OPENCLAW_AUTH_PATH;
+    delete process.env.OPENCLAW_AUTH_PATH;
   });
 
   afterEach(() => {
+    process.env.GBRAIN_OPENCLAW_AUTH_PATH = originalEnv.GBRAIN_OPENCLAW_AUTH_PATH;
+    process.env.OPENCLAW_AUTH_PATH = originalEnv.OPENCLAW_AUTH_PATH;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -55,6 +63,27 @@ describe('provider auth resolver', () => {
     expect(resolution.source).toBe('openclaw-codex');
     expect(resolution.credentialKey).toBe('OPENAI_API_KEY');
     expect(resolution.value).toBe('oc-secret');
+  });
+
+  test('env override path resolves openclaw auth record', () => {
+    writeFileSync(authPath, JSON.stringify({ profiles: { 'openclaw-codex': { OPENAI_API_KEY: 'oc-secret' } } }));
+    process.env.GBRAIN_OPENCLAW_AUTH_PATH = authPath;
+    const resolution = resolveProviderAuth(openai, config({
+      env: {},
+      provider_auth: { openai: { prefer: 'openclaw-codex' } },
+    }));
+    expect(resolution.source).toBe('openclaw-codex');
+    expect(resolution.value).toBe('oc-secret');
+  });
+
+  test('malformed openclaw auth file reports missing without leaking raw content', () => {
+    writeFileSync(authPath, '{not json');
+    const resolution = resolveProviderAuth(openai, config({
+      env: {},
+      provider_auth: { openai: { prefer: 'openclaw-codex', openclawAuthPath: authPath } },
+    }));
+    expect(resolution.source).toBe('missing');
+    expect(JSON.stringify(redactAuthResolution(resolution))).not.toContain('{not json');
   });
 
   test('redaction omits token values', () => {

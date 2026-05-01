@@ -179,6 +179,7 @@ async function initPGLite(opts: {
       embedding_model: opts.aiOpts.embedding_model,
       embedding_dimensions: opts.aiOpts.embedding_dimensions,
       expansion_model: opts.aiOpts.expansion_model,
+      provider_auth: loadConfig()?.provider_auth,
       env: { ...process.env },
     });
     console.log(`  Embedding: ${opts.aiOpts.embedding_model} (${opts.aiOpts.embedding_dimensions ?? '?'}d)`);
@@ -241,6 +242,7 @@ async function initPostgres(opts: {
       embedding_model: opts.aiOpts.embedding_model,
       embedding_dimensions: opts.aiOpts.embedding_dimensions,
       expansion_model: opts.aiOpts.expansion_model,
+      provider_auth: loadConfig()?.provider_auth,
       env: { ...process.env },
     });
     console.log(`  Embedding: ${opts.aiOpts.embedding_model} (${opts.aiOpts.embedding_dimensions ?? '?'}d)`);

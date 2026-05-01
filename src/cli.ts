@@ -599,6 +599,7 @@ async function connectEngine(): Promise<BrainEngine> {
     embedding_dimensions: config.embedding_dimensions,
     expansion_model: config.expansion_model,
     base_urls: config.provider_base_urls,
+    provider_auth: config.provider_auth,
     env: { ...process.env },
   });
 
