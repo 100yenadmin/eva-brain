@@ -228,12 +228,8 @@ async function initPGLite(opts: {
     await engine.initSchema();
 
     const config: GBrainConfig = {
-      engine: 'pglite',
-      database_path: dbPath,
+      ...mergedConfig,
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
-      ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
-      ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
-      ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
     };
     saveConfig(config);
 
@@ -336,12 +332,8 @@ async function initPostgres(opts: {
     await engine.initSchema();
 
     const config: GBrainConfig = {
-      engine: 'postgres',
-      database_url: databaseUrl,
+      ...mergedConfig,
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
-      ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
-      ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
-      ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
     };
     saveConfig(config);
     console.log('Config saved to ~/.gbrain/config.json');

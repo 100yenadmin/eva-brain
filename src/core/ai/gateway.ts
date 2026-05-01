@@ -40,6 +40,7 @@ import { dimsProviderOptions } from './dims.ts';
 import { AIConfigError, AITransientError, normalizeAIError } from './errors.ts';
 
 const MAX_CHARS = 8000;
+const VOYAGE_EMBED_TIMEOUT_MS = 30_000;
 const DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-large';
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
 const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
@@ -110,10 +111,11 @@ export function isAvailable(touchpoint: TouchpointKind): boolean {
     // from an anthropic-configured brain is unavailable regardless of auth.
     const touchpointConfig = recipe.touchpoints[touchpoint as 'embedding' | 'expansion'];
     if (!touchpointConfig) return false;
-    // Openai-compat recipes with empty models list (e.g. litellm template) require user-provided model
-    if (Array.isArray(touchpointConfig.models) && touchpointConfig.models.length === 0 && recipe.id === 'litellm') return false;
+    // OpenAI-compatible templates with empty model lists (e.g. LiteLLM)
+    // mean "operator must supply a model", not "provider unavailable".
+    // resolveRecipe(modelStr) already proved a concrete provider:model was configured.
 
-    // For openai-compatible without auth requirements (Ollama local), treat as always-available.
+    // For openai-compatible without auth requirements (Ollama/LiteLLM local), treat as available.
     const resolution = resolveProviderAuth(recipe, _config!);
     return resolution.isConfigured;
   } catch {
@@ -197,18 +199,26 @@ async function embedVoyageNative(
   texts: string[],
   dims: number,
 ): Promise<Float32Array[]> {
-  const response = await fetch('https://api.voyageai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: modelId,
-      input: texts,
-      output_dimension: dims,
-    }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VOYAGE_EMBED_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch('https://api.voyageai.com/v1/embeddings', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        input: texts,
+        output_dimension: dims,
+      }),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   const bodyText = await response.text();
   let body: any;

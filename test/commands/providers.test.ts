@@ -100,4 +100,38 @@ describe('providers command auth hardening', () => {
     expect(output).toContain('OpenAI auth resolved via openclaw-codex');
     expect(output).not.toContain('oc-secret');
   });
+
+  test('providers test --model requires an explicit value', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`exit:${code}`);
+    });
+    try {
+      const { runProviders } = await import('../../src/commands/providers.ts');
+      await expect(runProviders('test', ['--model'])).rejects.toThrow('exit:1');
+      expect(errorSpy.mock.calls.map(call => String(call[0])).join('\n')).toContain('Missing value for --model');
+      expect(configureGatewayMock).toHaveBeenCalledTimes(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  test('providers test --model rejects malformed or unsupported embedding models', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`exit:${code}`);
+    });
+    try {
+      const { runProviders } = await import('../../src/commands/providers.ts');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'openai'])).rejects.toThrow('exit:1');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'nope:text-embedding-3-small'])).rejects.toThrow('exit:1');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'anthropic:claude-haiku-4-5-20251001'])).rejects.toThrow('exit:1');
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
 });
