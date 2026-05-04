@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
@@ -8,9 +9,21 @@ const DEFAULT_GBRAIN_BIN = "gbrain";
 const DEFAULT_OPENCLAW_BIN = "openclaw";
 const DEFAULT_EXTRACTION_MODEL = "openai-codex/gpt-5.4-mini";
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_ENV_FILE = join(homedir(), ".gbrain", "gbrain.env");
+const DEFAULT_MAX_CONCURRENT_EXTRACTIONS = 1;
+const DEFAULT_EXTRACTION_QUEUE_LIMIT = 8;
+const DEFAULT_EXTRACTION_QUEUE_TIMEOUT_MS = 30_000;
+const DEFAULT_MIN_EXTRACTION_INTERVAL_MS = 0;
 const GBRAIN_ROUTE_PATH = "/plugins/gbrain/extract";
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 300_000;
+const MAX_EXTRACTION_QUEUE_LIMIT = 100;
+const MAX_MIN_EXTRACTION_INTERVAL_MS = 60_000;
+
+let activeExtractions = 0;
+const extractionQueue = [];
+let lastExtractionStartedAt = 0;
+let extractionStartGate = Promise.resolve();
 
 function readConfig(pluginConfig) {
   const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
@@ -18,8 +31,33 @@ function readConfig(pluginConfig) {
     gbrainBin: readConfigString(cfg.gbrainBin) ?? process.env.GBRAIN_BIN ?? DEFAULT_GBRAIN_BIN,
     openclawBin: readConfigString(cfg.openclawBin) ?? process.env.OPENCLAW_BIN ?? DEFAULT_OPENCLAW_BIN,
     workingDir: readConfigString(cfg.workingDir) ?? process.cwd(),
+    envFile: readConfigString(cfg.envFile) ?? process.env.GBRAIN_ENV_FILE ?? DEFAULT_ENV_FILE,
     extractionModel: readConfigString(cfg.extractionModel) ?? DEFAULT_EXTRACTION_MODEL,
     timeoutMs: readTimeoutMs(cfg.timeoutMs, DEFAULT_TIMEOUT_MS),
+    maxConcurrentExtractions: readBoundedInteger(
+      cfg.maxConcurrentExtractions,
+      DEFAULT_MAX_CONCURRENT_EXTRACTIONS,
+      1,
+      16,
+    ),
+    extractionQueueLimit: readBoundedInteger(
+      cfg.extractionQueueLimit,
+      DEFAULT_EXTRACTION_QUEUE_LIMIT,
+      0,
+      MAX_EXTRACTION_QUEUE_LIMIT,
+    ),
+    extractionQueueTimeoutMs: readBoundedInteger(
+      cfg.extractionQueueTimeoutMs,
+      DEFAULT_EXTRACTION_QUEUE_TIMEOUT_MS,
+      1_000,
+      MAX_TIMEOUT_MS,
+    ),
+    minExtractionIntervalMs: readBoundedInteger(
+      cfg.minExtractionIntervalMs,
+      DEFAULT_MIN_EXTRACTION_INTERVAL_MS,
+      0,
+      MAX_MIN_EXTRACTION_INTERVAL_MS,
+    ),
   };
 }
 
@@ -31,6 +69,12 @@ function readTimeoutMs(value, fallback) {
   return clampTimeoutMs(Number(value), fallback);
 }
 
+function readBoundedInteger(value, fallback, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(numeric)));
+}
+
 function clampTimeoutMs(value, fallback) {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(1_000, Math.min(MAX_TIMEOUT_MS, Math.floor(value)));
@@ -40,14 +84,48 @@ function textResult(text, details = {}) {
   return { content: [{ type: "text", text }], details };
 }
 
+function readEnvFile(envFile) {
+  if (!envFile || !existsSync(envFile)) return {};
+  try {
+    const env = {};
+    const text = readFileSync(envFile, "utf8");
+    for (const rawLine of text.split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u);
+      if (!match) continue;
+      env[match[1]] = unquoteEnvValue(match[2].trim());
+    }
+    return env;
+  } catch {
+    return {};
+  }
+}
+
+function unquoteEnvValue(value) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function commandEnv(config) {
+  const fileEnv = readEnvFile(config.envFile);
+  return {
+    ...process.env,
+    ...fileEnv,
+    PATH: fileEnv.PATH ?? process.env.PATH ?? "",
+  };
+}
+
 function runCommand(command, args, config, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: config.workingDir,
-      env: {
-        ...process.env,
-        PATH: process.env.PATH ?? "",
-      },
+      env: commandEnv(config),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -96,6 +174,84 @@ function runOpenClaw(config, args, options = {}) {
   return runCommand(config.openclawBin, args, config, options);
 }
 
+function acquireExtractionSlot(config) {
+  if (activeExtractions < config.maxConcurrentExtractions) {
+    return startExtraction(config);
+  }
+  if (config.extractionQueueLimit <= 0 || extractionQueue.length >= config.extractionQueueLimit) {
+    throw new RequestError(
+      429,
+      "extraction_busy",
+      "GBrain extraction is busy. Retry shortly.",
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const queued = {
+      config,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        const index = extractionQueue.indexOf(queued);
+        if (index >= 0) extractionQueue.splice(index, 1);
+        reject(
+          new RequestError(
+            429,
+            "extraction_queue_timeout",
+            "GBrain extraction queue timed out. Retry shortly.",
+          ),
+        );
+      }, config.extractionQueueTimeoutMs),
+    };
+    queued.timer.unref?.();
+    extractionQueue.push(queued);
+  });
+}
+
+async function startExtraction(config) {
+  activeExtractions += 1;
+  try {
+    await waitForExtractionInterval(config);
+  } catch (error) {
+    releaseExtractionSlot();
+    throw error;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseExtractionSlot();
+  };
+}
+
+function releaseExtractionSlot() {
+  activeExtractions = Math.max(0, activeExtractions - 1);
+  drainExtractionQueue();
+}
+
+function drainExtractionQueue() {
+  for (let index = 0; index < extractionQueue.length; index += 1) {
+    const queued = extractionQueue[index];
+    if (activeExtractions >= queued.config.maxConcurrentExtractions) return;
+    extractionQueue.splice(index, 1);
+    index -= 1;
+    clearTimeout(queued.timer);
+    startExtraction(queued.config).then(queued.resolve, queued.reject);
+  }
+}
+
+async function waitForExtractionInterval(config) {
+  const gate = extractionStartGate.then(async () => {
+    if (config.minExtractionIntervalMs > 0) {
+      const earliestStart = lastExtractionStartedAt + config.minExtractionIntervalMs;
+      const waitMs = Math.max(0, earliestStart - Date.now());
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    lastExtractionStartedAt = Date.now();
+  });
+  extractionStartGate = gate.catch(() => {});
+  await gate;
+}
+
 async function handleExtractionRoute(config, req, res) {
   if (req.method !== "POST") {
     writeJson(res, 405, { ok: false, error: "method_not_allowed" });
@@ -103,6 +259,7 @@ async function handleExtractionRoute(config, req, res) {
   }
 
   let tempDir;
+  let releaseSlot;
   try {
     const body = await readJsonBody(req, MAX_BODY_BYTES);
     const request = readExtractionRequest(body);
@@ -121,6 +278,7 @@ async function handleExtractionRoute(config, req, res) {
         "Video, audio, and document MVP extraction requires text or transcript content.",
       );
     }
+    releaseSlot = await acquireExtractionSlot(config);
 
     const args = [
       "infer",
@@ -182,6 +340,7 @@ async function handleExtractionRoute(config, req, res) {
     });
     return true;
   } finally {
+    if (releaseSlot) releaseSlot();
     if (tempDir) {
       await rm(tempDir, { recursive: true, force: true });
     }
