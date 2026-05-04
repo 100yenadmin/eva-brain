@@ -1,5 +1,6 @@
 export const DEFAULT_CODEX_EXTRACTION_MODEL = 'openai-codex/gpt-5.4-mini';
 const DEFAULT_OPENCLAW_COMPLETION_PATH = '/plugins/gbrain/complete';
+const DEFAULT_OPENCLAW_EXTRACT_PATH = '/plugins/gbrain/extract';
 
 export interface CodexExtractionRequest {
   prompt: string;
@@ -7,9 +8,24 @@ export interface CodexExtractionRequest {
   signal?: AbortSignal;
 }
 
+export interface CodexMediaExtractionRequest {
+  kind: 'image' | 'pdf' | 'video' | 'audio';
+  sourceRef: string;
+  title?: string;
+  text?: string;
+  file?: {
+    name?: string;
+    mime?: string;
+    base64: string;
+  };
+  model?: string;
+  signal?: AbortSignal;
+}
+
 export interface CodexExtractionClient {
   completeText(request: CodexExtractionRequest): Promise<string>;
   completeJson<T = unknown>(request: CodexExtractionRequest): Promise<T>;
+  extractMedia<T = unknown>(request: CodexMediaExtractionRequest): Promise<T>;
 }
 
 interface CodexExtractionEnv {
@@ -19,6 +35,7 @@ interface CodexExtractionEnv {
   GBRAIN_OPENCLAW_GATEWAY_TOKEN?: string;
   OPENCLAW_GATEWAY_TOKEN?: string;
   GBRAIN_OPENCLAW_COMPLETION_PATH?: string;
+  GBRAIN_OPENCLAW_EXTRACT_PATH?: string;
   [key: string]: string | undefined;
 }
 
@@ -29,7 +46,8 @@ export function createConfiguredCodexExtractionClient(env: CodexExtractionEnv = 
     return new OpenClawGatewayCodexExtractionClient({
       gatewayUrl,
       gatewayToken,
-      path: env.GBRAIN_OPENCLAW_COMPLETION_PATH?.trim() || DEFAULT_OPENCLAW_COMPLETION_PATH,
+      completionPath: env.GBRAIN_OPENCLAW_COMPLETION_PATH?.trim() || DEFAULT_OPENCLAW_COMPLETION_PATH,
+      extractPath: env.GBRAIN_OPENCLAW_EXTRACT_PATH?.trim() || DEFAULT_OPENCLAW_EXTRACT_PATH,
     });
   }
 
@@ -38,7 +56,7 @@ export function createConfiguredCodexExtractionClient(env: CodexExtractionEnv = 
 }
 
 export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClient {
-  constructor(private readonly options: { gatewayUrl: string; gatewayToken?: string; path?: string }) {}
+  constructor(private readonly options: { gatewayUrl: string; gatewayToken?: string; completionPath?: string; extractPath?: string }) {}
 
   async completeText(request: CodexExtractionRequest): Promise<string> {
     const reply = await this.callBridge(request, false);
@@ -51,8 +69,34 @@ export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClie
     return parseCodexJsonReply(JSON.stringify(reply)) as T;
   }
 
+  async extractMedia<T = unknown>(request: CodexMediaExtractionRequest): Promise<T> {
+    const url = new URL(this.options.extractPath ?? DEFAULT_OPENCLAW_EXTRACT_PATH, normalizeGatewayUrl(this.options.gatewayUrl));
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.options.gatewayToken) headers.authorization = `Bearer ${this.options.gatewayToken}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        protocol: 'gbrain.media-extraction.v1',
+        kind: request.kind,
+        sourceRef: request.sourceRef,
+        title: request.title,
+        text: request.text,
+        file: request.file,
+        model: request.model ?? DEFAULT_CODEX_EXTRACTION_MODEL.replace(/^openai-codex\//, ''),
+      }),
+      signal: request.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`OpenClaw extraction route failed (${res.status}): ${text || res.statusText}`);
+    const parsed = parseJson(text, 'OpenClaw extraction route returned non-JSON output');
+    if (isRecord(parsed) && parsed.ok === false) throw new Error(`OpenClaw extraction route failed: ${String(parsed.error ?? 'unknown error')}`);
+    if (isRecord(parsed) && parsed.extraction !== undefined) return parsed.extraction as T;
+    return parsed as T;
+  }
+
   private async callBridge(request: CodexExtractionRequest, json: boolean): Promise<unknown> {
-    const url = new URL(this.options.path ?? DEFAULT_OPENCLAW_COMPLETION_PATH, normalizeGatewayUrl(this.options.gatewayUrl));
+    const url = new URL(this.options.completionPath ?? DEFAULT_OPENCLAW_COMPLETION_PATH, normalizeGatewayUrl(this.options.gatewayUrl));
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.options.gatewayToken) headers.authorization = `Bearer ${this.options.gatewayToken}`;
     const res = await fetch(url, {
@@ -85,6 +129,17 @@ export class CommandCodexExtractionClient implements CodexExtractionClient {
   async completeJson<T = unknown>(request: CodexExtractionRequest): Promise<T> {
     const stdout = await this.run(request, 'json');
     return parseCodexJsonReply(stdout) as T;
+  }
+
+  async extractMedia<T = unknown>(request: CodexMediaExtractionRequest): Promise<T> {
+    if (!request.text) {
+      throw new Error('Codex extraction command fallback only supports text-backed media extraction');
+    }
+    return await this.completeJson<T>({
+      prompt: request.text,
+      model: request.model,
+      signal: request.signal,
+    });
   }
 
   private async run(request: CodexExtractionRequest, responseFormat: 'text' | 'json'): Promise<string> {
