@@ -45,9 +45,19 @@ MAX_CONCURRENCY_OVERRIDE=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --shards) SHARDS_OVERRIDE="$2"; shift 2 ;;
+    --shards)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "ERROR: --shards requires a positive integer value" >&2
+        exit 2
+      fi
+      SHARDS_OVERRIDE="$2"; shift 2 ;;
     --shards=*) SHARDS_OVERRIDE="${1#*=}"; shift ;;
-    --max-concurrency) MAX_CONCURRENCY_OVERRIDE="$2"; shift 2 ;;
+    --max-concurrency)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "ERROR: --max-concurrency requires a positive integer value" >&2
+        exit 2
+      fi
+      MAX_CONCURRENCY_OVERRIDE="$2"; shift 2 ;;
     --max-concurrency=*) MAX_CONCURRENCY_OVERRIDE="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
@@ -73,9 +83,9 @@ if mkdir -p .context/test-shards 2>/dev/null; then
   SUMMARY_FILE=".context/test-summary.txt"
 else
   LOG_DIR="/tmp/gbrain-test-shards-$$"
-  FAILURES_LOG="/tmp/gbrain-test-failures.log"
-  SUMMARY_FILE="/tmp/gbrain-test-summary.txt"
   mkdir -p "$LOG_DIR" || { echo "ERROR: cannot create log dir" >&2; exit 2; }
+  FAILURES_LOG="$LOG_DIR/test-failures.log"
+  SUMMARY_FILE="$LOG_DIR/test-summary.txt"
 fi
 # Clear from prior run.
 rm -f "$LOG_DIR"/shard-*.log "$LOG_DIR"/shard-*.exit "$LOG_DIR"/shard-*.wedged 2>/dev/null
@@ -121,14 +131,20 @@ for i in $(seq 1 "$N"); do
         bash scripts/run-unit-shard.sh --max-concurrency="$INTRA_CONC" \
         > "$SHARD_LOG" 2>&1 &
       pid=$!
-      ( sleep "$SHARD_TIMEOUT" && kill -TERM "$pid" 2>/dev/null && \
+      timeout_flag="$LOG_DIR/shard-$i.wedged"
+      ( sleep "$SHARD_TIMEOUT" && echo "WEDGED" > "$timeout_flag" && kill -TERM "$pid" 2>/dev/null && \
         sleep 5 && kill -KILL "$pid" 2>/dev/null ) &
       cap_pid=$!
       wait "$pid" 2>/dev/null
+      test_rc=$?
       kill "$cap_pid" 2>/dev/null
       wait "$cap_pid" 2>/dev/null
+      if [ -f "$timeout_flag" ]; then
+        rc=124
+      else
+        rc=$test_rc
+      fi
     fi
-    rc=$?
     echo "$rc" > "$LOG_DIR/shard-$i.exit"
     [ "$rc" = "124" ] && echo "WEDGED" > "$LOG_DIR/shard-$i.wedged"
   ) &

@@ -33,6 +33,26 @@ interface ApiKey {
   status: 'active' | 'revoked';
 }
 
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
+}
+
 export function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [hideRevoked, setHideRevoked] = useState(true);
@@ -218,7 +238,7 @@ function ApiKeyTokenModal({ token, onClose }: {
   token: { name: string; token: string };
   onClose: () => void;
 }) {
-  const copy = (text: string) => navigator.clipboard.writeText(text);
+  const copy = copyText;
 
   return (
     <div className="modal-overlay">
@@ -287,7 +307,10 @@ function RegisterModal({ onClose, onRegistered }: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), scopes: selectedScopes, tokenTtl: Number(ttl) }),
       });
-      if (!res.ok) throw new Error('Registration failed');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(typeof body.error === 'string' ? body.error : 'Registration failed');
+      }
       const data = await res.json();
       onRegistered({ clientId: data.clientId, clientSecret: data.clientSecret, name: name.trim() });
     } catch (err) {
@@ -339,7 +362,7 @@ function CredentialsModal({ credentials, onClose }: {
   credentials: { clientId: string; clientSecret: string; name: string };
   onClose: () => void;
 }) {
-  const copy = (text: string) => navigator.clipboard.writeText(text);
+  const copy = copyText;
   const downloadJson = () => {
     const blob = new Blob([JSON.stringify(credentials, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -387,7 +410,7 @@ function CredentialsModal({ credentials, onClose }: {
 
 function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () => void; onRevoked: () => void }) {
   const [tab, setTab] = useState<'claude-code' | 'chatgpt' | 'claude-cowork' | 'perplexity' | 'cursor' | 'json'>('claude-code');
-  const copy = (text: string) => navigator.clipboard.writeText(text);
+  const copy = copyText;
   const serverUrl = window.location.origin;
 
   const cid = agent.id || agent.client_id || '';

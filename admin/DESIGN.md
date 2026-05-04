@@ -3,14 +3,14 @@
 ## Product Context
 - **What this is:** Admin dashboard for GBrain MCP server — manage OAuth agents, API keys, monitor requests
 - **Who it's for:** GBrain operators managing multi-agent access to their brain
-- **Space/industry:** Developer infrastructure (peers: Supabase dashboard, Vercel, Railway)
+- **Space/industry:** Developer infrastructure (peers: dashboard-a, platform-b, platform-c)
 - **Project type:** Dense utilitarian admin panel — Steve Krug "Don't Make Me Think"
 
 ## Aesthetic Direction
 - **Direction:** Industrial/Utilitarian — function-first, data-dense, zero decoration
 - **Decoration level:** None — every pixel earns its place with information
 - **Mood:** Ops dashboard for someone who builds. Not a marketing site. Not a consumer app. A cockpit.
-- **Reference:** Supabase dashboard (dark + dense), Linear (restrained), Grafana (data-forward)
+- **Reference:** dashboard-a (dark + dense), tool-b (restrained), tool-c (data-forward)
 
 ## Alignment
 - **Text alignment:** Left-align everything. No centered text in tables, cards, forms, or labels.
@@ -152,7 +152,7 @@
 | 2026-05-01 | Dark theme only | Ops dashboard. No light mode needed. |
 | 2026-05-01 | Steve Krug lens | Zero happy talk, mindless choices, scannable tables, billboard-speed comprehension. |
 | 2026-05-01 | JetBrains Mono for data | Anything copyable or technical should be monospace. |
-| 2026-05-03 | Left-align everything | Garry preference. Centered text is a design crutch. Left-align forces hierarchy through typography weight and spacing, not position. |
+| 2026-05-03 | Left-align everything | Operator preference. Centered text is a design crutch. Left-align forces hierarchy through typography weight and spacing, not position. |
 | 2026-05-03 | Incorporate GStack design DNA | Same family: Inter + JetBrains Mono, dark base, semantic-only color. Diverges on accent (GStack: amber; GBrain: none — data is the color). |
-| 2026-05-03 | Per-client config export tabs | Claude Code, ChatGPT, Claude.ai, Cursor, Perplexity, JSON. Every agent has a copy-paste setup path. |
+| 2026-05-03 | Per-client config export tabs | client-a, client-b, client-c, client-d, client-e, JSON. Every agent has a copy-paste setup path. |
 | 2026-05-03 | Magic link auth | Login page tells you to ask your agent. No pasting hex strings into forms. |

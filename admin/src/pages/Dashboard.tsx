@@ -38,13 +38,12 @@ export function DashboardPage() {
       try {
         const event = JSON.parse(e.data) as FeedEvent;
         setEvents(prev => [event, ...prev].slice(0, 50));
-      } catch {}
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn('SSE parse error:', err, e.data);
+      }
     };
     es.onerror = () => {
       setSseStatus('disconnected');
-      setTimeout(() => {
-        setSseStatus('connecting');
-      }, 3000);
     };
 
     const interval = setInterval(() => {

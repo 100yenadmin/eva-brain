@@ -3,7 +3,7 @@
  *
  * The runtime ownership seam (Codex finding #3 from plan-eng-review):
  * `check-resolvable.ts` VALIDATES RESOLVER.md; it does not DISPATCH skills.
- * Host agents (your OpenClaw / any Claude Code install) read
+ * Host agents (your agent-client-example install) read
  * `skills/RESOLVER.md` directly to route a user request to a skill.
  *
  * For mounted team brains to participate in routing without editing the
