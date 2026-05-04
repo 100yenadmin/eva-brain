@@ -248,13 +248,15 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
   }
 
   async challengeForAuthorizationCode(
-    _client: OAuthClientInformationFull,
+    client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
     const codeHash = hashToken(authorizationCode);
     const rows = await this.sql`
       SELECT code_challenge FROM oauth_codes
-      WHERE code_hash = ${codeHash} AND expires_at > ${Math.floor(Date.now() / 1000)}
+      WHERE code_hash = ${codeHash}
+        AND client_id = ${client.client_id}
+        AND expires_at > ${Math.floor(Date.now() / 1000)}
     `;
     if (rows.length === 0) throw new Error('Authorization code not found or expired');
     return rows[0].code_challenge as string;
@@ -398,11 +400,15 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
   // -------------------------------------------------------------------------
 
   async revokeToken(
-    _client: OAuthClientInformationFull,
+    client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest,
   ): Promise<void> {
     const tokenHash = hashToken(request.token);
-    await this.sql`DELETE FROM oauth_tokens WHERE token_hash = ${tokenHash}`;
+    await this.sql`
+      DELETE FROM oauth_tokens
+      WHERE token_hash = ${tokenHash}
+        AND client_id = ${client.client_id}
+    `;
   }
 
   // -------------------------------------------------------------------------

@@ -695,7 +695,10 @@ const purge_deleted_pages: Operation = {
   scope: 'admin',
   localOnly: true,
   handler: async (ctx, p) => {
-    const olderThanHours = (p.older_than_hours as number | undefined) ?? 72;
+    const olderThanHours = Number((p.older_than_hours as number | undefined) ?? 72);
+    if (!Number.isFinite(olderThanHours) || olderThanHours <= 0) {
+      throw new OperationError('invalid_params', 'older_than_hours must be a positive number');
+    }
     if (ctx.dryRun) return { dry_run: true, action: 'purge_deleted_pages', older_than_hours: olderThanHours };
     const result = await ctx.engine.purgeDeletedPages(olderThanHours);
     return { status: 'purged', count: result.count, slugs: result.slugs };

@@ -126,14 +126,22 @@ for i in $(seq 1 "$N"); do
         env SHARD="$i/$N" \
         bash scripts/run-unit-shard.sh --max-concurrency="$INTRA_CONC" \
         > "$SHARD_LOG" 2>&1
+      rc=$?
     else
       env SHARD="$i/$N" \
         bash scripts/run-unit-shard.sh --max-concurrency="$INTRA_CONC" \
         > "$SHARD_LOG" 2>&1 &
       pid=$!
       timeout_flag="$LOG_DIR/shard-$i.wedged"
-      ( sleep "$SHARD_TIMEOUT" && echo "WEDGED" > "$timeout_flag" && kill -TERM "$pid" 2>/dev/null && \
-        sleep 5 && kill -KILL "$pid" 2>/dev/null ) &
+      (
+        sleep "$SHARD_TIMEOUT"
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "WEDGED" > "$timeout_flag"
+          kill -TERM "$pid" 2>/dev/null || true
+          sleep 5
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+      ) &
       cap_pid=$!
       wait "$pid" 2>/dev/null
       test_rc=$?

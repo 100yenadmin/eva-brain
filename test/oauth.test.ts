@@ -331,6 +331,22 @@ describe('revokeToken', () => {
     await provider.revokeToken!(client, { token: 'already-gone' });
     // No error = pass
   });
+
+  test('wrong client cannot revoke another client token', async () => {
+    const { clientId: ownerId, clientSecret: ownerSecret } = await provider.registerClientManual(
+      'revoke-owner-test', ['client_credentials'], 'read',
+    );
+    const { clientId: attackerId } = await provider.registerClientManual(
+      'revoke-attacker-test', ['client_credentials'], 'read',
+    );
+    const tokens = await provider.exchangeClientCredentials(ownerId, ownerSecret, 'read');
+    const attacker = (await provider.clientsStore.getClient(attackerId))!;
+
+    await provider.revokeToken!(attacker, { token: tokens.access_token });
+
+    const authInfo = await provider.verifyAccessToken(tokens.access_token);
+    expect(authInfo.clientId).toBe(ownerId);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -420,6 +436,31 @@ describe('authorization code flow', () => {
     await expect(provider.exchangeAuthorizationCode(attacker, code)).rejects.toThrow();
     const tokens = await provider.exchangeAuthorizationCode(owner, code);
     expect(tokens.access_token).toStartWith('gbrain_at_');
+  });
+
+  test('wrong client cannot read another client PKCE challenge', async () => {
+    const { clientId: ownerId } = await provider.registerClientManual(
+      'challenge-owner-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const { clientId: attackerId } = await provider.registerClientManual(
+      'challenge-attacker-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const owner = (await provider.clientsStore.getClient(ownerId))!;
+    const attacker = (await provider.clientsStore.getClient(attackerId))!;
+
+    let redirectUrl = '';
+    const mockRes = { redirect: (url: string) => { redirectUrl = url; } } as any;
+    await provider.authorize(owner, {
+      codeChallenge: 'owner-challenge',
+      redirectUri: 'http://localhost:3000/callback',
+      scopes: ['read'],
+    }, mockRes);
+    const code = new URL(redirectUrl).searchParams.get('code')!;
+
+    await expect(provider.challengeForAuthorizationCode!(attacker, code)).rejects.toThrow();
+    await expect(provider.challengeForAuthorizationCode!(owner, code)).resolves.toBe('owner-challenge');
   });
 
   test('expired code is rejected', async () => {

@@ -42,6 +42,15 @@ interface ReplayOpts {
   topRegressions?: number;
 }
 
+function parseNonNegativeIntFlag(flag: string, value: string | undefined): number {
+  if (!value) throw new Error(`Missing value for ${flag}`);
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`Invalid value for ${flag}: ${value}`);
+  }
+  return n;
+}
+
 interface RowResult {
   /** Captured row's id, for back-referencing into the source NDJSON. */
   id: number;
@@ -84,8 +93,7 @@ function parseArgs(args: string[]): ReplayOpts {
         i++;
         break;
       case '--limit':
-        if (!next) break;
-        opts.limit = parseInt(next, 10);
+        opts.limit = parseNonNegativeIntFlag('--limit', next);
         i++;
         break;
       case '--json':
@@ -95,8 +103,7 @@ function parseArgs(args: string[]): ReplayOpts {
         opts.verbose = true;
         break;
       case '--top-regressions':
-        if (!next) break;
-        opts.topRegressions = parseInt(next, 10);
+        opts.topRegressions = parseNonNegativeIntFlag('--top-regressions', next);
         i++;
         break;
     }
@@ -294,8 +301,8 @@ function summarize(results: RowResult[]): ReplaySummary {
     ? 0
     : eligible.reduce((a, r) => a + r.latency_delta_ms, 0) / eligible.length;
   const over2x = eligible.filter(r => {
-    const captured = results.find(x => x.id === r.id);
-    return captured && captured.current_latency_ms > 2 * (captured.current_latency_ms - captured.latency_delta_ms);
+    const capturedLatencyMs = r.current_latency_ms - r.latency_delta_ms;
+    return capturedLatencyMs > 0 && r.current_latency_ms > 2 * capturedLatencyMs;
   }).length;
 
   return {
@@ -350,7 +357,13 @@ function printHumanSummary(summary: ReplaySummary, results: RowResult[], topRegr
 }
 
 export async function runEvalReplay(engine: BrainEngine, args: string[]): Promise<void> {
-  const opts = parseArgs(args);
+  let opts: ReplayOpts;
+  try {
+    opts = parseArgs(args);
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+    process.exit(1);
+  }
   if (opts.help) {
     printHelp();
     return;
@@ -389,29 +402,32 @@ export async function runEvalReplay(engine: BrainEngine, args: string[]): Promis
   const results: RowResult[] = [];
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
   if (!opts.json) progress.start('eval.replay', capped.length);
-  for (const row of capped) {
-    if (!row.query || row.query.length === 0) {
-      results.push({
-        id: row.id,
-        tool_name: row.tool_name,
-        query: row.query ?? '',
-        jaccard: 0,
-        top1Match: false,
-        captured_slugs: row.retrieved_slugs ?? [],
-        current_slugs: [],
-        current_latency_ms: 0,
-        latency_delta_ms: 0,
-        skipped: true,
-        skip_reason: 'empty query',
-      });
-      if (!opts.json) progress.tick(1, 'skipped');
-      continue;
+  try {
+    for (const row of capped) {
+      if (!row.query || row.query.length === 0) {
+        results.push({
+          id: row.id,
+          tool_name: row.tool_name,
+          query: row.query ?? '',
+          jaccard: 0,
+          top1Match: false,
+          captured_slugs: row.retrieved_slugs ?? [],
+          current_slugs: [],
+          current_latency_ms: 0,
+          latency_delta_ms: 0,
+          skipped: true,
+          skip_reason: 'empty query',
+        });
+        if (!opts.json) progress.tick(1, 'skipped');
+        continue;
+      }
+      const r = await replayRow(engine, row);
+      results.push(r);
+      if (!opts.json) progress.tick(1, row.tool_name);
     }
-    const r = await replayRow(engine, row);
-    results.push(r);
-    if (!opts.json) progress.tick(1, row.tool_name);
+  } finally {
+    if (!opts.json) progress.finish();
   }
-  if (!opts.json) progress.finish();
 
   const summary = summarize(results);
   if (opts.json) {
