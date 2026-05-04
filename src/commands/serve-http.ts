@@ -758,10 +758,20 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       }
     });
 
-    // Use StreamableHTTPServerTransport for stateless request handling
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined as any });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    try {
+      // Use StreamableHTTPServerTransport for stateless request handling.
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined as any });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (e) {
+      console.error('MCP request handler error:', e instanceof Error ? e.message : e);
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: 'internal_error',
+          message: e instanceof Error ? e.message : 'Unknown error',
+        });
+      }
+    }
   });
 
   // ---------------------------------------------------------------------------
