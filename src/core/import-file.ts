@@ -11,6 +11,7 @@ import { extractCodeRefs } from './link-extraction.ts';
 import { embedBatch } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
 import type { ChunkInput, PageType } from './types.ts';
+import { buildMediaEvidenceRawData, type MediaEvidence } from './media-extraction.ts';
 
 /**
  * v0.20.0 Cathedral II Layer 8 D2 — markdown fence extraction helper.
@@ -167,6 +168,11 @@ export interface ImportResult {
   parsedPage?: ParsedPage;
 }
 
+export interface ImportMediaEvidenceOptions {
+  source?: string;
+  rawDataSource?: string;
+}
+
 const MAX_FILE_SIZE = 5_000_000; // 5MB
 
 /**
@@ -252,16 +258,15 @@ export async function importFromContent(
     chunks.push(...fenceChunks);
   }
 
-  // Embed BEFORE the transaction (external API call)
+  // Embed BEFORE the transaction (external API call).
+  // v0.14+ provider-stack replay keeps hard failure semantics: silent drop is
+  // worse than surfacing the embedding problem to the caller.
+  // Caller can pass opts.noEmbed=true to explicitly skip (used by migrations).
   if (!opts.noEmbed && chunks.length > 0) {
-    try {
-      const embeddings = await embedBatch(chunks.map(c => c.chunk_text));
-      for (let i = 0; i < chunks.length; i++) {
-        chunks[i].embedding = embeddings[i];
-        chunks[i].token_count = Math.ceil(chunks[i].chunk_text.length / 4);
-      }
-    } catch (e: unknown) {
-      console.warn(`[gbrain] embedding failed for ${slug} (${chunks.length} chunks): ${e instanceof Error ? e.message : String(e)}`);
+    const embeddings = await embedBatch(chunks.map(c => c.chunk_text));
+    for (let i = 0; i < chunks.length; i++) {
+      chunks[i].embedding = embeddings[i];
+      chunks[i].token_count = Math.ceil(chunks[i].chunk_text.length / 4);
     }
   }
 
@@ -400,6 +405,20 @@ export async function importFromFile(
  * Uses tree-sitter code chunker for semantic splitting.
  * Page type is 'code', slug includes file extension.
  */
+export async function importMediaEvidence(
+  engine: BrainEngine,
+  slug: string,
+  content: string,
+  extraction: unknown,
+  opts: { noEmbed?: boolean } & ImportMediaEvidenceOptions = {},
+): Promise<ImportResult> {
+  const evidence: MediaEvidence = buildMediaEvidenceRawData(extraction);
+  const result = await importFromContent(engine, slug, content, { noEmbed: opts.noEmbed });
+  if (result.status !== 'imported' && result.status !== 'skipped') return result;
+  await engine.putRawData(slug, opts.rawDataSource ?? opts.source ?? 'media-extraction', evidence as unknown as object);
+  return result;
+}
+
 export async function importCodeFile(
   engine: BrainEngine,
   relativePath: string,
@@ -479,16 +498,12 @@ export async function importCodeFile(
 
   // Embed only the new/changed chunks.
   if (!opts.noEmbed && needsEmbedIndexes.length > 0) {
-    try {
-      const textsToEmbed = needsEmbedIndexes.map((i) => chunks[i]!.chunk_text);
-      const embeddings = await embedBatch(textsToEmbed);
-      for (let j = 0; j < needsEmbedIndexes.length; j++) {
-        const i = needsEmbedIndexes[j]!;
-        chunks[i]!.embedding = embeddings[j]!;
-        chunks[i]!.token_count = Math.ceil(chunks[i]!.chunk_text.length / 4);
-      }
-    } catch (e: unknown) {
-      console.warn(`[gbrain] embedding failed for code file ${slug}: ${e instanceof Error ? e.message : String(e)}`);
+    const textsToEmbed = needsEmbedIndexes.map((i) => chunks[i]!.chunk_text);
+    const embeddings = await embedBatch(textsToEmbed);
+    for (let j = 0; j < needsEmbedIndexes.length; j++) {
+      const i = needsEmbedIndexes[j]!;
+      chunks[i]!.embedding = embeddings[j]!;
+      chunks[i]!.token_count = Math.ceil(chunks[i]!.chunk_text.length / 4);
     }
   }
 

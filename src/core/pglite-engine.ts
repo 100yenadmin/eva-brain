@@ -5,7 +5,7 @@ import type { Transaction } from '@electric-sql/pglite';
 import type { BrainEngine, LinkBatchInput, TimelineBatchInput, ReservedConnection, DreamVerdict, DreamVerdictInput } from './engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { runMigrations } from './migrate.ts';
-import { PGLITE_SCHEMA_SQL } from './pglite-schema.ts';
+import { PGLITE_SCHEMA_SQL, getPGLiteSchema } from './pglite-schema.ts';
 import { acquireLock, releaseLock, type LockHandle } from './pglite-lock.ts';
 import type {
   Page, PageInput, PageFilters, PageType,
@@ -184,6 +184,16 @@ export class PGLiteEngine implements BrainEngine {
     if (this._snapshotLoaded) {
       return;
     }
+
+    // Resolve embedding dim/model from gateway (v0.14+). Defaults preserve v0.13.
+    let dims = 1536;
+    let model = 'text-embedding-3-large';
+    try {
+      const gw = await import('./ai/gateway.ts');
+      dims = gw.getEmbeddingDimensions();
+      model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
+    } catch { /* gateway not configured — use defaults */ }
+
     // Pre-schema bootstrap: add forward-referenced state the embedded schema
     // blob requires but that older brains don't have yet. Without this, a
     // pre-v0.18 brain hits `CREATE INDEX idx_pages_source_id ON pages(source_id)`
@@ -194,7 +204,7 @@ export class PGLiteEngine implements BrainEngine {
     // fresh installs and modern brains.
     await this.applyForwardReferenceBootstrap();
 
-    await this.db.exec(PGLITE_SCHEMA_SQL);
+    await this.db.exec(getPGLiteSchema(dims, model));
 
     const { applied } = await runMigrations(this);
     if (applied > 0) {

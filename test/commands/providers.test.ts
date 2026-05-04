@@ -1,0 +1,140 @@
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+
+const configureGatewayMock = mock(() => {});
+const embedOneMock = mock(async () => new Array(1536).fill(0));
+const isAvailableMock = mock(() => true);
+const probeOllamaMock = mock(async () => ({ reachable: false, models_endpoint_valid: false }));
+const probeLMStudioMock = mock(async () => ({ reachable: false, models_endpoint_valid: false }));
+const loadConfigMock = mock(() => ({
+  embedding_model: 'openai:text-embedding-3-large',
+  embedding_dimensions: 1536,
+  expansion_model: 'anthropic:claude-haiku-4-5-20251001',
+  provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'openclaw-codex' } },
+}));
+const resolveProviderAuthMock = mock((recipe: { id: string }) => {
+  if (recipe.id === 'openai') {
+    return {
+      source: 'openclaw-codex',
+      isConfigured: true,
+      credentialKey: 'OPENAI_API_KEY',
+      meta: { profile: 'openclaw-codex' },
+      secret: 'oc-secret',
+    };
+  }
+  if (recipe.id === 'anthropic') {
+    return {
+      source: 'missing',
+      isConfigured: false,
+      missingReason: 'Missing ANTHROPIC_API_KEY.',
+      meta: { mode: 'env' },
+    };
+  }
+  return {
+    source: 'missing',
+    isConfigured: false,
+    missingReason: 'missing',
+    meta: { mode: 'env' },
+  };
+});
+
+mock.module('../../src/core/ai/gateway.ts', () => ({
+  configureGateway: configureGatewayMock,
+  embedOne: embedOneMock,
+  isAvailable: isAvailableMock,
+}));
+
+mock.module('../../src/core/ai/probes.ts', () => ({
+  probeOllama: probeOllamaMock,
+  probeLMStudio: probeLMStudioMock,
+}));
+
+mock.module('../../src/core/config.ts', () => ({
+  loadConfig: loadConfigMock,
+}));
+
+mock.module('../../src/core/ai/auth.ts', () => ({
+  resolveProviderAuth: resolveProviderAuthMock,
+  redactAuthResolution: (resolution: any) => ({ ...resolution, value: undefined, secret: undefined }),
+}));
+
+describe('providers command auth hardening', () => {
+  const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+  beforeEach(() => {
+    configureGatewayMock.mockClear();
+    embedOneMock.mockClear();
+    isAvailableMock.mockClear();
+    probeOllamaMock.mockClear();
+    probeLMStudioMock.mockClear();
+    loadConfigMock.mockClear();
+    resolveProviderAuthMock.mockClear();
+    logSpy.mockClear();
+    errorSpy.mockClear();
+    isAvailableMock.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  test('providers test --model preserves provider_auth while overriding only model', async () => {
+    const { runProviders } = await import('../../src/commands/providers.ts');
+    await runProviders('test', ['--model', 'openai:text-embedding-3-small']);
+
+    expect(configureGatewayMock).toHaveBeenCalledTimes(2);
+    const overrideArgs = configureGatewayMock.mock.calls[1] as unknown[] | undefined;
+    const overrideCall = overrideArgs?.[0] as Record<string, unknown> | undefined;
+    expect(overrideCall).toMatchObject({
+      embedding_model: 'openai:text-embedding-3-small',
+      provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'openclaw-codex' } },
+    });
+  });
+
+  test('providers explain recommends openai when auth comes from openclaw profile', async () => {
+    const { runProviders } = await import('../../src/commands/providers.ts');
+    await runProviders('explain', []);
+
+    const output = logSpy.mock.calls
+      .flatMap(call => call)
+      .map(arg => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+      .join('\n');
+    expect(output).toContain('Recommended: openai:text-embedding-3-large');
+    expect(output).toContain('OpenAI auth resolved via openclaw-codex');
+    expect(output).not.toContain('oc-secret');
+  });
+
+  test('providers test --model requires an explicit value', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`exit:${code}`);
+    });
+    try {
+      const { runProviders } = await import('../../src/commands/providers.ts');
+      await expect(runProviders('test', ['--model'])).rejects.toThrow('exit:1');
+      expect(errorSpy.mock.calls.map(call => String(call[0])).join('\n')).toContain('Missing value for --model');
+      expect(configureGatewayMock).toHaveBeenCalledTimes(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  test('providers test --model rejects malformed or unsupported embedding models', async () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`exit:${code}`);
+    });
+    try {
+      const { runProviders } = await import('../../src/commands/providers.ts');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'openai'])).rejects.toThrow('exit:1');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'nope:text-embedding-3-small'])).rejects.toThrow('exit:1');
+
+      isAvailableMock.mockReturnValueOnce(false);
+      await expect(runProviders('test', ['--model', 'anthropic:claude-haiku-4-5-20251001'])).rejects.toThrow('exit:1');
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+});

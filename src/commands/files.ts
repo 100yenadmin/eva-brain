@@ -6,6 +6,8 @@ import * as db from '../core/db.ts';
 import { humanSize } from '../core/file-resolver.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { chunkText } from '../core/chunkers/recursive.ts';
+import type { ChunkInput, PageInput } from '../core/types.ts';
 
 /** Size threshold: files >= 100 MB use TUS resumable upload */
 const SIZE_THRESHOLD = 100 * 1024 * 1024;
@@ -40,6 +42,51 @@ function getMimeType(filePath: string): string | null {
 function fileHash(filePath: string): string {
   const content = readFileSync(filePath);
   return createHash('sha256').update(content).digest('hex');
+}
+
+export { getMimeType };
+
+export async function canAttachFiles(engine: BrainEngine): Promise<boolean> {
+  try {
+    await engine.executeRaw('SELECT 1 FROM files LIMIT 1');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function attachFileRecordWithEngine(engine: BrainEngine, pageSlug: string, filePath: string, mimeType: string | null, sizeBytes: number): Promise<string> {
+  try {
+    return await attachFileRecord(pageSlug, filePath, mimeType, sizeBytes);
+  } catch {
+    const filename = basename(filePath);
+    const hash = fileHash(filePath);
+    const storagePath = `${pageSlug}/${filename}`;
+    const pageRows = await engine.executeRaw<{ id: number }>('SELECT id FROM pages WHERE slug = $1 LIMIT 1', [pageSlug]);
+    const pageId = pageRows[0]?.id ?? null;
+    await engine.executeRaw(
+      `INSERT INTO files (page_slug, page_id, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       ON CONFLICT (storage_path) DO UPDATE SET
+         page_slug = EXCLUDED.page_slug,
+         page_id = EXCLUDED.page_id,
+         content_hash = EXCLUDED.content_hash,
+         size_bytes = EXCLUDED.size_bytes,
+         mime_type = EXCLUDED.mime_type,
+         metadata = EXCLUDED.metadata`,
+      [pageSlug, pageId, filename, storagePath, mimeType, sizeBytes, hash, JSON.stringify({ ingest: 'media-evidence-mvp' })],
+    );
+    return storagePath;
+  }
+}
+
+
+export interface IngestMediaResult {
+  slug: string;
+  fileAttached: boolean;
+  storagePath: string | null;
+  rawDataSource: string;
+  chunksExpected: number;
 }
 
 export async function runFiles(engine: BrainEngine, args: string[]) {
@@ -98,6 +145,26 @@ export async function runFiles(engine: BrainEngine, args: string[]) {
       console.error(`  status                    Show migration status of directories`);
       process.exit(1);
   }
+}
+
+async function attachFileRecord(pageSlug: string, filePath: string, mimeType: string | null, sizeBytes: number): Promise<string> {
+  const sql = db.getConnection();
+  const filename = basename(filePath);
+  const hash = fileHash(filePath);
+  const storagePath = `${pageSlug}/${filename}`;
+
+  await sql`
+    INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+    VALUES (${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${sizeBytes}, ${hash}, ${sql.json({ ingest: 'media-evidence-mvp' })})
+    ON CONFLICT (storage_path) DO UPDATE SET
+      page_slug = EXCLUDED.page_slug,
+      content_hash = EXCLUDED.content_hash,
+      size_bytes = EXCLUDED.size_bytes,
+      mime_type = EXCLUDED.mime_type,
+      metadata = EXCLUDED.metadata
+  `;
+
+  return storagePath;
 }
 
 async function listFiles(slug?: string) {

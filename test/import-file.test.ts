@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, mock } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { importFile, importFromContent } from '../src/core/import-file.ts';
@@ -405,6 +405,32 @@ ${longText}
       for (let i = 0; i < chunks.length; i++) {
         expect(chunks[i].chunk_index).toBe(i);
       }
+    }
+  });
+
+  test('code-file import fails closed when embedding fails', async () => {
+    const originalEmbedBatch = (await import('../src/core/embedding.ts')).embedBatch;
+    const embedBatchMock = mock(async () => {
+      throw new Error('boom');
+    });
+
+    mock.module('../src/core/embedding.ts', () => ({
+      embedBatch: embedBatchMock,
+    }));
+
+    try {
+      const { importCodeFile } = await import(`../src/core/import-file.ts?embedding-failure=${Date.now()}`);
+      const engine = mockEngine();
+      await expect(importCodeFile(engine, 'src/example.ts', 'export const x = 1;')).rejects.toThrow('boom');
+      const calls = (engine as any)._calls;
+      expect(calls.find((c: any) => c.method === 'putPage')).toBeUndefined();
+      expect(calls.find((c: any) => c.method === 'upsertChunks')).toBeUndefined();
+      expect(embedBatchMock).toHaveBeenCalled();
+    } finally {
+      mock.module('../src/core/embedding.ts', () => ({
+        embedBatch: originalEmbedBatch,
+      }));
+      mock.restore();
     }
   });
 });

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import type { ProviderAuthConfig } from './ai/types.ts';
 import type { EngineConfig } from './types.ts';
 
 /**
@@ -50,6 +51,14 @@ export interface GBrainConfig {
     /** false disables PII scrubbing before insert. Defaults to true. */
     scrub_pii?: boolean;
   };
+  /** AI gateway config (v0.14+). Default: "openai:text-embedding-3-large" / 1536 / "anthropic:claude-haiku-4-5-20251001". */
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  expansion_model?: string;
+  /** Optional base URL overrides for openai-compatible providers (keyed by recipe id). */
+  provider_base_urls?: Record<string, string>;
+  /** Optional provider auth overrides (e.g. explicit OpenClaw profile selection). */
+  provider_auth?: Record<string, ProviderAuthConfig>;
 }
 
 /**
@@ -72,13 +81,31 @@ export function loadConfig(): GBrainConfig | null {
   const inferredEngine: 'postgres' | 'pglite' = fileConfig?.engine
     || (fileConfig?.database_path ? 'pglite' : 'postgres');
 
-  // Merge: env vars override config file
+  // Merge: env vars override config file. READ only — never mutate process.env.
   const merged = {
     ...fileConfig,
     engine: inferredEngine,
     ...(dbUrl ? { database_url: dbUrl } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
+    ...(() => {
+      const raw = process.env.GBRAIN_EMBEDDING_DIMENSIONS;
+      if (!raw) return {};
+      const value = Number(raw);
+      return Number.isInteger(value) && value > 0 ? { embedding_dimensions: value } : {};
+    })(),
+    ...(process.env.GBRAIN_EXPANSION_MODEL ? { expansion_model: process.env.GBRAIN_EXPANSION_MODEL } : {}),
   };
+  if (process.env.GBRAIN_OPENAI_AUTH_SOURCE === 'openclaw-codex' || process.env.GBRAIN_OPENAI_AUTH_SOURCE === 'openclaw-openai') {
+    merged.provider_auth = {
+      ...(merged.provider_auth ?? {}),
+      openai: {
+        prefer: process.env.GBRAIN_OPENAI_AUTH_SOURCE,
+        ...(process.env.GBRAIN_OPENAI_AUTH_PROFILE ? { profile: process.env.GBRAIN_OPENAI_AUTH_PROFILE } : {}),
+        ...(process.env.GBRAIN_OPENCLAW_AUTH_PATH ? { openclawAuthPath: process.env.GBRAIN_OPENCLAW_AUTH_PATH } : {}),
+      },
+    };
+  }
   return merged as GBrainConfig;
 }
 
