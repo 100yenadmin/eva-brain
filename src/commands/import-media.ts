@@ -8,7 +8,7 @@ import { normalizeMediaExtraction, mediaExtractionToEvidence, type MediaEvidence
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import { getMimeType, canAttachFiles, attachFileRecordWithEngine, type IngestMediaResult } from './files.ts';
-import { createConfiguredCodexExtractionClient } from '../core/ai/codex-extraction-client.ts';
+import { CommandCodexExtractionClient, createConfiguredCodexExtractionClient } from '../core/ai/codex-extraction-client.ts';
 
 function usage(): never {
   console.error('Usage: gbrain import-media --slug <slug> --content-file <file.md> --extraction <file.json> [--source <name>] [--raw-data-source <name>] [--media-file <path>] [--title <title>] [--type <kind>] [--no-file] [--no-embed]');
@@ -249,6 +249,9 @@ async function resolveIngestExtractionFile(mediaFile: string, extractionFile: st
   const size = statSync(mediaFile).size;
   const mimeType = getMimeType(mediaFile);
   const inferredKind = inferOpenClawExtractionKind(mediaFile, mimeType, kindHint);
+  if (inferredKind === 'image' && client instanceof CommandCodexExtractionClient) {
+    throw new Error('gbrain ingest-media --extract openclaw image extraction requires GBRAIN_OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URL; command fallback only supports text-backed media');
+  }
   const sourceRef = mediaFile;
   const extraction = await client.extractMedia<MediaExtraction>({
     kind: inferredKind,
@@ -284,8 +287,11 @@ function readTextBackedMedia(mediaFile: string, size: number, kind: MediaExtract
   if (size > maxTextBytes) {
     throw new Error(`gbrain ingest-media --extract openclaw only supports ${kind} text/transcript inputs up to ${maxTextBytes} bytes; got ${size}`);
   }
+  const ext = extname(mediaFile).toLowerCase();
+  if (kind === 'pdf' && ext === '.pdf') {
+    throw new Error('gbrain ingest-media --extract openclaw supports text-backed PDF content today; binary PDF extraction is not claimed yet');
+  }
   if (kind === 'video' || kind === 'audio') {
-    const ext = extname(mediaFile).toLowerCase();
     if (!['.txt', '.md', '.srt', '.vtt', '.json'].includes(ext)) {
       throw new Error(`gbrain ingest-media --extract openclaw supports ${kind} transcript/text files for today; binary ${kind} understanding is not claimed yet`);
     }

@@ -200,7 +200,7 @@ Return ONLY JSON. Required shape:
   "sourceRef": "...",
   "title": "...",
   "summary": "...",
-  "segments": [{ "id": "segment-0", "kind": "page|transcript_segment|audio_segment|asset", "summary": "...", "transcriptText": "...", "ocrText": "...", "entities": [{"text":"...","type":"..."}], "tags": [{"value":"..."}] }]
+  "segments": [{ "id": "segment-0", "kind": "page|transcript_segment|audio_segment|asset", "summary": "...", "transcriptText": "...", "ocrText": "...", "entities": [{"text":"...","type":"..."}], "tags": ["..."] }]
 }
 
 Use kind "${request.kind}" and sourceRef "${request.sourceRef}". Preserve important quotes and names.
