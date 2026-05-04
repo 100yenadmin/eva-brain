@@ -44,38 +44,69 @@ describe('CodexExtractionClient', () => {
   });
 
   test('parses direct JSON extraction output from the host command', async () => {
-    const command = `node -e "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',segments:[{id:'segment-0',kind:'page',summary:'ok'}]})))"`;
+    const command = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const p=JSON.parse(s);if(!p.prompt.includes('gbrain.media-extraction.v1')) process.exit(2);process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',segments:[{id:'segment-0',kind:'page',summary:'ok'}]}));})"`;
     const client = new CommandCodexExtractionClient(command, process.env);
+    expect(client.supportsFileMedia).toBe(false);
 
-    const json = await client.completeJson<any>({ prompt: 'extract JSON' });
+    const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON' });
 
     expect(json.schemaVersion).toBe('gbrain.media-extraction.v1');
     expect(json.segments[0].summary).toBe('ok');
   });
 
-  test('calls the OpenClaw plugin bridge over HTTP when gateway URL is configured', async () => {
+  test('calls the OpenClaw extraction route over HTTP when gateway URL is configured', async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({ url: String(url), init: init ?? {} });
-      return new Response(JSON.stringify({ ok: true, text: '{"schemaVersion":"gbrain.media-extraction.v1","kind":"pdf","segments":[{"id":"segment-0","kind":"page","summary":"ok"}]}' }), {
+      return new Response(JSON.stringify({ ok: true, extraction: { schemaVersion: 'gbrain.media-extraction.v1', kind: 'pdf', sourceRef: 'note.txt', segments: [{ id: 'segment-0', kind: 'page', summary: 'ok' }] } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
     try {
       const client = new OpenClawGatewayCodexExtractionClient({ gatewayUrl: 'http://127.0.0.1:18789', gatewayToken: 'gateway-token' });
-      const json = await client.completeJson<any>({ prompt: 'extract JSON' });
+      expect(client.supportsFileMedia).toBe(true);
+      const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON', model: 'openai-codex/gpt-5.4-mini' });
 
       expect(json.schemaVersion).toBe('gbrain.media-extraction.v1');
       expect(requests.length).toBe(1);
-      expect(requests[0].url).toBe('http://127.0.0.1:18789/plugins/gbrain/complete');
+      expect(requests[0].url).toBe('http://127.0.0.1:18789/plugins/gbrain/extract');
       expect((requests[0].init.headers as Record<string, string>).authorization).toBe('Bearer gateway-token');
       const body = JSON.parse(String(requests[0].init.body));
-      expect(body.model).toBe('openai-codex/gpt-5.4-mini');
-      expect(body.prompt).toBe('extract JSON');
+      expect(body.model).toBe('gpt-5.4-mini');
+      expect(body.kind).toBe('pdf');
+      expect(body.sourceRef).toBe('note.txt');
+      expect(body.text).toBe('extract JSON');
       expect(body.apiKey).toBeUndefined();
       expect(body.token).toBeUndefined();
+      expect(body.refreshToken).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('sends image bytes to the OpenClaw extraction route without model API keys', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ ok: true, extraction: { schemaVersion: 'gbrain.media-extraction.v1', kind: 'image', sourceRef: 'receipt.png', segments: [{ id: 'frame-1', kind: 'frame', caption: 'Receipt' }] } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const client = new OpenClawGatewayCodexExtractionClient({ gatewayUrl: 'http://127.0.0.1:18789' });
+      await client.extractMedia<any>({
+        kind: 'image',
+        sourceRef: 'receipt.png',
+        file: { name: 'receipt.png', mime: 'image/png', base64: 'aW1hZ2U=' },
+      });
+
+      const body = JSON.parse(String(requests[0].init.body));
+      expect(body.file).toEqual({ name: 'receipt.png', mime: 'image/png', base64: 'aW1hZ2U=' });
+      expect(JSON.stringify(body)).not.toMatch(/apiKey|OPENAI_API_KEY|refreshToken|oauth/i);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -28,6 +28,8 @@ function defaultMediaSlug(filename: string): string {
   return `media/evidence/${stem}`;
 }
 
+const MAX_OPENCLAW_IMAGE_BYTES = 10_000_000;
+
 function defaultContent(title: string, evidence: MediaEvidence): string {
   const fmType = evidence.kind === 'pdf' ? 'media' : 'media';
   return `---\ntype: ${fmType}\ntitle: ${title}\n---\n\n${evidence.text}\n`;
@@ -246,21 +248,29 @@ async function resolveIngestExtractionFile(mediaFile: string, extractionFile: st
     throw new Error('gbrain ingest-media --extract openclaw requires GBRAIN_OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URL or GBRAIN_OPENCLAW_COMPLETION_COMMAND');
   }
 
-  const maxTextBytes = 1_000_000;
   const size = statSync(mediaFile).size;
-  if (size > maxTextBytes) {
-    throw new Error(`gbrain ingest-media --extract openclaw only supports text inputs up to ${maxTextBytes} bytes; got ${size}`);
+  const mimeType = getMimeType(mediaFile);
+  const inferredKind = inferOpenClawExtractionKind(mediaFile, mimeType, kindHint);
+  if (inferredKind === 'image' && size > MAX_OPENCLAW_IMAGE_BYTES) {
+    throw new Error(`gbrain ingest-media --extract openclaw only supports image inputs up to ${MAX_OPENCLAW_IMAGE_BYTES} bytes; got ${size}`);
   }
-
-  const inputText = readFileSync(mediaFile, 'utf-8');
-  const inferredKind = kindHint ?? (getMimeType(mediaFile)?.startsWith('audio/') ? 'audio' : getMimeType(mediaFile)?.startsWith('video/') ? 'video' : extname(mediaFile).toLowerCase() === '.pdf' ? 'pdf' : 'pdf');
-  const extraction = await client.completeJson({
-    prompt: buildCodexMediaExtractionPrompt({
-      filename: basename(mediaFile),
-      title,
-      kind: inferredKind,
-      text: inputText,
-    }),
+  if (inferredKind === 'image' && !client.supportsFileMedia) {
+    throw new Error('gbrain ingest-media --extract openclaw image extraction requires GBRAIN_OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URL; command fallback only supports text-backed media');
+  }
+  const sourceRef = mediaFile;
+  const extraction = await client.extractMedia<MediaExtraction>({
+    kind: inferredKind,
+    sourceRef,
+    title,
+    ...(inferredKind === 'image'
+      ? {
+          file: {
+            name: basename(mediaFile),
+            ...(mimeType ? { mime: mimeType } : {}),
+            base64: readFileSync(mediaFile).toString('base64'),
+          },
+        }
+      : { text: readTextBackedMedia(mediaFile, size, inferredKind) }),
   });
   const dir = mkdtempSync(join(tmpdir(), 'gbrain-codex-extraction-'));
   const out = join(dir, 'extraction.json');
@@ -268,26 +278,41 @@ async function resolveIngestExtractionFile(mediaFile: string, extractionFile: st
   return out;
 }
 
-function buildCodexMediaExtractionPrompt(input: { filename: string; title?: string; kind: string; text: string }): string {
-  return `Extract this text-only media/help document into a JSON object matching gbrain.media-extraction.v1.
-
-Return ONLY JSON. Required shape:
-{
-  "schemaVersion": "gbrain.media-extraction.v1",
-  "kind": "image|pdf|video|audio",
-  "sourceRef": "...",
-  "title": "...",
-  "summary": "...",
-  "segments": [{ "id": "segment-0", "kind": "page|transcript_segment|asset", "summary": "...", "transcriptText": "...", "entities": [{"text":"...","type":"..."}], "tags": [{"value":"..."}] }]
+function inferOpenClawExtractionKind(mediaFile: string, mimeType: string | null, kindHint: string | undefined): MediaExtractionKind {
+  const ext = extname(mediaFile).toLowerCase();
+  if (kindHint && ['image', 'pdf', 'video', 'audio'].includes(kindHint)) return kindHint as MediaExtractionKind;
+  if (mimeType?.startsWith('image/')) return 'image';
+  if (mimeType?.startsWith('audio/')) return 'audio';
+  if (mimeType?.startsWith('video/')) return 'video';
+  if (mimeType === 'application/pdf' || ext === '.pdf') return 'pdf';
+  if (isTextBackedExtension(ext)) return 'pdf';
+  throw new Error(`gbrain ingest-media --extract openclaw does not support ${ext || 'unknown'} files yet; pass text/markdown/transcript content or an image`);
 }
 
-Use kind "${input.kind}" unless the content clearly indicates another allowed media kind. Preserve important quotes and names. Keep segment ids stable and lowercase.
+function isTextBackedExtension(ext: string): boolean {
+  return ['', '.txt', '.md', '.markdown', '.srt', '.vtt', '.json'].includes(ext);
+}
 
-Filename: ${input.filename}
-Title hint: ${input.title ?? '(none)'}
+function assertTextBackedDocumentExtension(mediaFile: string, kind: MediaExtractionKind): void {
+  const ext = extname(mediaFile).toLowerCase();
+  if (kind === 'pdf' && ext === '.pdf') {
+    throw new Error('gbrain ingest-media --extract openclaw supports text-backed PDF content today; binary PDF extraction is not claimed yet');
+  }
+  if (kind === 'pdf' && !isTextBackedExtension(ext)) {
+    throw new Error(`gbrain ingest-media --extract openclaw supports text-backed document inputs today; ${ext || 'unknown'} files are not claimed yet`);
+  }
+  if ((kind === 'video' || kind === 'audio') && !isTextBackedExtension(ext)) {
+    throw new Error(`gbrain ingest-media --extract openclaw supports ${kind} transcript/text files for today; binary ${kind} understanding is not claimed yet`);
+  }
+}
 
-Content:
-${input.text}`;
+function readTextBackedMedia(mediaFile: string, size: number, kind: MediaExtractionKind): string {
+  const maxTextBytes = 1_000_000;
+  if (size > maxTextBytes) {
+    throw new Error(`gbrain ingest-media --extract openclaw only supports ${kind} text/transcript inputs up to ${maxTextBytes} bytes; got ${size}`);
+  }
+  assertTextBackedDocumentExtension(mediaFile, kind);
+  return readFileSync(mediaFile, 'utf-8');
 }
 
 export async function runIngestMedia(engine: BrainEngine, args: string[]) {

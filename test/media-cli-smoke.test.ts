@@ -82,4 +82,81 @@ describe('media evidence CLI smoke', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test('ingest-media --extract openclaw sends image to gateway route and keeps evidence searchable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-media-openclaw-cli-'));
+    const home = join(dir, 'home');
+    const env = { HOME: home, GBRAIN_HOME: home };
+    const mediaPath = join(dir, 'receipt.png');
+    const requests: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        expect(new URL(req.url).pathname).toBe('/plugins/gbrain/extract');
+        const body = await req.json();
+        requests.push(body);
+        return Response.json({
+          ok: true,
+          extraction: {
+            schemaVersion: 'gbrain.media-extraction.v1',
+            kind: 'image',
+            sourceRef: body.sourceRef,
+            title: 'OpenClaw Receipt',
+            summary: 'Stripe login error screenshot with a receipt reference.',
+            tags: ['receipt', 'stripe'],
+            segments: [
+              {
+                id: 'frame-1',
+                kind: 'frame',
+                caption: 'Receipt screenshot',
+                ocrText: 'Stripe login error screenshot',
+              },
+            ],
+          },
+        });
+      },
+    });
+
+    try {
+      writeFileSync(mediaPath, 'fake-image-binary');
+
+      let result = await runCli(['init', '--pglite'], env);
+      expect(result.code).toBe(0);
+
+      result = await runCli([
+        'ingest-media',
+        mediaPath,
+        '--extract', 'openclaw',
+        '--slug', 'media/evidence/openclaw-receipt',
+        '--title', 'OpenClaw Receipt',
+        '--no-embed',
+      ], {
+        ...env,
+        GBRAIN_OPENCLAW_GATEWAY_URL: `http://127.0.0.1:${server.port}`,
+        OPENAI_API_KEY: '',
+        VOYAGE_API_KEY: '',
+      });
+      expect(result.code).toBe(0);
+      const ingested = JSON.parse(result.stdout);
+      expect(ingested.status).toBe('imported');
+      expect(ingested.slug).toBe('media/evidence/openclaw-receipt');
+      expect(ingested.no_embed).toBe(true);
+
+      expect(requests).toHaveLength(1);
+      const request = requests[0] as Record<string, any>;
+      expect(request.kind).toBe('image');
+      expect(request.file).toMatchObject({
+        name: 'receipt.png',
+        base64: Buffer.from('fake-image-binary').toString('base64'),
+      });
+      expect(JSON.stringify(request)).not.toMatch(/apiKey|OPENAI_API_KEY|refreshToken|oauth/i);
+
+      result = await runCli(['search', 'Stripe'], env);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('media/evidence/openclaw-receipt');
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
