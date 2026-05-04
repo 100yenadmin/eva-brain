@@ -524,7 +524,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       // Reimport at new path (picks up content changes)
       const filePath = join(repoPath, to);
       if (existsSync(filePath)) {
-        const result = await importFile(engine, filePath, to, { noEmbed });
+        const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') chunksCreated += result.chunks;
       }
       pagesAffected.push(newSlug);
@@ -579,7 +579,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         return;
       }
       try {
-        const result = await importFile(eng, filePath, path, { noEmbed });
+        const result = await importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -835,7 +835,7 @@ async function performFullSync(
   const importArgs = [repoPath];
   if (opts.noEmbed) importArgs.push('--no-embed');
   if (fullConcurrency > 1) importArgs.push('--workers', String(fullConcurrency));
-  const result = await runImport(engine, importArgs, { commit: headCommit });
+  const result = await runImport(engine, importArgs, { commit: headCommit, sourceId: opts.sourceId });
 
   // Bug 9 — gate the full-sync bookmark on success. runImport already
   // writes its own sync.last_commit conditionally (import.ts), but
@@ -942,6 +942,10 @@ export async function runSync(engine: BrainEngine, args: string[]) {
   if (explicitSource || process.env.GBRAIN_SOURCE) {
     const { resolveSourceId } = await import('../core/source-resolver.ts');
     sourceId = await resolveSourceId(engine, explicitSource);
+  }
+
+  if (skipFailed && !retryFailed && !dryRun) {
+    acknowledgeExistingSyncFailuresForSkip();
   }
 
   // v0.19.0 — `sync --all` iterates all registered sources with a
@@ -1250,5 +1254,15 @@ function printSyncResult(result: SyncResult) {
       console.log(`  See ~/.gbrain/sync-failures.jsonl for details, or run 'gbrain doctor'.`);
       console.log(`  Fix the files then re-run 'gbrain sync', or 'gbrain sync --skip-failed' to move on.`);
       break;
+  }
+}
+
+function acknowledgeExistingSyncFailuresForSkip() {
+  const acked = acknowledgeSyncFailures();
+  if (acked.count > 0) {
+    console.error(
+      `  Acknowledged ${acked.count} previously-recorded failure(s):\n` +
+        `${formatCodeBreakdown(acked.summary)}`,
+    );
   }
 }

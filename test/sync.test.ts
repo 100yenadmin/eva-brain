@@ -81,6 +81,11 @@ describe('isSyncable', () => {
     expect(isSyncable('people/.hidden/secret.md')).toBe(false);
   });
 
+  test('rejects files in dependency directories', () => {
+    expect(isSyncable('node_modules/pkg/README.md')).toBe(false);
+    expect(isSyncable('tools/server/node_modules/pkg/HISTORY.md')).toBe(false);
+  });
+
   test('rejects .raw/ sidecar directories', () => {
     expect(isSyncable('people/pedro.raw/source.md')).toBe(false);
     expect(isSyncable('dir/.raw/notes.md')).toBe(false);

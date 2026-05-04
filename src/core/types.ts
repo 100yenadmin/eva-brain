@@ -42,6 +42,8 @@ export interface PageInput {
    * `query --lang` filtering.
    */
   page_kind?: PageKind;
+  /** Target source for multi-source imports. Defaults to 'default'. */
+  source_id?: string;
 }
 
 export interface PageFilters {
@@ -377,6 +379,8 @@ export interface BrainHealth {
   link_coverage: number;
   /** Fraction of entity pages (person/company) with >= 1 structured timeline entry. */
   timeline_coverage: number;
+  /** Number of entity pages included in link_coverage/timeline_coverage. */
+  entity_page_count?: number;
   /** Top 5 entities by total link count (in + out). */
   most_connected: Array<{ slug: string; link_count: number }>;
   /**

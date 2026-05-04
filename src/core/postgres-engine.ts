@@ -4,6 +4,7 @@ import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { runMigrations } from './migrate.ts';
 import { SCHEMA_SQL } from './schema-embedded.ts';
 import { verifySchema } from './schema-verify.ts';
+import { applyChunkEmbeddingIndexPolicy } from './vector-index.ts';
 import type {
   Page, PageInput, PageFilters, PageType,
   Chunk, ChunkInput, StaleChunkRow,
@@ -110,7 +111,7 @@ export class PostgresEngine implements BrainEngine {
       model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
     } catch { /* gateway not yet configured — use defaults */ }
 
-    const sql = SCHEMA_SQL
+    const sql = applyChunkEmbeddingIndexPolicy(SCHEMA_SQL, dims)
       .replace(/vector\(1536\)/g, `vector(${dims})`)
       .replace(/'text-embedding-3-large'/g, `'${model}'`);
 
@@ -324,11 +325,12 @@ export class PostgresEngine implements BrainEngine {
     return rowToPage(rows[0]);
   }
 
-  async putPage(slug: string, page: PageInput): Promise<Page> {
+  async putPage(slug: string, page: PageInput, opts?: { sourceId?: string }): Promise<Page> {
     slug = validateSlug(slug);
     const sql = this.sql;
     const hash = page.content_hash || contentHash(page);
     const frontmatter = page.frontmatter || {};
+    const sourceId = opts?.sourceId ?? page.source_id ?? 'default';
 
     // v0.18.0 Step 2: source_id relies on schema DEFAULT 'default'. ON
     // CONFLICT target becomes (source_id, slug) since global UNIQUE(slug)
@@ -336,8 +338,8 @@ export class PostgresEngine implements BrainEngine {
     // notes; multi-source sync (Step 5) will surface an explicit sourceId.
     const pageKind = page.page_kind || 'markdown';
     const rows = await sql`
-      INSERT INTO pages (slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at)
-      VALUES (${slug}, ${page.type}, ${pageKind}, ${page.title}, ${page.compiled_truth}, ${page.timeline || ''}, ${sql.json(frontmatter as Parameters<typeof sql.json>[0])}, ${hash}, now())
+      INSERT INTO pages (source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at)
+      VALUES (${sourceId}, ${slug}, ${page.type}, ${pageKind}, ${page.title}, ${page.compiled_truth}, ${page.timeline || ''}, ${sql.json(frontmatter as Parameters<typeof sql.json>[0])}, ${hash}, now())
       ON CONFLICT (source_id, slug) DO UPDATE SET
         type = EXCLUDED.type,
         page_kind = EXCLUDED.page_kind,
@@ -780,11 +782,12 @@ export class PostgresEngine implements BrainEngine {
   }
 
   // Chunks
-  async upsertChunks(slug: string, chunks: ChunkInput[]): Promise<void> {
+  async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
 
     // Get page_id
-    const pages = await sql`SELECT id FROM pages WHERE slug = ${slug}`;
+    const pages = await sql`SELECT id FROM pages WHERE slug = ${slug} AND source_id = ${sourceId}`;
     if (pages.length === 0) throw new Error(`Page not found: ${slug}`);
     const pageId = pages[0].id;
 
@@ -869,12 +872,13 @@ export class PostgresEngine implements BrainEngine {
     );
   }
 
-  async getChunks(slug: string): Promise<Chunk[]> {
+  async getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     const rows = await sql`
       SELECT cc.* FROM content_chunks cc
       JOIN pages p ON p.id = cc.page_id
-      WHERE p.slug = ${slug}
+      WHERE p.slug = ${slug} AND p.source_id = ${sourceId}
       ORDER BY cc.chunk_index
     `;
     return rows.map((r) => rowToChunk(r as Record<string, unknown>));
@@ -904,11 +908,12 @@ export class PostgresEngine implements BrainEngine {
     return rows as unknown as StaleChunkRow[];
   }
 
-  async deleteChunks(slug: string): Promise<void> {
+  async deleteChunks(slug: string, opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     await sql`
       DELETE FROM content_chunks
-      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug})
+      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug} AND source_id = ${sourceId})
     `;
   }
 
@@ -1265,11 +1270,12 @@ export class PostgresEngine implements BrainEngine {
   }
 
   // Tags
-  async addTag(slug: string, tag: string): Promise<void> {
+  async addTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     // Verify page exists before attempting insert (ON CONFLICT DO NOTHING
     // swallows the "already tagged" case, but we still need to detect missing pages)
-    const page = await sql`SELECT id FROM pages WHERE slug = ${slug}`;
+    const page = await sql`SELECT id FROM pages WHERE slug = ${slug} AND source_id = ${sourceId}`;
     if (page.length === 0) throw new Error(`addTag failed: page "${slug}" not found`);
     await sql`
       INSERT INTO tags (page_id, tag)
@@ -1278,20 +1284,22 @@ export class PostgresEngine implements BrainEngine {
     `;
   }
 
-  async removeTag(slug: string, tag: string): Promise<void> {
+  async removeTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     await sql`
       DELETE FROM tags
-      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug})
+      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug} AND source_id = ${sourceId})
         AND tag = ${tag}
     `;
   }
 
-  async getTags(slug: string): Promise<string[]> {
+  async getTags(slug: string, opts?: { sourceId?: string }): Promise<string[]> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     const rows = await sql`
       SELECT tag FROM tags
-      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug})
+      WHERE page_id = (SELECT id FROM pages WHERE slug = ${slug} AND source_id = ${sourceId})
       ORDER BY tag
     `;
     return rows.map((r) => r.tag as string);
@@ -1441,12 +1449,13 @@ export class PostgresEngine implements BrainEngine {
   }
 
   // Versions
-  async createVersion(slug: string): Promise<PageVersion> {
+  async createVersion(slug: string, opts?: { sourceId?: string }): Promise<PageVersion> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId ?? 'default';
     const rows = await sql`
       INSERT INTO page_versions (page_id, compiled_truth, frontmatter)
       SELECT id, compiled_truth, frontmatter
-      FROM pages WHERE slug = ${slug}
+      FROM pages WHERE slug = ${slug} AND source_id = ${sourceId}
       RETURNING *
     `;
     if (rows.length === 0) throw new Error(`createVersion failed: page "${slug}" not found`);
@@ -1545,6 +1554,7 @@ export class PostgresEngine implements BrainEngine {
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NULL) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(DISTINCT page_id) FROM timeline_entries) as pages_with_timeline,
+        (SELECT count(*) FROM entity_pages) as entity_page_count,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as link_coverage,
@@ -1568,6 +1578,7 @@ export class PostgresEngine implements BrainEngine {
     const deadLinks = Number(h.dead_links);
     const linkCount = Number(h.link_count);
     const pagesWithTimeline = Number(h.pages_with_timeline);
+    const entityPageCount = Number(h.entity_page_count);
 
     // brain_score: 0-100 weighted average
     const linkDensity = pageCount > 0 ? Math.min(linkCount / pageCount, 1) : 0;
@@ -1590,8 +1601,9 @@ export class PostgresEngine implements BrainEngine {
       missing_embeddings: Number(h.missing_embeddings),
       brain_score: brainScore,
       dead_links: deadLinks,
-      link_coverage: Number(h.link_coverage),
-      timeline_coverage: Number(h.timeline_coverage),
+      link_coverage: entityPageCount === 0 ? 1 : Number(h.link_coverage),
+      timeline_coverage: entityPageCount === 0 ? 1 : Number(h.timeline_coverage),
+      entity_page_count: entityPageCount,
       most_connected: (connected as unknown as { slug: string; link_count: number }[]).map(c => ({
         slug: c.slug,
         link_count: Number(c.link_count),

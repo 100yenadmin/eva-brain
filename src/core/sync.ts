@@ -185,8 +185,10 @@ export function isSyncable(path: string, opts: SyncableOptions = {}): boolean {
 
   if (!isAllowedByStrategy(path, strategy)) return false;
 
-  // Skip hidden directories
-  if (path.split('/').some(p => p.startsWith('.'))) return false;
+  const segments = path.split('/');
+
+  // Skip hidden directories and dependency/vendor caches.
+  if (segments.some(p => p.startsWith('.') || p === 'node_modules')) return false;
 
   // Skip .raw/ sidecar directories
   if (path.includes('.raw/')) return false;

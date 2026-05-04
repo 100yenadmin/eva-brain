@@ -17,9 +17,14 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
+import { runImport } from '../src/commands/import.ts';
 import { runSources } from '../src/commands/sources.ts';
 import { resolveSourceId } from '../src/core/source-resolver.ts';
+import { importFromContent } from '../src/core/import-file.ts';
 
 let engine: PGLiteEngine;
 
@@ -75,6 +80,73 @@ describe('v0.18.0 — putPage implicitly writes to default source', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].source_id).toBe('default');
   });
+
+  test('putPage with explicit source writes outside default', async () => {
+    await runSources(engine, ['add', 'putsrc', '--no-federated']);
+    await engine.putPage('topics/source-aware-put', {
+      type: 'concept',
+      title: 'Source Aware Put',
+      compiled_truth: 'Written under a named source.',
+    }, { sourceId: 'putsrc' });
+
+    const rows = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT source_id, slug FROM pages WHERE slug = 'topics/source-aware-put'`,
+    );
+    expect(rows).toEqual([{ source_id: 'putsrc', slug: 'topics/source-aware-put' }]);
+  });
+
+  test('importFromContent threads sourceId through page, tags, and chunks', async () => {
+    await runSources(engine, ['add', 'importsrc', '--no-federated']);
+    const md = [
+      '---',
+      'title: Source Import',
+      'type: concept',
+      'tags: [source-aware]',
+      '---',
+      '',
+      '# Source Import',
+      '',
+      'This page should live outside the default source.',
+    ].join('\n');
+
+    const result = await importFromContent(engine, 'topics/source-import', md, { sourceId: 'importsrc', noEmbed: true });
+    expect(result.status).toBe('imported');
+
+    const pages = await engine.executeRaw<{ source_id: string }>(
+      `SELECT source_id FROM pages WHERE slug = 'topics/source-import'`,
+    );
+    expect(pages).toEqual([{ source_id: 'importsrc' }]);
+
+    expect(await engine.getTags('topics/source-import', { sourceId: 'importsrc' })).toContain('source-aware');
+    expect(await engine.getChunks('topics/source-import', { sourceId: 'importsrc' })).toHaveLength(1);
+    expect(await engine.getPage('topics/source-import')).toBeNull();
+  });
+
+  test('runImport threads sourceId during full-directory imports', async () => {
+    await runSources(engine, ['add', 'fullimportsrc', '--no-federated']);
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-source-import-'));
+    try {
+      writeFileSync(join(dir, 'full-import.md'), [
+        '---',
+        'title: Full Import',
+        'type: concept',
+        '---',
+        '',
+        '# Full Import',
+        '',
+        'Directory import should preserve the requested source.',
+      ].join('\n'));
+
+      const result = await runImport(engine, [dir, '--no-embed', '--fresh'], { sourceId: 'fullimportsrc' });
+      expect(result.imported).toBe(1);
+      const rows = await engine.executeRaw<{ source_id: string }>(
+        `SELECT source_id FROM pages WHERE slug = 'full-import'`,
+      );
+      expect(rows).toEqual([{ source_id: 'fullimportsrc' }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
@@ -83,9 +155,8 @@ describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
     await runSources(engine, ['add', 'testsrc', '--no-federated']);
 
     // Sanity: default already has this slug from the previous test.
-    // Now write the same slug under testsrc via raw INSERT (putPage only
-    // targets default until a later step surfaces sourceId; raw INSERT is
-    // the "source-aware write" Step 5 continuation will add).
+    // Now write the same slug under testsrc via raw INSERT to prove the
+    // composite unique allows same-slug pages across sources.
     await engine.executeRaw(
       `INSERT INTO pages (source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash)
        VALUES ('testsrc', 'topics/step9-auto', 'concept', 'Step 9 Auto (testsrc variant)',
