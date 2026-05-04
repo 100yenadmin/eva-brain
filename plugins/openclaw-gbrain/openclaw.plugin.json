@@ -1,0 +1,41 @@
+{
+  "id": "gbrain",
+  "name": "GBrain",
+  "description": "Eva Brain/GBrain tools and OpenClaw OAuth-backed media extraction route.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "gbrain_status",
+      "gbrain_search",
+      "gbrain_query"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "gbrainBin": {
+        "type": "string",
+        "description": "Path to the gbrain executable. Defaults to gbrain on PATH."
+      },
+      "openclawBin": {
+        "type": "string",
+        "description": "Path to the openclaw executable. Defaults to openclaw on PATH."
+      },
+      "workingDir": {
+        "type": "string",
+        "description": "Working directory for spawned gbrain/openclaw commands."
+      },
+      "extractionModel": {
+        "type": "string",
+        "description": "OpenClaw provider/model used for OAuth-backed extraction."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "description": "Maximum milliseconds for GBrain/OpenClaw subprocess calls."
+      }
+    }
+  }
+}

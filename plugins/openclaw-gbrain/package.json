@@ -1,0 +1,21 @@
+{
+  "name": "@eva-brain/openclaw-gbrain",
+  "version": "0.1.0",
+  "description": "OpenClaw native plugin for Eva Brain/GBrain search, query, and OAuth-backed media extraction.",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.3"
+    }
+  },
+  "license": "MIT"
+}
