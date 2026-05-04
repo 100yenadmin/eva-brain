@@ -22,7 +22,7 @@
  *   gbrain mounts add --mcp-url         — HTTP MCP transport + OAuth (PR 2)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import {
@@ -135,7 +135,7 @@ function parseAddArgs(args: string[]): AddArgs {
   if (engine === 'postgres' && !database_url) {
     throw new GBrainError('postgres mount requires --db-url', '', 'Pass --db-url postgresql://...');
   }
-  if (engine === 'pglite' && !database_path && !database_url) {
+  if (engine === 'pglite' && !database_path) {
     throw new GBrainError('pglite mount requires --db-path', '', 'Pass --db-path /path/to/mount/.pglite');
   }
 
@@ -154,6 +154,13 @@ async function runAdd(args: string[]): Promise<void> {
       `Mount path does not exist: ${parsed.path}`,
       'The local clone directory must exist before registering a mount',
       `Clone the repo first (git clone <repo> ${parsed.path}) then re-run`,
+    );
+  }
+  if (!statSync(parsed.path).isDirectory()) {
+    throw new GBrainError(
+      `Mount path is not a directory: ${parsed.path}`,
+      'The local clone path must be a directory',
+      `Pass --path /absolute/path/to/${parsed.id}`,
     );
   }
 

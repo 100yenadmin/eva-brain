@@ -273,6 +273,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     for (const [nonce, expiresAt] of magicLinkNonces) {
       if (expiresAt < now) magicLinkNonces.delete(nonce);
     }
+    // Cap unconsumed nonces too. Map iteration order is insertion order, so
+    // dropping from the front gives us a simple bounded FIFO/LRU store.
+    if (magicLinkNonces.size > NONCE_LRU_CAP) {
+      const drop = magicLinkNonces.size - NONCE_LRU_CAP;
+      const it = magicLinkNonces.keys();
+      for (let i = 0; i < drop; i++) magicLinkNonces.delete(it.next().value as string);
+    }
     // Cap consumedNonces growth — drop oldest entries past the LRU cap.
     if (consumedNonces.size > NONCE_LRU_CAP) {
       const drop = consumedNonces.size - NONCE_LRU_CAP;

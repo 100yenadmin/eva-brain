@@ -117,6 +117,12 @@ describe('parseAddArgs', () => {
     ])).toThrow(/postgres mount requires --db-url/);
   });
 
+  test('rejects pglite with --db-url but without --db-path', () => {
+    expect(() => parseAddArgs([
+      'x', '--path', '/tmp/x', '--engine', 'pglite', '--db-url', 'file:///tmp/x',
+    ])).toThrow(/pglite mount requires --db-path/);
+  });
+
   test('rejects flag-value missing', () => {
     expect(() => parseAddArgs([
       'x', '--path',

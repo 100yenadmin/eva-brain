@@ -72,6 +72,21 @@ async function captureExport(args: string[]): Promise<string> {
   return captured.join('');
 }
 
+async function captureExit(args: string[]): Promise<number | undefined> {
+  const originalExit = process.exit;
+  let exitCode: number | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (process.exit as any) = (code?: number) => {
+    exitCode = code;
+    throw new Error('exit');
+  };
+  try {
+    await captureExport(args);
+  } catch { /* expected */ }
+  process.exit = originalExit;
+  return exitCode;
+}
+
 describe('gbrain eval export — NDJSON shape', () => {
   test('empty table → zero lines, exit 0', async () => {
     const out = await captureExport([]);
@@ -137,34 +152,23 @@ describe('gbrain eval export — NDJSON shape', () => {
   });
 
   test('invalid --tool value exits 1 (via process.exit mock check)', async () => {
-    // Replace process.exit so we can see the exit code without killing bun.
-    const originalExit = process.exit;
-    let exitCode: number | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (process.exit as any) = (code?: number) => {
-      exitCode = code;
-      throw new Error('exit'); // abort the command
-    };
-    try {
-      await captureExport(['--tool', 'dance']);
-    } catch { /* expected */ }
-    process.exit = originalExit;
-    expect(exitCode).toBe(1);
+    expect(await captureExit(['--tool', 'dance'])).toBe(1);
   });
 
   test('invalid --since format exits 1', async () => {
-    const originalExit = process.exit;
-    let exitCode: number | undefined;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (process.exit as any) = (code?: number) => {
-      exitCode = code;
-      throw new Error('exit');
-    };
-    try {
-      await captureExport(['--since', 'yesterday']);
-    } catch { /* expected */ }
-    process.exit = originalExit;
-    expect(exitCode).toBe(1);
+    expect(await captureExit(['--since', 'yesterday'])).toBe(1);
+  });
+
+  test('missing flag values exit 1', async () => {
+    expect(await captureExit(['--since'])).toBe(1);
+    expect(await captureExit(['--tool'])).toBe(1);
+    expect(await captureExit(['--limit'])).toBe(1);
+  });
+
+  test('invalid --limit values exit 1', async () => {
+    expect(await captureExit(['--limit', '0'])).toBe(1);
+    expect(await captureExit(['--limit', 'NaN'])).toBe(1);
+    expect(await captureExit(['--limit', '100001'])).toBe(1);
   });
 
   test('output is stream-friendly: each row on its own \\n-terminated line', async () => {

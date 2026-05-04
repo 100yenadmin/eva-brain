@@ -86,7 +86,7 @@ export async function runEvalPrune(engine: BrainEngine, args: string[]): Promise
     printHelp();
     return;
   }
-  if (!opts.olderThanMs) {
+  if (opts.olderThanMs == null) {
     console.error('Error: --older-than is required\n');
     printHelp();
     process.exit(1);

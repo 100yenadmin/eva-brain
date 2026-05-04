@@ -131,4 +131,9 @@ describe('gbrain eval prune', () => {
     process.exit = originalExit;
     expect(exitCode).toBe(1);
   });
+
+  test('accepts 0ms as an explicit cutoff', async () => {
+    await insertAged(1);
+    await withSilencedStdout(() => runEvalPrune(engine, ['--older-than', '0ms', '--dry-run']));
+  });
 });

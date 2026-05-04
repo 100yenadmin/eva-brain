@@ -18,6 +18,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import type { EvalCandidate } from '../core/types.ts';
 
 const SCHEMA_VERSION = 1;
+const MAX_LIMIT = 100_000;
 
 interface ExportOpts {
   help?: boolean;
@@ -53,7 +54,10 @@ function parseArgs(args: string[]): ExportOpts {
         opts.help = true;
         break;
       case '--since': {
-        if (!next) break;
+        if (!next || next.startsWith('--')) {
+          console.error('--since requires a value (use like 7d, 1h, 30m)');
+          process.exit(1);
+        }
         const ms = parseDurationToMs(next);
         if (ms !== null) {
           opts.since = new Date(Date.now() - ms);
@@ -65,7 +69,19 @@ function parseArgs(args: string[]): ExportOpts {
         break;
       }
       case '--limit':
-        if (next) opts.limit = parseInt(next, 10);
+        if (!next || next.startsWith('--')) {
+          console.error('--limit requires a positive integer value');
+          process.exit(1);
+        }
+        if (!/^[1-9]\d*$/.test(next)) {
+          console.error(`Invalid --limit value: ${next} (use 1-${MAX_LIMIT})`);
+          process.exit(1);
+        }
+        opts.limit = parseInt(next, 10);
+        if (opts.limit > MAX_LIMIT) {
+          console.error(`Invalid --limit value: ${next} (max ${MAX_LIMIT})`);
+          process.exit(1);
+        }
         i++;
         break;
       case '--tool':
@@ -73,6 +89,9 @@ function parseArgs(args: string[]): ExportOpts {
           opts.tool = next;
         } else if (next) {
           console.error(`Invalid --tool value: ${next} (use 'query' or 'search')`);
+          process.exit(1);
+        } else {
+          console.error("--tool requires a value ('query' or 'search')");
           process.exit(1);
         }
         i++;

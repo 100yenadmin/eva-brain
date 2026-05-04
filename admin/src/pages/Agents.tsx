@@ -270,7 +270,7 @@ function RegisterModal({ onClose, onRegistered }: {
     { label: '7 days', value: '604800' },
     { label: '30 days', value: '2592000' },
     { label: '1 year', value: '31536000' },
-    { label: 'No expiry', value: '0' },
+    { label: '10 years', value: '315360000' },
   ];
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -285,7 +285,7 @@ function RegisterModal({ onClose, onRegistered }: {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), scopes: selectedScopes, tokenTtl: ttl === '0' ? 315360000 : Number(ttl) }),
+        body: JSON.stringify({ name: name.trim(), scopes: selectedScopes, tokenTtl: Number(ttl) }),
       });
       if (!res.ok) throw new Error('Registration failed');
       const data = await res.json();
@@ -546,7 +546,7 @@ function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () 
         <div className="section-title">Details</div>
         <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '6px 12px', fontSize: 13 }}>
           <span style={{ color: 'var(--text-secondary)' }}>Client ID</span>
-          <span className="mono">{(agent.id || agent.id || agent.client_id || '').substring(0, 24)}...</span>
+          <span className="mono">{(agent.id || agent.client_id || '').substring(0, 24)}...</span>
           <span style={{ color: 'var(--text-secondary)' }}>Scopes</span>
           <span>{(agent.scope || '').split(' ').filter(Boolean).map(s => (
             <span key={s} className={`badge badge-${s}`} style={{ marginRight: 4 }}>{s}</span>
@@ -554,7 +554,7 @@ function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () 
           <span style={{ color: 'var(--text-secondary)' }}>Registered</span>
           <span>{new Date(agent.created_at).toLocaleDateString()}</span>
           <span style={{ color: 'var(--text-secondary)' }}>Token TTL</span>
-          <span>{agent.token_ttl ? (agent.token_ttl >= 31536000 ? 'No expiry' : agent.token_ttl >= 86400 ? `${Math.floor(agent.token_ttl / 86400)}d` : agent.token_ttl >= 3600 ? `${Math.floor(agent.token_ttl / 3600)}h` : `${agent.token_ttl}s`) : '1h (default)'}</span>
+          <span>{agent.token_ttl ? (agent.token_ttl >= 31536000 ? `${Math.floor(agent.token_ttl / 31536000)}y` : agent.token_ttl >= 86400 ? `${Math.floor(agent.token_ttl / 86400)}d` : agent.token_ttl >= 3600 ? `${Math.floor(agent.token_ttl / 3600)}h` : `${agent.token_ttl}s`) : '1h (default)'}</span>
         </div>
 
         {/*

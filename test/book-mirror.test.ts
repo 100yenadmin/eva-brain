@@ -33,7 +33,7 @@ async function runCli(args: string[]): Promise<{
   exit: number;
 }> {
   const proc = Bun.spawn(
-    ['bun', 'run', 'src/cli.ts', 'book-mirror', ...args],
+    [process.execPath, 'run', 'src/cli.ts', 'book-mirror', ...args],
     {
       cwd: REPO_ROOT,
       stdout: 'pipe',

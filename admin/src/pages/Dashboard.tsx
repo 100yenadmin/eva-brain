@@ -11,7 +11,7 @@ interface FeedEvent {
 }
 
 export function DashboardPage() {
-  const [stats, setStats] = useState({ connected_agents: 0, requests_today: 0, active_tokens: 0 });
+  const [stats, setStats] = useState({ connected_agents: 0, requests_today: 0, active_tokens: 0, active_api_keys: 0 });
   const [health, setHealth] = useState({ expiring_soon: 0, error_rate: '0%' });
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [sseStatus, setSseStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
@@ -44,8 +44,6 @@ export function DashboardPage() {
       setSseStatus('disconnected');
       setTimeout(() => {
         setSseStatus('connecting');
-        es.close();
-        // Reconnect handled by browser EventSource auto-retry
       }, 3000);
     };
 
@@ -85,7 +83,11 @@ export function DashboardPage() {
             </div>
             <div className="metric">
               <div className="metric-value">{stats.active_tokens}</div>
-              <div className="metric-label">Active Tokens</div>
+              <div className="metric-label">OAuth Tokens</div>
+            </div>
+            <div className="metric">
+              <div className="metric-value">{stats.active_api_keys}</div>
+              <div className="metric-label">Legacy Tokens</div>
             </div>
           </div>
 

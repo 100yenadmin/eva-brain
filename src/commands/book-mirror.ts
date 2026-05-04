@@ -237,6 +237,7 @@ function buildChapterPrompt(
   bookTitle: string,
   bookAuthor: string | undefined,
   contextPack: string | undefined,
+  maxTurns: number,
 ): string {
   const authorLine = bookAuthor ? ` by ${bookAuthor}` : '';
   const contextSection = contextPack
@@ -279,7 +280,7 @@ Return ONLY a single markdown section in this exact shape:
 - Never generic ("This might apply if you've ever felt..."). Never sycophantic. Never preach.
 - Use \`<br><br>\` for paragraph breaks inside table cells, not literal newlines.
 
-You have ${DEFAULT_MAX_TURNS} turns and read-only tools (get_page, search). You CANNOT call put_page — your output is the markdown text in your final message. The CLI assembles all chapters and writes the brain page.
+You have ${maxTurns} turns and read-only tools (get_page, search). You CANNOT call put_page — your output is the markdown text in your final message. The CLI assembles all chapters and writes the brain page.
 
 When done, your final message should contain ONLY the \`## Chapter ${chapter.index}: ...\` section above. No preamble, no postscript, no commentary.`;
 }
@@ -401,7 +402,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   const childIds: number[] = [];
   for (const ch of chapters) {
     const data: SubagentHandlerData = {
-      prompt: buildChapterPrompt(ch, chapters.length, bookTitle, flags.author, contextPack),
+      prompt: buildChapterPrompt(ch, chapters.length, bookTitle, flags.author, contextPack, flags.maxTurns),
       model: flags.model,
       max_turns: flags.maxTurns,
       // CODEX HIGH-1 FIX: read-only tool allowlist. Subagents cannot call
