@@ -16,4 +16,18 @@ describe('serve-http security wiring', () => {
     const source = await Bun.file(new URL('../src/commands/serve-http.ts', import.meta.url)).text();
     expect(source).toContain("secure: req.secure || issuerUrl.protocol === 'https:'");
   });
+
+  test('MCP request logging stores only redacted argument summaries', async () => {
+    const source = await Bun.file(new URL('../src/commands/serve-http.ts', import.meta.url)).text();
+    const routeStart = source.indexOf("app.post('/mcp'");
+    const routeEnd = source.indexOf('// Use StreamableHTTPServerTransport', routeStart);
+    const mcpRoute = source.slice(routeStart, routeEnd);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    expect(source).toContain('function summarizeMcpParams');
+    expect(mcpRoute).toContain('const safeParams = summarizeMcpParams(params)');
+    expect(mcpRoute).not.toContain('JSON.stringify(params)');
+    expect(mcpRoute).not.toContain('params: params || {}');
+  });
 });

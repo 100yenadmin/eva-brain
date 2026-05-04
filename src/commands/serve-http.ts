@@ -43,6 +43,43 @@ interface ServeHttpOptions {
   publicUrl?: string;
 }
 
+function summarizeMcpParams(params: unknown): Record<string, unknown> | null {
+  if (params == null) return null;
+
+  let approxBytes: number | undefined;
+  try {
+    approxBytes = JSON.stringify(params).length;
+  } catch {
+    approxBytes = undefined;
+  }
+
+  if (Array.isArray(params)) {
+    return {
+      redacted: true,
+      kind: 'array',
+      length: params.length,
+      ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
+    };
+  }
+
+  if (typeof params === 'object') {
+    const keys = Object.keys(params as Record<string, unknown>).sort();
+    return {
+      redacted: true,
+      kind: 'object',
+      keys,
+      field_count: keys.length,
+      ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
+    };
+  }
+
+  return {
+    redacted: true,
+    kind: typeof params,
+    ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
+  };
+}
+
 export async function runServeHttp(engine: BrainEngine, options: ServeHttpOptions) {
   const { port, tokenTtl, enableDcr, publicUrl } = options;
   const config = loadConfig() || { engine: 'pglite' as const };
@@ -658,6 +695,9 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         };
       }
 
+      const safeParams = summarizeMcpParams(params);
+      const logParams = safeParams ? JSON.stringify(safeParams) : null;
+
       const ctx: OperationContext = {
         engine,
         config,
@@ -676,7 +716,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         const latency = Date.now() - startTime;
 
         // Log request + broadcast to SSE
-        const logParams = params ? JSON.stringify(params) : null;
         try {
           await sql`INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params)
                     VALUES (${authInfo.clientId}, ${agentName}, ${name}, ${latency}, ${'success'}, ${logParams})`;
@@ -685,7 +724,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         broadcastEvent({
           agent: agentName,
           operation: name,
-          params: params || {},
+          params: safeParams,
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
           status: 'success',
@@ -698,7 +737,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         const error = e instanceof OperationError ? e.toJSON() : { error: 'internal_error', message: e instanceof Error ? e.message : 'Unknown error' };
 
         const errMsg = e instanceof Error ? e.message : 'Unknown error';
-        const logParams = params ? JSON.stringify(params) : null;
         try {
           await sql`INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params, error_message)
                     VALUES (${authInfo.clientId}, ${agentName}, ${name}, ${latency}, ${'error'}, ${logParams}, ${errMsg})`;
@@ -707,7 +745,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         broadcastEvent({
           agent: agentName,
           operation: name,
-          params: params || {},
+          params: safeParams,
           latency_ms: latency,
           status: 'error',
           error: errMsg,

@@ -23,7 +23,7 @@
 
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "ERROR: failed to cd to repo root" >&2; exit 2; }
 
 # ──────────────────────────────────────────────────────────────────────────
 # CPU detection: Apple Silicon perf cores → Mac total physical → nproc → 4.
@@ -289,10 +289,14 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   bash scripts/run-serial-tests.sh > "$LOG_DIR/serial.log" 2>&1
   SERIAL_RC=$?
   cat "$LOG_DIR/serial.log"
+  s_pass=$(bun_summary_count "pass" "$LOG_DIR/serial.log")
+  s_fail=$(bun_summary_count "fail" "$LOG_DIR/serial.log")
+  s_skip=$(bun_summary_count "skip" "$LOG_DIR/serial.log")
+  TOTAL_PASS=$((TOTAL_PASS + s_pass))
+  TOTAL_FAILURES=$((TOTAL_FAILURES + s_fail))
+  TOTAL_SKIP=$((TOTAL_SKIP + s_skip))
   if [ "$SERIAL_RC" != "0" ]; then
     TOTAL_RC=1
-    s_fail=$(bun_summary_count "fail" "$LOG_DIR/serial.log")
-    TOTAL_FAILURES=$((TOTAL_FAILURES + s_fail))
     if [ "$s_fail" -gt 0 ]; then
       awk '
         /^\(fail\) / { in_block=1; print "--- shard serial: " $0; next }
@@ -310,9 +314,7 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
     fi
     echo "serial: rc=$SERIAL_RC fail=$s_fail" >> "$SUMMARY_FILE"
   else
-    s_pass=$(bun_summary_count "pass" "$LOG_DIR/serial.log")
-    TOTAL_PASS=$((TOTAL_PASS + s_pass))
-    echo "serial: pass=$s_pass rc=0" >> "$SUMMARY_FILE"
+    echo "serial: pass=$s_pass skip=$s_skip rc=0" >> "$SUMMARY_FILE"
   fi
 fi
 
