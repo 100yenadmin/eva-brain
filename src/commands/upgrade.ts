@@ -178,6 +178,8 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     console.log('Idempotent — safe to re-run any time.');
     return;
   }
+  let upgradeFrom: string | null = null;
+
   // Cosmetic: print feature pitches for migrations newer than the prior binary.
   try {
     const statePath = join(process.env.HOME || '', '.gbrain', 'upgrade-state.json');
@@ -185,6 +187,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
       const state = JSON.parse(readFileSync(statePath, 'utf-8'));
       const from = state?.last_upgrade?.from;
       if (from) {
+        upgradeFrom = String(from);
         const { migrations } = await import('./migrations/index.ts');
         for (const m of migrations) {
           if (isNewerThan(m.version, from)) {
@@ -216,6 +219,17 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`\napply-migrations failed: ${msg}`);
     console.error('Run `gbrain apply-migrations --yes` manually to retry.');
+  }
+
+  // v0.25.1: agent-readable advisory listing recommended skills the
+  // workspace hasn't installed yet. No-op when everything is installed.
+  try {
+    if (upgradeFrom && isNewerThan('0.25.1', upgradeFrom) && !isNewerThan('0.25.1', VERSION)) {
+      const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
+      printAdvisoryIfRecommended({ version: VERSION, context: 'upgrade' });
+    }
+  } catch {
+    // Best-effort cosmetic surface; never block post-upgrade.
   }
 }
 

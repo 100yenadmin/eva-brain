@@ -11,7 +11,7 @@
 
 import type { BrainEngine } from '../engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from '../engine.ts';
-import type { SearchResult, SearchOpts } from '../types.ts';
+import type { SearchResult, SearchOpts, HybridSearchMeta } from '../types.ts';
 import { embed } from '../embedding.ts';
 import { dedupResults } from './dedup.ts';
 import { autoDetectDetail } from './intent.ts';
@@ -56,6 +56,15 @@ export interface HybridSearchOpts extends SearchOpts {
     maxTypeRatio?: number;
     maxPerPage?: number;
   };
+  /**
+   * v0.25.0 — optional side-channel for what hybridSearch actually did
+   * (vector ran or fell back, expansion fired or didn't, post-auto-detect
+   * detail). Surfaced via callback so the bare-return contract stays as
+   * `Promise<SearchResult[]>` for existing Cathedral II callers. Op-layer
+   * eval capture passes a callback that threads `meta` into the captured
+   * row; everyone else leaves it undefined and pays no cost.
+   */
+  onMeta?: (meta: HybridSearchMeta) => void;
 }
 
 export async function hybridSearch(
@@ -69,6 +78,7 @@ export async function hybridSearch(
 
   // Auto-detect detail level from query intent when caller doesn't specify
   const detail = opts?.detail ?? autoDetectDetail(query);
+  const detailResolved: 'low' | 'medium' | 'high' | null = detail ?? null;
   const searchOpts: SearchOpts = {
     limit: innerLimit,
     detail,
@@ -77,6 +87,22 @@ export async function hybridSearch(
     language: opts?.language,
     symbolKind: opts?.symbolKind,
   };
+  // Track what actually ran for the optional onMeta callback (v0.25.0).
+  // Caller leaves onMeta undefined → these flags are computed but never
+  // surfaced. Capture wrapper passes a closure to receive the meta and
+  // threads it into the eval_candidates row.
+  let expansionApplied = false;
+
+  // A throwing user callback must never break the search hot path — onMeta
+  // is a public surface (gbrain/search/hybrid) so a third-party closure bug
+  // shouldn't take down query/search responses.
+  const emitMeta = (meta: HybridSearchMeta): void => {
+    try {
+      opts?.onMeta?.(meta);
+    } catch {
+      // swallow — capture telemetry is best-effort
+    }
+  };
 
   if (DEBUG && detail) {
     console.error(`[search-debug] auto-detail=${detail} for query="${query}"`);
@@ -84,9 +110,7 @@ export async function hybridSearch(
 
   // Run keyword search (always available, no API key needed)
   const keywordResults = await engine.searchKeyword(query, searchOpts);
-
-  // Skip vector search entirely if no OpenAI key is configured
-  if (!process.env.OPENAI_API_KEY) {
+  const returnKeywordOnly = async (appliedExpansion: boolean): Promise<SearchResult[]> => {
     // Apply backlink boost in keyword-only path too. One getBacklinkCounts query
     // per search request; not N+1.
     if (keywordResults.length > 0) {
@@ -99,7 +123,14 @@ export async function hybridSearch(
         // Boost failure is non-fatal: keep unboosted ranking.
       }
     }
+    emitMeta({ vector_enabled: false, detail_resolved: detailResolved, expansion_applied: appliedExpansion });
     return dedupResults(keywordResults).slice(offset, offset + limit);
+  };
+
+  // Skip vector search entirely if the gateway has no embedding provider configured (Codex C3).
+  const { isAvailable } = await import('../ai/gateway.ts');
+  if (!isAvailable('embedding')) {
+    return returnKeywordOnly(false);
   }
 
   // Determine query variants (optionally with expansion)
@@ -110,6 +141,8 @@ export async function hybridSearch(
     try {
       queries = await opts.expandFn(query);
       if (queries.length === 0) queries = [query];
+      // "Applied" = produced variants beyond the original, not just called.
+      expansionApplied = queries.length > 1;
     } catch {
       // Expansion failure is non-fatal
     }
@@ -129,7 +162,8 @@ export async function hybridSearch(
   }
 
   if (vectorLists.length === 0) {
-    return dedupResults(keywordResults).slice(offset, offset + limit);
+    // Embed/vector failed silently; record that vector did not run.
+    return returnKeywordOnly(expansionApplied);
   }
 
   // Merge all result lists via RRF (includes normalization + boost)
@@ -203,11 +237,14 @@ export async function hybridSearch(
   // Dedup
   const deduped = dedupResults(fused, dedupOpts);
 
-  // Auto-escalate: if detail=low returned 0, retry with high
+  // Auto-escalate: if detail=low returned 0, retry with high. The inner
+  // call's onMeta fires with the escalated detail_resolved; do NOT also
+  // fire here (would double-emit and capture stale meta).
   if (deduped.length === 0 && opts?.detail === 'low') {
     return hybridSearch(engine, query, { ...opts, detail: 'high' });
   }
 
+  emitMeta({ vector_enabled: true, detail_resolved: detailResolved, expansion_applied: expansionApplied });
   return deduped.slice(offset, offset + limit);
 }
 

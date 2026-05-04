@@ -16,16 +16,41 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# --max-concurrency=N is forwarded to `bun test`. v0.26.4: invoked by
+# run-unit-parallel.sh; safe to call without (defaults to bun's default cap).
+MAX_CONC=""
+DRY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --max-concurrency)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "ERROR: --max-concurrency requires a positive integer value" >&2
+        exit 2
+      fi
+      MAX_CONC="$2"
+      shift 2
+      ;;
+    --max-concurrency=*) MAX_CONC="${1#*=}"; shift ;;
+    --dry-run-list) DRY_RUN=1; shift ;;
+    *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -n "$MAX_CONC" ] && ! printf '%s' "$MAX_CONC" | grep -qE '^[1-9][0-9]*$'; then
+  echo "ERROR: --max-concurrency must be a positive integer (got: $MAX_CONC)" >&2
+  exit 2
+fi
+
 # All non-E2E test files, sorted for deterministic shard splits.
-# Tier 4: *.slow.test.ts is the convention for "always-slow" tests (e.g.,
-# bootstrap correctness checks that intentionally exercise the cold init
-# path and can't benefit from Tier 3's snapshot). They're excluded from the
-# fast loop and run via `bun run test:slow` (or in CI where everything runs).
+# Tier 4: *.slow.test.ts is "always-slow" (cold-path correctness checks);
+# *.serial.test.ts is "concurrency-unsafe" (file-wide shared state). Both
+# are excluded from the fast loop. Slow runs via `bun run test:slow`; serial
+# runs via scripts/run-serial-tests.sh after the parallel pass.
 # Use while-read to stay portable to macOS bash 3.2 (no mapfile).
 all_files=()
 while IFS= read -r f; do
   all_files+=("$f")
-done < <(find test -name '*.test.ts' -not -path 'test/e2e/*' -not -name '*.slow.test.ts' | sort)
+done < <(find test -name '*.test.ts' -not -path 'test/e2e/*' -not -name '*.slow.test.ts' -not -name '*.serial.test.ts' | sort)
 
 files=()
 if [ -n "${SHARD:-}" ]; then
@@ -53,11 +78,13 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-# --dry-run-list mirrors scripts/run-e2e.sh for inline smoke checks.
-if [ "${1:-}" = "--dry-run-list" ]; then
+if [ "$DRY_RUN" = "1" ]; then
   printf '%s\n' "${files[@]}"
   exit 0
 fi
 
 echo "[unit-shard ${SHARD:-(unsharded)}] running ${#files[@]} files"
+if [ -n "$MAX_CONC" ]; then
+  exec bun test --max-concurrency="$MAX_CONC" --timeout=60000 "${files[@]}"
+fi
 exec bun test --timeout=60000 "${files[@]}"

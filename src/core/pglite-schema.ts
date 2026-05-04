@@ -3,9 +3,12 @@
  *
  * Differences from Postgres:
  * - No RLS block (no role system in embedded PGLite)
- * - No access_tokens / mcp_request_log (local-only, no remote auth)
  * - No files table (file attachments require Supabase Storage)
  * - No pg_advisory_lock (single connection)
+ *
+ * Includes OAuth tables (oauth_clients, oauth_tokens, oauth_codes) and
+ * auth infrastructure (access_tokens, mcp_request_log) because
+ * `gbrain serve --http` makes PGLite network-accessible.
  *
  * Everything else is identical: same tables, triggers, indexes, pgvector HNSW, tsvector GIN.
  *
@@ -13,7 +16,7 @@
  * test/edge-bundle.test.ts has a drift detection test.
  */
 
-export const PGLITE_SCHEMA_SQL = `
+const PGLITE_SCHEMA_SQL_TEMPLATE = `
 -- GBrain PGLite schema (local embedded Postgres)
 
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -29,6 +32,10 @@ CREATE TABLE IF NOT EXISTS sources (
   last_commit   TEXT,
   last_sync_at  TIMESTAMPTZ,
   config        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- v0.26.5: soft-delete + recovery window (mirrors src/schema.sql).
+  archived            BOOLEAN NOT NULL DEFAULT false,
+  archived_at         TIMESTAMPTZ,
+  archive_expires_at  TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -57,6 +64,8 @@ CREATE TABLE IF NOT EXISTS pages (
   content_hash  TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- v0.26.5: soft-delete + recovery window (mirrors src/schema.sql).
+  deleted_at    TIMESTAMPTZ,
   CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
 );
 
@@ -64,6 +73,9 @@ CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
+-- v0.26.5: partial index supports the autopilot purge sweep (mirrors src/schema.sql).
+CREATE INDEX IF NOT EXISTS pages_deleted_at_purge_idx
+  ON pages (deleted_at) WHERE deleted_at IS NOT NULL;
 
 -- ============================================================
 -- content_chunks: chunked content with embeddings
@@ -74,8 +86,8 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   chunk_index   INTEGER NOT NULL,
   chunk_text    TEXT    NOT NULL,
   chunk_source  TEXT    NOT NULL DEFAULT 'compiled_truth',
-  embedding     vector(1536),
-  model         TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
+  embedding     vector(__EMBEDDING_DIMS__),
+  model         TEXT    NOT NULL DEFAULT '__EMBEDDING_MODEL__',
   token_count   INTEGER,
   embedded_at   TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -200,8 +212,8 @@ CREATE TABLE IF NOT EXISTS config (
 INSERT INTO config (key, value) VALUES
   ('version', '1'),
   ('engine', 'pglite'),
-  ('embedding_model', 'text-embedding-3-large'),
-  ('embedding_dimensions', '1536'),
+  ('embedding_model', '__EMBEDDING_MODEL__'),
+  ('embedding_dimensions', '__EMBEDDING_DIMS__'),
   ('chunk_strategy', 'semantic')
 ON CONFLICT (key) DO NOTHING;
 
@@ -363,6 +375,112 @@ CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
 );
 CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires_at);
 
+-- Eval capture (v0.25.0). PGLite ignores RLS — see src/schema.sql for the
+-- cross-engine spec.
+CREATE TABLE IF NOT EXISTS eval_candidates (
+  id                    SERIAL PRIMARY KEY,
+  tool_name             TEXT         NOT NULL CHECK (tool_name IN ('query', 'search')),
+  query                 TEXT         NOT NULL CHECK (length(query) <= 51200),
+  retrieved_slugs       TEXT[]       NOT NULL DEFAULT '{}',
+  retrieved_chunk_ids   INTEGER[]    NOT NULL DEFAULT '{}',
+  source_ids            TEXT[]       NOT NULL DEFAULT '{}',
+  expand_enabled        BOOLEAN,
+  detail                TEXT         CHECK (detail IS NULL OR detail IN ('low', 'medium', 'high')),
+  detail_resolved       TEXT         CHECK (detail_resolved IS NULL OR detail_resolved IN ('low', 'medium', 'high')),
+  vector_enabled        BOOLEAN      NOT NULL,
+  expansion_applied     BOOLEAN      NOT NULL,
+  latency_ms            INTEGER      NOT NULL,
+  remote                BOOLEAN      NOT NULL,
+  job_id                INTEGER,
+  subagent_id           INTEGER,
+  created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_eval_candidates_created_at ON eval_candidates(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_capture_failures (
+  id      SERIAL       PRIMARY KEY,
+  ts      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  reason  TEXT         NOT NULL CHECK (reason IN ('db_down', 'rls_reject', 'check_violation', 'scrubber_exception', 'other'))
+);
+CREATE INDEX IF NOT EXISTS idx_eval_capture_failures_ts ON eval_capture_failures(ts DESC);
+
+-- ============================================================
+-- access_tokens: legacy bearer tokens for remote MCP access
+-- ============================================================
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  scopes       TEXT[],
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  revoked_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_access_tokens_hash ON access_tokens (token_hash) WHERE revoked_at IS NULL;
+
+-- ============================================================
+-- mcp_request_log: usage logging for MCP requests
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mcp_request_log (
+  id            SERIAL PRIMARY KEY,
+  token_name    TEXT,
+  agent_name    TEXT,
+  operation     TEXT NOT NULL,
+  latency_ms    INTEGER,
+  status        TEXT NOT NULL DEFAULT 'success',
+  params        JSONB,
+  error_message TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
+CREATE INDEX IF NOT EXISTS idx_mcp_log_agent_time ON mcp_request_log(agent_name, created_at DESC);
+
+-- ============================================================
+-- OAuth 2.1: clients, tokens, authorization codes
+-- ============================================================
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id               TEXT PRIMARY KEY,
+  client_secret_hash      TEXT,
+  client_name             TEXT NOT NULL,
+  redirect_uris           TEXT[],
+  grant_types             TEXT[] DEFAULT '{client_credentials}',
+  scope                   TEXT,
+  token_endpoint_auth_method TEXT,
+  client_id_issued_at     BIGINT,
+  client_secret_expires_at BIGINT,
+  token_ttl               INTEGER,
+  deleted_at              TIMESTAMPTZ,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash   TEXT PRIMARY KEY,
+  token_type   TEXT NOT NULL,
+  client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes       TEXT[],
+  expires_at   BIGINT,
+  resource     TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash              TEXT PRIMARY KEY,
+  client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+  scopes                 TEXT[],
+  code_challenge         TEXT NOT NULL,
+  code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
+  redirect_uri           TEXT NOT NULL,
+  state                  TEXT,
+  resource               TEXT,
+  expires_at             BIGINT NOT NULL,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ============================================================
 -- Trigger-based search_vector (spans pages + timeline_entries)
 -- ============================================================
@@ -401,3 +519,21 @@ CREATE TRIGGER trg_pages_search_vector
 DROP TRIGGER IF EXISTS trg_timeline_search_vector ON timeline_entries;
 DROP FUNCTION IF EXISTS update_page_search_vector_from_timeline();
 `;
+
+/**
+ * Return the PGLite schema SQL with embedding vector dim + model name substituted.
+ * Defaults preserve v0.13 behavior (1536d + text-embedding-3-large).
+ */
+export function getPGLiteSchema(dims: number = 1536, model: string = 'text-embedding-3-large'): string {
+  const parsedDims = Number(dims);
+  if (!Number.isInteger(parsedDims) || parsedDims <= 0) {
+    throw new Error(`Invalid embedding dimensions: ${dims}`);
+  }
+  const sanitizedModel = String(model).replace(/'/g, "''");
+  return PGLITE_SCHEMA_SQL_TEMPLATE
+    .replace(/__EMBEDDING_DIMS__/g, String(parsedDims))
+    .replace(/__EMBEDDING_MODEL__/g, sanitizedModel);
+}
+
+/** Back-compat: pre-computed default-1536 schema for existing callers. */
+export const PGLITE_SCHEMA_SQL = getPGLiteSchema();
