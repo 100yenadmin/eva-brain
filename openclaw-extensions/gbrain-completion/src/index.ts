@@ -90,6 +90,23 @@ function optionalPositiveInteger(body: Record<string, unknown>, field: string, m
   return value;
 }
 
+function validateModelRef(input: Record<string, unknown>): string {
+  const raw = optionalString(input, 'model', 200);
+  if (raw === undefined) return DEFAULT_MODEL;
+
+  const modelRef = raw.trim();
+  if (!modelRef || /\s/.test(modelRef)) {
+    throw new BridgeError('invalid_request', 'model must be a non-empty string without whitespace');
+  }
+
+  const segments = modelRef.split('/');
+  if (segments.length > 2 || segments.some((segment) => !segment)) {
+    throw new BridgeError('invalid_request', 'model must be a model id or "<provider>/<model>"');
+  }
+
+  return modelRef;
+}
+
 function validateBody(input: unknown): ValidatedBody {
   if (!isRecord(input)) throw new BridgeError('invalid_request', 'request body must be an object');
   const allowed = new Set(['protocol', 'model', 'prompt', 'system', 'json', 'maxTokens', 'timeoutMs', 'reasoning']);
@@ -105,7 +122,7 @@ function validateBody(input: unknown): ValidatedBody {
 
   return {
     protocol,
-    model: optionalString(input, 'model', 200)?.trim() || DEFAULT_MODEL,
+    model: validateModelRef(input),
     prompt,
     system: optionalString(input, 'system', MAX_SYSTEM_CHARS),
     json: optionalBoolean(input, 'json') ?? false,
