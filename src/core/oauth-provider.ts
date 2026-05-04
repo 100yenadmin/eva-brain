@@ -454,12 +454,12 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
   async sweepExpiredTokens(): Promise<number> {
     const now = Math.floor(Date.now() / 1000);
     const result = await this.sql`
-      DELETE FROM oauth_tokens WHERE expires_at < ${now}
+      DELETE FROM oauth_tokens WHERE expires_at < ${now} RETURNING 1
     `;
     const deletedCodes = await this.sql`
-      DELETE FROM oauth_codes WHERE expires_at < ${now}
+      DELETE FROM oauth_codes WHERE expires_at < ${now} RETURNING 1
     `;
-    return (result as any).count || 0;
+    return result.length + deletedCodes.length;
   }
 
   // -------------------------------------------------------------------------

@@ -110,6 +110,10 @@ for (const abs of [...walk(join(ROOT, 'src/core')), ...walk(join(ROOT, 'src/comm
   while ((match = re.exec(code)) !== null) {
     violations.push(`${rel}:${lineNumber(code, match.index)}: direct db.${match[1]}() call`);
   }
+  const interpolationRe = /\$\{\s*db\s*\.\s*(getConnection|connect)\s*\(/g;
+  while ((match = interpolationRe.exec(source)) !== null) {
+    violations.push(`${rel}:${lineNumber(source, match.index)}: direct db.${match[1]}() call inside template interpolation`);
+  }
 }
 
 if (violations.length > 0) {

@@ -314,6 +314,7 @@ describe('gbrain eval replay — happy path', () => {
       await runEvalReplay(engine, ['--against', file]);
       const { stdout, stderr } = cap.restore();
       expect(stderr).toContain('Replaying 1');
+      expect(stderr).toContain('eval.replay');
       expect(stdout).toContain('Mean Jaccard@k:');
       expect(stdout).toContain('Top-1 stability:');
       expect(stdout).toContain('regression');

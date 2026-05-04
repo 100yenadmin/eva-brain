@@ -234,6 +234,8 @@ describe('renderResolverMarkdown', () => {
     const md = renderResolverMarkdown(composed);
     expect(md).toContain('# GBrain Skill Resolver (aggregated)');
     expect(md).toContain('Auto-generated');
+    expect(md).toContain('agent-client-example');
+    expect(md).not.toContain('OpenClaw / Claude Code');
     expect(md).toContain('| Trigger | Skill | Brain |');
     expect(md).toContain('| search');
     expect(md).toContain('| host |');

@@ -30,6 +30,8 @@ import { readFileSync, existsSync } from 'fs';
 import type { BrainEngine } from '../core/engine.ts';
 import type { SearchResult } from '../core/types.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
+import { createProgress } from '../core/progress.ts';
+import { cliOptsToProgressOptions, getCliOptions } from '../core/cli-options.ts';
 
 interface ReplayOpts {
   help?: boolean;
@@ -385,6 +387,8 @@ export async function runEvalReplay(engine: BrainEngine, args: string[]): Promis
   }
 
   const results: RowResult[] = [];
+  const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
+  if (!opts.json) progress.start('eval.replay', capped.length);
   for (const row of capped) {
     if (!row.query || row.query.length === 0) {
       results.push({
@@ -400,14 +404,14 @@ export async function runEvalReplay(engine: BrainEngine, args: string[]): Promis
         skipped: true,
         skip_reason: 'empty query',
       });
+      if (!opts.json) progress.tick(1, 'skipped');
       continue;
     }
     const r = await replayRow(engine, row);
     results.push(r);
-    if (!opts.json && results.length % 25 === 0) {
-      process.stderr.write(`  ...${results.length}/${capped.length}\n`);
-    }
+    if (!opts.json) progress.tick(1, row.tool_name);
   }
+  if (!opts.json) progress.finish();
 
   const summary = summarize(results);
   if (opts.json) {

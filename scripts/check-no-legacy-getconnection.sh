@@ -24,4 +24,23 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
-exec bun scripts/check-no-legacy-getconnection.mjs
+CTX_DIR="$ROOT/.context"
+mkdir -p "$CTX_DIR"
+FAIL_LOG="$CTX_DIR/test-failures.log"
+SUMMARY_LOG="$CTX_DIR/test-summary.txt"
+
+if ! bun scripts/check-no-legacy-getconnection.mjs >"$FAIL_LOG" 2>&1; then
+  FAIL_ABS="$(cd "$(dirname "$FAIL_LOG")" && pwd)/$(basename "$FAIL_LOG")"
+  SUMMARY_ABS="$(cd "$(dirname "$SUMMARY_LOG")" && pwd)/$(basename "$SUMMARY_LOG")"
+  cp "$FAIL_LOG" "$SUMMARY_LOG"
+  {
+    echo "========== CHECK-NO-LEGACY-GETCONNECTION FAILED =========="
+    echo "Failure log: $FAIL_ABS"
+    echo "Summary:     $SUMMARY_ABS"
+    echo "=========================================================="
+  } >&2
+  cat "$FAIL_LOG" >&2
+  exit 1
+fi
+
+cat "$FAIL_LOG"

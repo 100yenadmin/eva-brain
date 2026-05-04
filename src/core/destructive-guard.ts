@@ -292,6 +292,10 @@ export async function purgeExpiredSources(
 
 // ── Display Helpers ─────────────────────────────────────────
 
+function truncateForBox(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, Math.max(0, max - 3))}...` : s;
+}
+
 /**
  * Format an impact assessment for terminal display.
  */
@@ -301,15 +305,15 @@ export function formatImpact(impact: DestructiveImpact): string {
     `╔══════════════════════════════════════════════════════════╗`,
     `║  DESTRUCTIVE OPERATION — Impact Preview                 ║`,
     `╠══════════════════════════════════════════════════════════╣`,
-    `║  Source:     ${impact.sourceName.padEnd(42)}║`,
-    `║  Source ID:  ${impact.sourceId.padEnd(42)}║`,
+    `║  Source:     ${truncateForBox(impact.sourceName, 42).padEnd(42)}║`,
+    `║  Source ID:  ${truncateForBox(impact.sourceId, 42).padEnd(42)}║`,
     `║                                                          ║`,
     `║  Pages:      ${String(impact.pageCount.toLocaleString()).padEnd(42)}║`,
     `║  Chunks:     ${String(impact.chunkCount.toLocaleString()).padEnd(42)}║`,
     `║  Embeddings: ${String(impact.embeddingCount.toLocaleString()).padEnd(42)}║`,
     `║  Files:      ${String(impact.fileCount.toLocaleString()).padEnd(42)}║`,
     `╠══════════════════════════════════════════════════════════╣`,
-    `║  ${impact.summary.padEnd(56)}║`,
+    `║  ${truncateForBox(impact.summary, 56).padEnd(56)}║`,
     `╚══════════════════════════════════════════════════════════╝`,
     ``,
   ];

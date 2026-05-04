@@ -14,4 +14,23 @@ describe('CLI auth/serve hardening invariants', () => {
     expect(source).toContain("parsed.hostname === 'localhost'");
     expect(source).toContain("parsed.hostname === '127.0.0.1'");
   });
+
+  test('post-upgrade skill advisory is gated to the v0.25.1 crossing', async () => {
+    const source = await Bun.file(new URL('../src/commands/upgrade.ts', import.meta.url)).text();
+    expect(source).toContain("isNewerThan('0.25.1', upgradeFrom)");
+    expect(source).toContain("!isNewerThan('0.25.1', VERSION)");
+  });
+
+  test('legacy singleton guard records failures in context artifacts', async () => {
+    const source = await Bun.file(new URL('../scripts/check-no-legacy-getconnection.sh', import.meta.url)).text();
+    expect(source).toContain('.context');
+    expect(source).toContain('test-failures.log');
+    expect(source).toContain('CHECK-NO-LEGACY-GETCONNECTION FAILED');
+  });
+
+  test('legacy singleton guard detects db calls inside template interpolation', async () => {
+    const source = await Bun.file(new URL('../scripts/check-no-legacy-getconnection.mjs', import.meta.url)).text();
+    expect(source).toContain('interpolationRe');
+    expect(source).toContain('inside template interpolation');
+  });
 });

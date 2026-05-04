@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 
 interface LogEntry {
@@ -14,6 +14,7 @@ interface LogEntry {
 }
 
 export function RequestLogPage() {
+  const loadSeq = useRef(0);
   const [data, setData] = useState<{ rows: LogEntry[]; total: number; page: number; pages: number }>({
     rows: [], total: 0, page: 1, pages: 1,
   });
@@ -25,10 +26,16 @@ export function RequestLogPage() {
   useEffect(() => { loadPage(page); }, [page, agentFilter]);
 
   const loadPage = (p: number) => {
+    const seq = ++loadSeq.current;
     const qs = agentFilter !== 'all' ? `&agent=${encodeURIComponent(agentFilter)}` : '';
     api.requests(p, qs)
-      .then((next) => { setData(next); setLoadError(''); })
+      .then((next) => {
+        if (seq !== loadSeq.current) return;
+        setData(next);
+        setLoadError('');
+      })
       .catch((err) => {
+        if (seq !== loadSeq.current) return;
         setData({ rows: [], total: 0, page: p, pages: 1 });
         setLoadError(err instanceof Error ? err.message : 'Failed to load request log');
       });

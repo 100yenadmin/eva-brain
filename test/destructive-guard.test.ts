@@ -325,6 +325,22 @@ describe('formatters (display helpers)', () => {
     expect(out).toContain('DESTRUCTIVE OPERATION');
   });
 
+  test('formatImpact truncates long fields to keep the box aligned', () => {
+    const out = formatImpact({
+      sourceId: 'source-' + 'x'.repeat(120),
+      sourceName: 'Source ' + 'y'.repeat(120),
+      pageCount: 1,
+      chunkCount: 2,
+      embeddingCount: 3,
+      fileCount: 4,
+      summary: 'This summary is intentionally long. ' + 'z'.repeat(160),
+    });
+    for (const line of out.split('\n').filter(Boolean)) {
+      expect(line.length).toBeLessThanOrEqual(60);
+    }
+    expect(out).toContain('...');
+  });
+
   test('formatSoftDelete renders the post-archive guidance with restore command', () => {
     const out = formatSoftDelete({
       id: 'src-a',

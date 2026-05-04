@@ -577,7 +577,8 @@ describe('sweepExpiredTokens', () => {
     await sql`INSERT INTO oauth_tokens (token_hash, token_type, client_id, scopes, expires_at)
               VALUES (${expired2}, ${'access'}, ${firstClient.client_id as string}, ${'{read}'}, ${2})`;
 
-    await provider.sweepExpiredTokens();
+    const swept = await provider.sweepExpiredTokens();
+    expect(swept).toBeGreaterThanOrEqual(2);
 
     // Verify they're gone
     const remaining = await sql`SELECT count(*)::int as count FROM oauth_tokens WHERE expires_at < 100`;
