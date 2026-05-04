@@ -28,6 +28,8 @@ function defaultMediaSlug(filename: string): string {
   return `media/evidence/${stem}`;
 }
 
+const MAX_OPENCLAW_IMAGE_BYTES = 10_000_000;
+
 function defaultContent(title: string, evidence: MediaEvidence): string {
   const fmType = evidence.kind === 'pdf' ? 'media' : 'media';
   return `---\ntype: ${fmType}\ntitle: ${title}\n---\n\n${evidence.text}\n`;
@@ -249,6 +251,9 @@ async function resolveIngestExtractionFile(mediaFile: string, extractionFile: st
   const size = statSync(mediaFile).size;
   const mimeType = getMimeType(mediaFile);
   const inferredKind = inferOpenClawExtractionKind(mediaFile, mimeType, kindHint);
+  if (inferredKind === 'image' && size > MAX_OPENCLAW_IMAGE_BYTES) {
+    throw new Error(`gbrain ingest-media --extract openclaw only supports image inputs up to ${MAX_OPENCLAW_IMAGE_BYTES} bytes; got ${size}`);
+  }
   if (inferredKind === 'image' && !client.supportsFileMedia) {
     throw new Error('gbrain ingest-media --extract openclaw image extraction requires GBRAIN_OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URL; command fallback only supports text-backed media');
   }

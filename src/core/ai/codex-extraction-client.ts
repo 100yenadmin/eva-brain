@@ -76,6 +76,7 @@ export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClie
     const url = new URL(this.options.extractPath ?? DEFAULT_OPENCLAW_EXTRACT_PATH, normalizeGatewayUrl(this.options.gatewayUrl));
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.options.gatewayToken) headers.authorization = `Bearer ${this.options.gatewayToken}`;
+    const model = (request.model ?? DEFAULT_CODEX_EXTRACTION_MODEL).replace(/^openai-codex\//, '');
     const res = await fetch(url, {
       method: 'POST',
       headers,
@@ -86,7 +87,7 @@ export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClie
         title: request.title,
         text: request.text,
         file: request.file,
-        model: request.model ?? DEFAULT_CODEX_EXTRACTION_MODEL.replace(/^openai-codex\//, ''),
+        model,
       }),
       signal: request.signal,
     });

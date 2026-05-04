@@ -67,7 +67,7 @@ describe('CodexExtractionClient', () => {
     try {
       const client = new OpenClawGatewayCodexExtractionClient({ gatewayUrl: 'http://127.0.0.1:18789', gatewayToken: 'gateway-token' });
       expect(client.supportsFileMedia).toBe(true);
-      const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON' });
+      const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON', model: 'openai-codex/gpt-5.4-mini' });
 
       expect(json.schemaVersion).toBe('gbrain.media-extraction.v1');
       expect(requests.length).toBe(1);
