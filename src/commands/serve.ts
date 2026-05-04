@@ -43,7 +43,17 @@ export async function runServe(engine: BrainEngine, args: string[] = []) {
     const enableDcr = args.includes('--enable-dcr');
 
     const publicUrlIdx = args.indexOf('--public-url');
-    const publicUrl = publicUrlIdx >= 0 ? args[publicUrlIdx + 1] : undefined;
+    const publicUrl =
+      publicUrlIdx >= 0
+        ? (() => {
+            const raw = args[publicUrlIdx + 1];
+            if (!raw || raw.startsWith('--')) {
+              console.error('--public-url requires a URL value.');
+              process.exit(2);
+            }
+            return raw;
+          })()
+        : undefined;
 
     const { runServeHttp } = await import('./serve-http.ts');
     await runServeHttp(engine, { port, tokenTtl, enableDcr, publicUrl });

@@ -26,6 +26,7 @@ import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { GBrainOAuthProvider } from '../core/oauth-provider.ts';
 import { loadConfig } from '../core/config.ts';
+import { buildError, serializeError } from '../core/errors.ts';
 import { VERSION } from '../version.ts';
 import * as db from '../core/db.ts';
 
@@ -734,9 +735,17 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (e) {
         const latency = Date.now() - startTime;
-        const error = e instanceof OperationError ? e.toJSON() : { error: 'internal_error', message: e instanceof Error ? e.message : 'Unknown error' };
+        const errorPayload = e instanceof OperationError
+          ? buildError({
+              class: 'OperationError',
+              code: e.code,
+              message: e.message,
+              hint: e.suggestion,
+              docs_url: e.docs,
+            })
+          : serializeError(e);
 
-        const errMsg = e instanceof Error ? e.message : 'Unknown error';
+        const errMsg = errorPayload.message;
         try {
           await sql`INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params, error_message)
                     VALUES (${authInfo.clientId}, ${agentName}, ${name}, ${latency}, ${'error'}, ${logParams}, ${errMsg})`;
@@ -748,11 +757,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           params: safeParams,
           latency_ms: latency,
           status: 'error',
-          error: errMsg,
+          error: errorPayload,
           timestamp: new Date().toISOString(),
         });
 
-        return { content: [{ type: 'text', text: JSON.stringify(error) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ error: errorPayload }) }], isError: true };
       }
     });
 

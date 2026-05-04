@@ -30,4 +30,18 @@ describe('serve-http security wiring', () => {
     expect(mcpRoute).not.toContain('JSON.stringify(params)');
     expect(mcpRoute).not.toContain('params: params || {}');
   });
+
+  test('MCP operation failures use the shared structured error envelope', async () => {
+    const source = await Bun.file(new URL('../src/commands/serve-http.ts', import.meta.url)).text();
+    const routeStart = source.indexOf("app.post('/mcp'");
+    const routeEnd = source.indexOf('// Use StreamableHTTPServerTransport', routeStart);
+    const mcpRoute = source.slice(routeStart, routeEnd);
+
+    expect(source).toContain("from '../core/errors.ts'");
+    expect(mcpRoute).toContain('buildError({');
+    expect(mcpRoute).toContain('serializeError(e)');
+    expect(mcpRoute).toContain('JSON.stringify({ error: errorPayload })');
+    expect(mcpRoute).not.toContain('e.toJSON()');
+    expect(mcpRoute).not.toContain("error: 'internal_error'");
+  });
 });

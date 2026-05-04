@@ -304,6 +304,7 @@ export class BrainRegistry {
   private readonly pending = new Map<string, Promise<BrainHandle>>();
   private hostHandle: BrainHandle | null = null;
   private pendingHost: Promise<BrainHandle> | null = null;
+  private closed = false;
 
   constructor(mounts: MountEntry[]) {
     this.mounts = new Map();
@@ -317,6 +318,9 @@ export class BrainRegistry {
    * `id === 'host'` (or undefined). Throws UnknownBrainError for unknown ids.
    */
   async getBrain(id: string | undefined | null): Promise<BrainHandle> {
+    if (this.closed) {
+      throw new GBrainError('Brain registry is closed', 'disconnectAll() has already been called', 'Create a new BrainRegistry for further use');
+    }
     const resolved = id && id.length > 0 ? id : HOST_BRAIN_ID;
     if (resolved === HOST_BRAIN_ID) return this.getDefaultBrain();
 
@@ -335,6 +339,10 @@ export class BrainRegistry {
     this.pending.set(resolved, promise);
     try {
       const handle = await promise;
+      if (this.closed) {
+        await handle.engine.disconnect();
+        throw new GBrainError('Brain registry is closed', 'Mount initialized after shutdown began', 'Create a new BrainRegistry for further use');
+      }
       this.handles.set(resolved, handle);
       return handle;
     } finally {
@@ -347,12 +355,20 @@ export class BrainRegistry {
    * initialized so callers that only touch mounts don't require host config.
    */
   async getDefaultBrain(): Promise<BrainHandle> {
+    if (this.closed) {
+      throw new GBrainError('Brain registry is closed', 'disconnectAll() has already been called', 'Create a new BrainRegistry for further use');
+    }
     if (this.hostHandle) return this.hostHandle;
     if (this.pendingHost) return this.pendingHost;
 
     this.pendingHost = this.initHostBrain();
     try {
       this.hostHandle = await this.pendingHost;
+      if (this.closed) {
+        await this.hostHandle.engine.disconnect();
+        this.hostHandle = null;
+        throw new GBrainError('Brain registry is closed', 'Host brain initialized after shutdown began', 'Create a new BrainRegistry for further use');
+      }
       return this.hostHandle;
     } finally {
       this.pendingHost = null;
@@ -371,12 +387,31 @@ export class BrainRegistry {
 
   /** Disconnect every initialized engine. Safe to call repeatedly. */
   async disconnectAll(): Promise<void> {
-    const handles = [this.hostHandle, ...Array.from(this.handles.values())].filter(
+    this.closed = true;
+    const settledPending = await Promise.allSettled([
+      ...(this.pendingHost ? [this.pendingHost] : []),
+      ...Array.from(this.pending.values()),
+    ]);
+    const pendingHandles = settledPending
+      .filter((r): r is PromiseFulfilledResult<BrainHandle> => r.status === 'fulfilled')
+      .map(r => r.value);
+    const handles = [this.hostHandle, ...Array.from(this.handles.values()), ...pendingHandles].filter(
       (h): h is BrainHandle => h != null,
     );
     this.hostHandle = null;
+    this.pendingHost = null;
+    this.pending.clear();
     this.handles.clear();
-    await Promise.allSettled(handles.map(h => h.engine.disconnect()));
+    const seen = new Set<BrainEngine>();
+    await Promise.allSettled(
+      handles
+        .filter(h => {
+          if (seen.has(h.engine)) return false;
+          seen.add(h.engine);
+          return true;
+        })
+        .map(h => h.engine.disconnect()),
+    );
   }
 
   private async initHostBrain(): Promise<BrainHandle> {

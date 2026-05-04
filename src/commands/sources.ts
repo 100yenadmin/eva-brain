@@ -219,7 +219,7 @@ async function runRemove(engine: BrainEngine, args: string[]): Promise<void> {
   }
   const yes = args.includes('--yes');
   const dryRun = args.includes('--dry-run');
-  const confirmDestructive = args.includes('--confirm-destructive');
+  const confirmDestructive = args.includes('--confirm-destructive') || yes;
   const _keepStorage = args.includes('--keep-storage');
   void _keepStorage;
 

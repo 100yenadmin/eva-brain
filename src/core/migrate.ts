@@ -1211,57 +1211,98 @@ export const MIGRATIONS: Migration[] = [
     // ordering doesn't matter beyond version ledger correctness. CREATE TABLE
     // statements are idempotent so brains that previously applied this at v30
     // see version 32 as new and run IF NOT EXISTS DDL cleanly.
-    sql: `
-      CREATE TABLE IF NOT EXISTS oauth_clients (
-        client_id               TEXT PRIMARY KEY,
-        client_secret_hash      TEXT,
-        client_name             TEXT NOT NULL,
-        redirect_uris           TEXT[],
-        grant_types             TEXT[] DEFAULT '{"client_credentials"}',
-        scope                   TEXT,
-        token_endpoint_auth_method TEXT,
-        client_id_issued_at     BIGINT,
-        client_secret_expires_at BIGINT,
-        created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS oauth_tokens (
-        token_hash   TEXT PRIMARY KEY,
-        token_type   TEXT NOT NULL,
-        client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
-        scopes       TEXT[],
-        expires_at   BIGINT,
-        resource     TEXT,
-        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
-      CREATE TABLE IF NOT EXISTS oauth_codes (
-        code_hash              TEXT PRIMARY KEY,
-        client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
-        scopes                 TEXT[],
-        code_challenge         TEXT NOT NULL,
-        code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
-        redirect_uri           TEXT NOT NULL,
-        state                  TEXT,
-        resource               TEXT,
-        expires_at             BIGINT NOT NULL,
-        created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
-      DO $$
-      DECLARE
-        has_bypass BOOLEAN;
-      BEGIN
-        SELECT rolbypassrls INTO has_bypass FROM pg_roles WHERE rolname = current_user;
-        IF has_bypass THEN
-          ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY;
-          ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
-          ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY;
-        ELSE
-          RAISE EXCEPTION 'v32 oauth_server_core: role % does not have BYPASSRLS privilege — cannot enable OAuth RLS safely. Re-run as postgres (or another BYPASSRLS role). The migration will retry automatically on the next initSchema call.', current_user;
-        END IF;
-      END $$;
-    `,
+    sql: '',
+    sqlFor: {
+      postgres: `
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+          client_id               TEXT PRIMARY KEY,
+          client_secret_hash      TEXT,
+          client_name             TEXT NOT NULL,
+          redirect_uris           TEXT[],
+          grant_types             TEXT[] DEFAULT '{"client_credentials"}',
+          scope                   TEXT,
+          token_endpoint_auth_method TEXT,
+          client_id_issued_at     BIGINT,
+          client_secret_expires_at BIGINT,
+          created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS oauth_tokens (
+          token_hash   TEXT PRIMARY KEY,
+          token_type   TEXT NOT NULL,
+          client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+          scopes       TEXT[],
+          expires_at   BIGINT,
+          resource     TEXT,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+        CREATE TABLE IF NOT EXISTS oauth_codes (
+          code_hash              TEXT PRIMARY KEY,
+          client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+          scopes                 TEXT[],
+          code_challenge         TEXT NOT NULL,
+          code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
+          redirect_uri           TEXT NOT NULL,
+          state                  TEXT,
+          resource               TEXT,
+          expires_at             BIGINT NOT NULL,
+          created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
+        DO $$
+        DECLARE
+          has_bypass BOOLEAN;
+        BEGIN
+          SELECT rolbypassrls INTO has_bypass FROM pg_roles WHERE rolname = current_user;
+          IF has_bypass THEN
+            ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY;
+          ELSE
+            RAISE EXCEPTION 'v32 oauth_server_core: role % does not have BYPASSRLS privilege — cannot enable OAuth RLS safely. Re-run as postgres (or another BYPASSRLS role). The migration will retry automatically on the next initSchema call.', current_user;
+          END IF;
+        END $$;
+      `,
+      pglite: `
+        CREATE TABLE IF NOT EXISTS oauth_clients (
+          client_id               TEXT PRIMARY KEY,
+          client_secret_hash      TEXT,
+          client_name             TEXT NOT NULL,
+          redirect_uris           TEXT[],
+          grant_types             TEXT[] DEFAULT '{"client_credentials"}',
+          scope                   TEXT,
+          token_endpoint_auth_method TEXT,
+          client_id_issued_at     BIGINT,
+          client_secret_expires_at BIGINT,
+          created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS oauth_tokens (
+          token_hash   TEXT PRIMARY KEY,
+          token_type   TEXT NOT NULL,
+          client_id    TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+          scopes       TEXT[],
+          expires_at   BIGINT,
+          resource     TEXT,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expiry ON oauth_tokens(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+        CREATE TABLE IF NOT EXISTS oauth_codes (
+          code_hash              TEXT PRIMARY KEY,
+          client_id              TEXT NOT NULL REFERENCES oauth_clients(client_id) ON DELETE CASCADE,
+          scopes                 TEXT[],
+          code_challenge         TEXT NOT NULL,
+          code_challenge_method  TEXT NOT NULL DEFAULT 'S256',
+          redirect_uri           TEXT NOT NULL,
+          state                  TEXT,
+          resource               TEXT,
+          expires_at             BIGINT NOT NULL,
+          created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_log_time_agent ON mcp_request_log(created_at, token_name);
+      `,
+    },
   },
   {
     version: 33,

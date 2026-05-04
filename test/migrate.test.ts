@@ -951,14 +951,31 @@ describe('migration v31 — eval_capture_tables', () => {
 });
 
 describe('migration v32 — oauth_server_core RLS hardening', () => {
+  test('uses engine-specific SQL paths so PGLite avoids Postgres-only RLS SQL', () => {
+    const v32 = MIGRATIONS.find(m => m.version === 32)!;
+    expect(v32.sql).toBe('');
+    expect(v32.sqlFor?.postgres).toBeDefined();
+    expect(v32.sqlFor?.pglite).toBeDefined();
+  });
+
   test('Postgres variant fails loudly on non-BYPASSRLS roles instead of silently bumping version', () => {
-    const pgSql = MIGRATIONS.find(m => m.version === 32)!.sql;
+    const pgSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.postgres!;
     expect(pgSql).toContain('rolbypassrls');
     expect(pgSql).toMatch(/RAISE EXCEPTION[^;]*BYPASSRLS/);
     expect(pgSql).not.toMatch(/RAISE WARNING[^;]*BYPASSRLS/);
     expect(pgSql).toContain('ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY');
     expect(pgSql).toContain('ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY');
     expect(pgSql).toContain('ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY');
+  });
+
+  test('PGLite variant creates OAuth tables without pg_roles or RLS statements', () => {
+    const pgliteSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.pglite!;
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_clients');
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_tokens');
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_codes');
+    expect(pgliteSql).not.toContain('pg_roles');
+    expect(pgliteSql).not.toContain('ENABLE ROW LEVEL SECURITY');
+    expect(pgliteSql).not.toContain('DO $$');
   });
 });
 

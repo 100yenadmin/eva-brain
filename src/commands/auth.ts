@@ -271,8 +271,13 @@ async function registerClient(name: string, args: string[]) {
     }
     try {
       const parsed = new URL(uri);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new Error('expected http or https URL');
+      const isLoopback =
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        parsed.hostname === '::1' ||
+        parsed.hostname === '[::1]';
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback)) {
+        throw new Error('expected https URL, or http loopback redirect URI');
       }
     } catch {
       console.error(`Invalid --redirect-uri value: ${uri}`);
