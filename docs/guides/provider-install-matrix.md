@@ -1,11 +1,11 @@
-# Clean integrated install: Voyage 1024d + safe cleanup + verification
+# Clean integrated install: 1024d embeddings + safe cleanup + verification
 
-This is the recommended customer path for eva-brain right now:
+This is the recommended customer path for your agent fork right now:
 
 1. **archive any old `~/.gbrain` state instead of patching it in place**
-2. **do a fresh init with Voyage 1024d**
+2. **do a fresh init with 1024d embeddings**
 3. **verify provider health and brain health immediately**
-4. **treat OpenClaw Codex OAuth extraction as a host-side dependency until live-smoked**
+4. **treat host-managed OAuth extraction as a host-side dependency until live-smoked**
 5. **only then import/sync content**
 
 This guide intentionally prefers a clean integrated path over legacy in-place migration complexity.
@@ -17,17 +17,17 @@ This branch already documents and ships:
 - provider probing via `gbrain providers list|explain|test`
 - safe brain verification via `gbrain doctor --json` and `gbrain stats`
 
-This branch does **not** yet claim a fully merged end-to-end OpenClaw-managed Codex OAuth extraction flow inside eva-brain itself.
-That work is tracked in `100yenadmin/eva-brain#16`.
+This branch does **not** yet claim a fully merged end-to-end host-managed OAuth extraction flow inside the fork itself.
+That work is tracked in the downstream adapter issue.
 
 So the honest integrated install story is:
-- **eva-brain side:** fresh Voyage brain + verification
-- **OpenClaw side:** complete the Codex/OpenAI OAuth adapter/auth setup on the host, then verify extraction there
+- **fork side:** fresh 1024d embedding brain + verification
+- **host side:** complete the OAuth adapter/auth setup on the host, then verify extraction there
 - **cut over only after both halves are green**
 
 ## Recommended production target
 
-- embedding provider: **Voyage**
+- embedding provider: **1024d-capable provider**
 - model: **`voyage:voyage-3.5`**
 - embedding dimension: **1024**
 - install style: **fresh init**
@@ -47,7 +47,7 @@ TS=$(date +%Y%m%d-%H%M%S)
 mkdir -p ~/.gbrain-archive
 [ -e ~/.gbrain ] && mv ~/.gbrain ~/.gbrain-archive/gbrain-$TS
 
-# 2) configure Voyage
+# 2) configure the documented embedding provider
 export VOYAGE_API_KEY=...
 
 # 3) verify provider before init
@@ -100,7 +100,7 @@ Old customer installs may have any of these problems:
 
 A fresh init is faster and safer than trying to repair every old state shape.
 
-## Fresh init with Voyage 1024d
+## Fresh init with 1024d embeddings
 
 ### PGLite
 
@@ -134,16 +134,16 @@ gbrain stats
 
 The embedding dimension is schema-level state.
 
-For the providers currently documented here:
+For common providers:
 - OpenAI `text-embedding-3-large` → **1536**
-- Voyage `voyage-3.5` → **1024**
+- 1024d provider model → **1024**
 - Google `text-embedding-004` → **768**
 - Ollama `nomic-embed-text` recipe default → **768**
 - LiteLLM → **must be declared explicitly by the operator**
 
 ### Operational rule
 
-If the install target is Voyage 1024d, initialize the brain that way from the start.
+If the install target is 1024d embeddings, initialize the brain that way from the start.
 Do not reuse a 1536d brain and expect the dimension mismatch to self-heal.
 
 ### Mismatch behavior
@@ -151,35 +151,35 @@ Do not reuse a 1536d brain and expect the dimension mismatch to self-heal.
 If gbrain receives embeddings whose length does not match the configured dimension, it fails closed with an embedding-dimension error.
 That is expected and correct.
 
-## OpenClaw Codex OAuth adapter for extraction
+## Host OAuth adapter for extraction
 
 This part is a **host-side dependency**.
 
 What we can safely document here today:
-- eva-brain's fresh Voyage install path is independent of Codex OAuth
-- the durable OpenClaw Codex/OpenAI auth propagation work is tracked in `100yenadmin/eva-brain#16`
+- the fork's fresh 1024d install path is independent of host OAuth
+- the durable host OAuth auth propagation work is tracked in the downstream adapter issue
 - today's media support is text-backed normalized evidence import/search
-- production extraction that relies on OpenClaw-managed Codex/OpenAI OAuth should be considered dependent on a rebuilt, live-smoked adapter PR
+- production extraction that relies on host-managed OAuth should be considered dependent on a rebuilt, live-smoked adapter PR
 
 ### Recommended integrated rollout
 
-1. complete the fresh Voyage 1024d brain install first
+1. complete the fresh 1024d brain install first
 2. verify it with `gbrain doctor --json` and `gbrain stats`
-3. separately complete the OpenClaw Codex OAuth adapter/auth flow on the host
+3. separately complete the host OAuth adapter/auth flow
 4. verify extraction on the host side
 5. only then start customer imports / syncs
 
 ### Verification expectation for the OAuth half
 
 Because the auth adapter is host-side, the verification should also be host-side:
-- the OpenClaw Codex/OpenAI auth flow should complete without prompting for a missing API key
+- the host OAuth flow should complete without prompting for a missing API key
 - the extraction command/path should stop failing on missing auth
 - no secret values should be printed during verification
 
-Until `100yenadmin/eva-brain#16` is proven with a live OpenClaw runtime smoke, the safe fallback is:
-- use Voyage for embeddings as documented here
+Until the downstream adapter issue is proven with a live host runtime smoke, the safe fallback is:
+- use the documented 1024d embedding provider
 - use normalized media evidence JSON or text-backed extraction paths where applicable
-- do not claim fully supported no-extra-key OpenClaw-managed OAuth extraction yet
+- do not claim fully supported no-extra-key host-managed OAuth extraction yet
 
 ## Post-init verification
 
@@ -215,7 +215,7 @@ Expected outcomes after import:
 
 ### Local rollback
 
-If the fresh Voyage install is bad, restore the archived state:
+If the fresh 1024d install is bad, restore the archived state:
 
 ```bash
 rm -rf ~/.gbrain
@@ -273,10 +273,10 @@ Response:
 
 ## Minimal customer-safe recommendation
 
-If you're installing eva-brain for a customer today, the safest story is:
+If you're installing this fork for a customer today, the safest story is:
 
 1. archive old `~/.gbrain`
-2. fresh init with Voyage 1024d
+2. fresh init with 1024d embeddings
 3. verify provider + brain health immediately
-4. treat OpenClaw Codex OAuth extraction as a separately verified dependency
+4. treat host OAuth extraction as a separately verified dependency
 5. only import customer data after both sides are green

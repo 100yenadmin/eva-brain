@@ -1,12 +1,12 @@
-# Eva Brain Takeover Checkpoint - 2026-05-04
+# Fork Takeover Checkpoint - 2026-05-04
 
 ## Current Position
 
-- Repo: `100yenadmin/eva-brain`
-- Local worktree: `/Users/lume/repos/eva-brain-upstream-merge`
-- Branch: `eva/merge-upstream-v0.26.6`
-- PR: `#23` - `takeover: merge upstream v0.26.6 into Eva Brain`
-- Last pushed commit before this checkpoint: `820d8e0 fix: harden upstream merge blockers`
+- Repo: `alice-example/your-agent-fork`
+- Local worktree: `/path/to/worktree`
+- Branch: `your-agent-branch`
+- PR: `#<number>` - `takeover: merge upstream release into your agent fork`
+- Last pushed commit before this checkpoint: `<commit-hash>`
 - Merge state on GitHub: `CLEAN`
 - Review state on GitHub: `CHANGES_REQUESTED`
 - GitHub checks on pushed commit: all green, including CodeRabbit success
@@ -80,23 +80,23 @@ Modified or new files:
 Fresh passing local checks after the local patch:
 
 - `git diff --check`
-- `PATH=/Users/lume/.bun/bin:$PATH /Users/lume/.bun/bin/bun run verify`
-- `/Users/lume/.bun/bin/bun scripts/check-no-legacy-getconnection.mjs`
-- `/Users/lume/.bun/bin/bun test test/brain-registry.serial.test.ts test/eval-capture-scrub.test.ts test/migrate.test.ts test/scripts/run-unit-shard.test.ts`
+- `PATH=/path/to/bun/bin:$PATH bun run verify`
+- `bun scripts/check-no-legacy-getconnection.mjs`
+- `bun test test/brain-registry.serial.test.ts test/eval-capture-scrub.test.ts test/migrate.test.ts test/scripts/run-unit-shard.test.ts`
   - Result: `124 pass, 0 fail`
 - Focused Eva/security/media suite:
   - Command included media extraction, media ingest, media CLI smoke, import-file, Codex extraction client, OAuth, hybrid fallback, HTTP security, registry, scrubber, migration, and shard guard tests.
   - Result: `208 pass, 0 fail`
 - Targeted cycle regression suite after removing the extra PGLite runtime:
-  - `PATH=/Users/lume/.bun/bin:$PATH /Users/lume/.bun/bin/bun test test/core/cycle.test.ts --max-concurrency=1`
+  - `PATH=/path/to/bun/bin:$PATH bun test test/core/cycle.test.ts --max-concurrency=1`
   - Result: `28 pass, 0 fail`
 - Full sharded unit run:
-  - `PATH=/Users/lume/.bun/bin:$PATH SHARDS=2 GBRAIN_TEST_MAX_CONCURRENCY=1 GBRAIN_TEST_SHARD_TIMEOUT=900 /Users/lume/.bun/bin/bun run test -- --shards 2 --max-concurrency 1`
+  - `PATH=/path/to/bun/bin:$PATH SHARDS=2 GBRAIN_TEST_MAX_CONCURRENCY=1 GBRAIN_TEST_SHARD_TIMEOUT=900 bun run test -- --shards 2 --max-concurrency 1`
   - Result: `3789 pass, 0 fail`
 
 Known local environment note:
 
-- Plain `bun` is not on PATH in this shell. Use `/Users/lume/.bun/bin/bun` or prefix `PATH=/Users/lume/.bun/bin:$PATH`.
+- Plain `bun` may not be on PATH in every shell. Use the local Bun binary or prefix `PATH=/path/to/bun/bin:$PATH`.
 
 ## GitHub Review State
 
@@ -131,24 +131,24 @@ Some of those current unresolved threads are addressed by the local patch above,
 - Keep #23 as the fork catch-up base.
 - Do not merge stale PRs #5, #6, #7, #17, #18 as-is.
 - Treat #13 as replayed docs; finish issue #12 after #23 is landed or after docs are independently confirmed.
-- Rebuild #19 on top of #23 later; do not claim no-key OpenClaw/Codex OAuth extraction until live OpenClaw runtime smoke proves it.
+- Rebuild the host bridge PR on top of the catch-up PR later; do not claim no-key host-managed OAuth extraction until a live host runtime smoke proves it.
 - Keep #16 open until the live bridge path is proven.
 - Defer #11 as LanceDB/visual retrieval spike.
 - Close #4 last with a readiness report.
 
 ## Resume Command Suggestions
 
-From `/Users/lume/repos/eva-brain-upstream-merge`:
+From `/path/to/worktree`:
 
 ```bash
 git status --short
 git diff --check
-PATH=/Users/lume/.bun/bin:$PATH /Users/lume/.bun/bin/bun run verify
-PATH=/Users/lume/.bun/bin:$PATH SHARDS=2 GBRAIN_TEST_MAX_CONCURRENCY=1 GBRAIN_TEST_SHARD_TIMEOUT=900 /Users/lume/.bun/bin/bun run test -- --shards 2 --max-concurrency 1
+PATH=/path/to/bun/bin:$PATH bun run verify
+PATH=/path/to/bun/bin:$PATH SHARDS=2 GBRAIN_TEST_MAX_CONCURRENCY=1 GBRAIN_TEST_SHARD_TIMEOUT=900 bun run test -- --shards 2 --max-concurrency 1
 ```
 
 Then commit, push, and inspect PR #23 again with:
 
 ```bash
-gh pr view 23 --repo 100yenadmin/eva-brain --json reviewDecision,mergeStateStatus,statusCheckRollup
+gh pr view <number> --repo alice-example/your-agent-fork --json reviewDecision,mergeStateStatus,statusCheckRollup
 ```

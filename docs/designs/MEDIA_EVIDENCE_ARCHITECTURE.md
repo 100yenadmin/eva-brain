@@ -54,7 +54,29 @@ Examples:
 - a local video file
 - a hosted YouTube URL once normalized into a tracked source object
 
-Suggested minimum shape:
+Current runtime contract: `gbrain.media-extraction.v1`.
+
+The shipped text-backed MVP accepts normalized extraction payloads with these fields:
+
+```ts
+interface MediaExtraction {
+  schemaVersion: 'gbrain.media-extraction.v1';
+  kind: 'image' | 'pdf' | 'video' | 'audio';
+  sourceRef?: string;
+  title?: string;
+  summary?: string;
+  caption?: string;
+  ocrText?: string;
+  transcriptText?: string;
+  segments: MediaExtractionSegment[];
+  entities?: MediaEntity[];
+  tags?: MediaTag[];
+  matchReasons?: MediaMatchReason[];
+  metadata?: Record<string, unknown>;
+}
+```
+
+Future conceptual artifact shape, non-normative:
 
 ```ts
 interface MediaArtifact {
@@ -69,6 +91,15 @@ interface MediaArtifact {
 }
 ```
 
+Mapping to today's runtime:
+
+| Conceptual field | Current runtime field |
+| --- | --- |
+| `id` | `sourceRef` or `metadata.artifactId` |
+| `kind` | `kind` |
+| `sourceUrl` / `fileId` | `sourceRef` |
+| `mimeType`, `createdAt`, extra fields | `metadata` |
+
 ### Media Segment
 
 A media segment is an addressable subrange within a media artifact.
@@ -81,7 +112,26 @@ Examples:
 - a rectangular crop inside an image
 - a paragraph span in extracted OCR text
 
-Suggested minimum shape:
+Current runtime segment contract:
+
+```ts
+interface MediaExtractionSegment {
+  id: string;
+  kind: 'asset' | 'page' | 'frame' | 'transcript_segment' | 'audio_segment';
+  locator?: MediaLocator;
+  caption?: string;
+  summary?: string;
+  ocrText?: string;
+  transcriptText?: string;
+  entities?: MediaEntity[];
+  tags?: MediaTag[];
+  matchReasons?: MediaMatchReason[];
+  confidence?: number;
+  metadata?: Record<string, unknown>;
+}
+```
+
+Future conceptual segment shape, non-normative:
 
 ```ts
 interface MediaSegment {
@@ -93,6 +143,16 @@ interface MediaSegment {
   metadata?: Record<string, unknown>;
 }
 ```
+
+Mapping to today's runtime:
+
+| Conceptual field | Current runtime field |
+| --- | --- |
+| `id` | `segments[].id` |
+| `artifactId` | top-level `sourceRef` or `segments[].metadata.artifactId` |
+| `segmentType` | `segments[].kind` |
+| `locator` | `segments[].locator` |
+| `textPreview` | `caption`, `summary`, `ocrText`, or `transcriptText` |
 
 ### Media Evidence
 
@@ -107,7 +167,25 @@ Examples:
 - an embedding vector generated from a segment
 - a human-authored note tied to a specific screenshot region
 
-Suggested minimum shape:
+Current evidence output contract: `gbrain.media-evidence.v1`.
+
+`mediaExtractionToEvidence` normalizes extraction payloads into this searchable evidence shape:
+
+```ts
+interface MediaEvidence {
+  schemaVersion: 'gbrain.media-evidence.v1';
+  kind: 'image' | 'pdf' | 'video' | 'audio';
+  sourceRef?: string;
+  text: string;
+  segments: MediaExtractionSegment[];
+  entities: MediaEntity[];
+  tags: MediaTag[];
+  matchReasons: MediaMatchReason[];
+  metadata?: Record<string, unknown>;
+}
+```
+
+Future conceptual evidence shape, non-normative:
 
 ```ts
 interface MediaEvidence {
@@ -131,6 +209,17 @@ interface MediaEvidence {
 }
 ```
 
+Mapping to today's runtime:
+
+| Conceptual field | Current runtime field |
+| --- | --- |
+| `id` | `metadata.evidenceId` when needed |
+| `artifactId` | `sourceRef` or `metadata.artifactId` |
+| `segmentId` | `segments[].id` |
+| `evidenceType` | populated field name or `matchReasons[].kind` |
+| `content` | `text` |
+| `rawDataRef`, `resolverId`, extra fields | `metadata` |
+
 ### Media Resolver
 
 A media resolver is the runtime boundary that turns a media artifact or media segment into media evidence.
@@ -141,6 +230,8 @@ Resolver properties should include:
 - deterministic versus paid/provider-backed execution
 - provenance metadata for every result
 - optional fallback behavior
+
+Operation-facing resolver entrypoints should remain centralized in shared operation definitions so CLI and MCP/HTTP surfaces stay generated from one source of truth.
 
 This keeps extraction logic composable and upstreamable even if a fork starts with cloud-assisted tooling.
 

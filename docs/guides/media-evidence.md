@@ -6,7 +6,7 @@ Make screenshots, PDFs, audio, and video searchable in GBrain through canonical 
 
 ## Current Shipping Boundary
 
-Eva Brain's current MVP is **text-backed media evidence**:
+This fork's current MVP is **text-backed media evidence**:
 
 - `import-media` imports normalized evidence JSON and materializes it into normal pages, chunks, and raw data.
 - `ingest-media --extract openclaw` is a text extraction bridge for text-backed inputs and host-provided extraction output.
