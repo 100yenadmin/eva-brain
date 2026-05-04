@@ -9,6 +9,6 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "latest"
+    "@mariozechner/pi-ai": "0.71.0"
   }
 }
