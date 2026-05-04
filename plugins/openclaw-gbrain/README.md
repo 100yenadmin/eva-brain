@@ -49,14 +49,28 @@ needed:
         "config": {
           "gbrainBin": "/absolute/path/to/gbrain",
           "openclawBin": "/absolute/path/to/openclaw",
+          "envFile": "/Users/lume/.gbrain/gbrain.env",
           "extractionModel": "openai-codex/gpt-5.4-mini",
-          "timeoutMs": 120000
+          "timeoutMs": 120000,
+          "maxConcurrentExtractions": 1,
+          "extractionQueueLimit": 8,
+          "extractionQueueTimeoutMs": 30000,
+          "minExtractionIntervalMs": 0
         }
       }
     }
   }
 }
 ```
+
+`envFile` is loaded only into spawned `gbrain`/`openclaw` commands. Values are
+not returned by tools or the extraction route, so provider keys such as
+`VOYAGE_API_KEY` can live in the normal GBrain env file without being copied into
+OpenClaw's global launch environment.
+
+Extraction is intentionally conservative by default: one active extraction at a
+time, up to eight queued requests, and a 30s queue wait. Increase those values
+only after the local OpenClaw/Codex runtime is proven to tolerate the extra load.
 
 ## Smoke
 

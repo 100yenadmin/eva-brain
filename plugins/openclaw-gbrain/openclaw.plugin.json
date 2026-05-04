@@ -28,6 +28,10 @@
         "type": "string",
         "description": "Working directory for spawned gbrain/openclaw commands."
       },
+      "envFile": {
+        "type": "string",
+        "description": "Optional dotenv-style env file loaded into spawned commands. Defaults to ~/.gbrain/gbrain.env."
+      },
       "extractionModel": {
         "type": "string",
         "description": "OpenClaw provider/model used for OAuth-backed extraction."
@@ -35,6 +39,22 @@
       "timeoutMs": {
         "type": "number",
         "description": "Maximum milliseconds for GBrain/OpenClaw subprocess calls."
+      },
+      "maxConcurrentExtractions": {
+        "type": "number",
+        "description": "Maximum extraction subprocesses running at once. Defaults to 1."
+      },
+      "extractionQueueLimit": {
+        "type": "number",
+        "description": "Maximum queued extraction requests before returning a busy response. Defaults to 8."
+      },
+      "extractionQueueTimeoutMs": {
+        "type": "number",
+        "description": "Maximum time an extraction request can wait in queue. Defaults to 30000."
+      },
+      "minExtractionIntervalMs": {
+        "type": "number",
+        "description": "Minimum delay between extraction starts. Defaults to 0."
       }
     }
   }
