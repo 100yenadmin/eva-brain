@@ -322,16 +322,24 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
 
   // 4. pgvector extension
   progress.heartbeat('pgvector');
-  try {
-    const sql = db.getConnection();
-    const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
-    if (ext.length > 0) {
-      checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
-    } else {
-      checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+  if (engine.kind === 'pglite') {
+    checks.push({
+      name: 'pgvector',
+      status: 'ok',
+      message: 'PGLite vector support active (validated by schema + embedding checks)',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
+      if (ext.length > 0) {
+        checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
+      } else {
+        checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+      }
+    } catch {
+      checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
     }
-  } catch {
-    checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
   }
 
   // 4b. PgBouncer / prepared-statement compatibility.
@@ -522,7 +530,13 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     const health = await engine.getHealth();
     const linkPct = ((health.link_coverage ?? 0) * 100).toFixed(0);
     const timelinePct = ((health.timeline_coverage ?? 0) * 100).toFixed(0);
-    if ((health.link_coverage ?? 0) >= 0.5 && (health.timeline_coverage ?? 0) >= 0.5) {
+    if (health.entity_page_count === 0) {
+      checks.push({
+        name: 'graph_coverage',
+        status: 'ok',
+        message: 'No person/company entity pages yet; entity graph coverage not applicable',
+      });
+    } else if ((health.link_coverage ?? 0) >= 0.5 && (health.timeline_coverage ?? 0) >= 0.5) {
       checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%` });
     } else {
       checks.push({
@@ -599,36 +613,44 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   // surface matches `repair-jsonb` (the previous 4-target scan missed a
   // repair target, per #254/Codex review).
   progress.heartbeat('jsonb_integrity');
-  try {
-    const sql = db.getConnection();
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-      { table: 'raw_data',      col: 'data',           expected: 'object' },
-      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-      { table: 'files',         col: 'metadata',       expected: 'object' },
-      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
-    ];
-    let totalBad = 0;
-    const breakdown: string[] = [];
-    for (const { table, col } of targets) {
-      progress.heartbeat(`jsonb_integrity.${table}.${col}`);
-      const rows = await sql.unsafe(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
-      );
-      const n = Number((rows as any)[0]?.n ?? 0);
-      if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+  if (engine.kind === 'pglite') {
+    checks.push({
+      name: 'jsonb_integrity',
+      status: 'ok',
+      message: 'Skipped (PGLite stores JSON locally; Postgres JSONB repair check not applicable)',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
+        { table: 'pages',         col: 'frontmatter',    expected: 'object' },
+        { table: 'raw_data',      col: 'data',           expected: 'object' },
+        { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
+        { table: 'files',         col: 'metadata',       expected: 'object' },
+        { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+      ];
+      let totalBad = 0;
+      const breakdown: string[] = [];
+      for (const { table, col } of targets) {
+        progress.heartbeat(`jsonb_integrity.${table}.${col}`);
+        const rows = await sql.unsafe(
+          `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        );
+        const n = Number((rows as any)[0]?.n ?? 0);
+        if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+      }
+      if (totalBad === 0) {
+        checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
+      } else {
+        checks.push({
+          name: 'jsonb_integrity',
+          status: 'warn',
+          message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
+        });
+      }
+    } catch {
+      checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
     }
-    if (totalBad === 0) {
-      checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
-    } else {
-      checks.push({
-        name: 'jsonb_integrity',
-        status: 'warn',
-        message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
-      });
-    }
-  } catch {
-    checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
   }
 
   // 11. Markdown body completeness (v0.12.3 reliability wave).

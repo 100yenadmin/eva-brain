@@ -1,3 +1,5 @@
+import { applyChunkEmbeddingIndexPolicy } from './vector-index.ts';
+
 /**
  * PGLite schema — derived from schema-embedded.ts (Postgres schema).
  *
@@ -530,7 +532,7 @@ export function getPGLiteSchema(dims: number = 1536, model: string = 'text-embed
     throw new Error(`Invalid embedding dimensions: ${dims}`);
   }
   const sanitizedModel = String(model).replace(/'/g, "''");
-  return PGLITE_SCHEMA_SQL_TEMPLATE
+  return applyChunkEmbeddingIndexPolicy(PGLITE_SCHEMA_SQL_TEMPLATE, parsedDims)
     .replace(/__EMBEDDING_DIMS__/g, String(parsedDims))
     .replace(/__EMBEDDING_MODEL__/g, sanitizedModel);
 }

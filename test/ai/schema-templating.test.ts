@@ -25,6 +25,16 @@ describe('getPGLiteSchema', () => {
     expect(sql).toMatch(/'voyage-3-large'/);
     expect(sql).toMatch(/\('embedding_model', 'voyage-3-large'\)/);
     expect(sql).toMatch(/\('embedding_dimensions', '1024'\)/);
+    expect(sql).toContain('USING hnsw');
+  });
+
+  test('Voyage 2048d skips unsupported HNSW index but keeps vector column', () => {
+    const sql = getPGLiteSchema(2048, 'voyage-4-large');
+    expect(sql).toMatch(/vector\(2048\)/);
+    expect(sql).toMatch(/'voyage-4-large'/);
+    expect(sql).toMatch(/\('embedding_dimensions', '2048'\)/);
+    expect(sql).not.toContain('idx_chunks_embedding ON content_chunks USING hnsw');
+    expect(sql).toContain('exact vector scans remain available');
   });
 
   test('PGLITE_SCHEMA_SQL back-compat constant is the default-dim schema', () => {

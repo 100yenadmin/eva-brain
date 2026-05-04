@@ -81,6 +81,11 @@ describe('findBareTweetHits', () => {
     expect(hits).toEqual([]);
   });
 
+  test('does NOT trigger on technical X API descriptions', () => {
+    const hits = findBareTweetHits('Fetch List details via X API v2.', 'docs/x-api');
+    expect(hits).toEqual([]);
+  });
+
   test('only one hit per line even if multiple phrases match', () => {
     const hits = findBareTweetHits('He tweeted about it in a tweet later.', 'people/x');
     expect(hits).toHaveLength(1);

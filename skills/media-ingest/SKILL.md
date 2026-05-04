@@ -13,6 +13,7 @@ triggers:
   - "process this book"
   - "what's in this screenshot"
   - "check out this repo"
+  - "summarize this book"
 tools:
   - search
   - query
