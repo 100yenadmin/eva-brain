@@ -11,6 +11,11 @@ bin/
 .gstack/
 supabase/.temp/
 .claude/skills/
+# admin/dist/ is the React SPA bundle. CLAUDE.md says it's committed for
+# self-contained binaries (the bun --compile path embeds it via
+# `import path from 'admin/dist/index.html' with { type: 'file' }`).
+# Build via: cd admin && bun install && bun run build.
+admin/node_modules/
 .idea
 eval/reports/
 eval/data/world-v1/world.html
@@ -23,6 +28,12 @@ test/.cache/
 
 .claude/
 export/
+
+# Conductor workspace-local agent artifacts: plans, todos, run-unit-parallel
+# failure logs and per-shard test output. v0.26.4 (run-unit-parallel.sh)
+# writes .context/test-failures.log + .context/test-summary.txt +
+# .context/test-shards/. Workspace-local by design — never committed.
+.context/
 
 # Tier 3 PGLite snapshot fixture (built on demand by build:pglite-snapshot)
 test/fixtures/pglite-snapshot.tar

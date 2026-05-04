@@ -39,6 +39,18 @@ export interface GBrainConfig {
    * validates the shape at runtime.
    */
   storage?: unknown;
+  /**
+   * v0.25.0 — session capture settings. Read via file-plane `loadConfig()`
+   * at process boot (NOT `gbrain config set` which writes the DB plane —
+   * those are different stores). Edit `~/.gbrain/config.json` directly.
+   * All fields default to ON — capture and scrubbing both opt-out.
+   */
+  eval?: {
+    /** false disables capture entirely. Defaults to true. */
+    capture?: boolean;
+    /** false disables PII scrubbing before insert. Defaults to true. */
+    scrub_pii?: boolean;
+  };
   /** AI gateway config (v0.14+). Default: "openai:text-embedding-3-large" / 1536 / "anthropic:claude-haiku-4-5-20251001". */
   embedding_model?: string;
   embedding_dimensions?: number;

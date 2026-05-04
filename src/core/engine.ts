@@ -1,5 +1,5 @@
 import type {
-  Page, PageInput, PageFilters,
+  Page, PageInput, PageFilters, GetPageOpts,
   Chunk, ChunkInput, StaleChunkRow,
   SearchResult, SearchOpts,
   Link, GraphNode, GraphPath,
@@ -10,6 +10,8 @@ import type {
   IngestLogEntry, IngestLogInput,
   EngineConfig,
   CodeEdgeInput, CodeEdgeResult,
+  EvalCandidate, EvalCandidateInput,
+  EvalCaptureFailure, EvalCaptureFailureReason,
 } from './types.ts';
 
 /** Input row for addLinksBatch. Optional fields default to '' (matches NOT NULL DDL). */
@@ -126,9 +128,48 @@ export interface BrainEngine {
   withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T>;
 
   // Pages CRUD
-  getPage(slug: string): Promise<Page | null>;
+  /**
+   * Fetch a page by slug.
+   * v0.26.5: by default soft-deleted rows return null (matches the search
+   * filter contract). Pass `opts.includeDeleted: true` to surface them with
+   * `deleted_at` populated — used by `gbrain pages purge-deleted` listing,
+   * by `restore_page` flow, and by operator diagnostics.
+   */
+  getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
   putPage(slug: string, page: PageInput): Promise<Page>;
+  /**
+   * Hard-delete a page row. Cascades to content_chunks, page_links,
+   * chunk_relations via existing FK ON DELETE CASCADE.
+   *
+   * v0.26.5: this is no longer the public-facing `delete_page` op handler —
+   * the op now soft-deletes via `softDeletePage` instead. `deletePage` stays
+   * as the underlying primitive used by `purgeDeletedPages` and by callers
+   * that explicitly want hard-delete semantics (e.g. test setup teardown).
+   */
   deletePage(slug: string): Promise<void>;
+  /**
+   * v0.26.5 — set `deleted_at = now()` on a page. Returns the slug if a row
+   * was soft-deleted, null if no row matched (already soft-deleted OR not found).
+   * Idempotent-as-null. The page stays in the DB and cascade rows (chunks,
+   * links) stay intact; the autopilot purge phase hard-deletes after 72h.
+   */
+  softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null>;
+  /**
+   * v0.26.5 — clear `deleted_at` on a soft-deleted page. Returns true iff a
+   * row was restored. False if the slug is unknown OR the page is not
+   * currently soft-deleted (idempotent-as-false).
+   */
+  restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean>;
+  /**
+   * v0.26.5 — hard-delete pages whose `deleted_at` is older than the cutoff.
+   * Called by the autopilot purge phase and by the `gbrain pages purge-deleted`
+   * CLI escape hatch. Cascades through existing FKs.
+   */
+  purgeDeletedPages(olderThanHours: number): Promise<{ slugs: string[]; count: number }>;
+  /**
+   * v0.26.5: by default `listPages` excludes soft-deleted rows. Set
+   * `filters.includeDeleted: true` to surface them.
+   */
   listPages(filters?: PageFilters): Promise<Page[]>;
   resolveSlugs(partial: string): Promise<string[]>;
   /**
@@ -363,4 +404,20 @@ export interface BrainEngine {
    * prefer searchKeyword (external contract: page-grain best-chunk-per-page).
    */
   searchKeywordChunks(query: string, opts?: SearchOpts): Promise<SearchResult[]>;
+
+  // Eval capture (v0.25.0 — BrainBench-Real substrate).
+  // Captured at the op-layer wrapper in src/core/operations.ts; reads via
+  // `gbrain eval export` (NDJSON) for sibling gbrain-evals consumption.
+  // Adding these to BrainEngine is a breaking-interface change for third-
+  // party engine implementers — this is why v0.25.0 is a minor bump.
+  /** Insert a captured candidate. Returns the new row id. Best-effort: callers swallow failures and route them through `logEvalCaptureFailure`. */
+  logEvalCandidate(input: EvalCandidateInput): Promise<number>;
+  /** Read candidates by time window / limit / tool filter. Used by `gbrain eval export`. */
+  listEvalCandidates(filter?: { since?: Date; limit?: number; tool?: 'query' | 'search' }): Promise<EvalCandidate[]>;
+  /** Delete candidates created before `date`. Returns rows deleted. Used by `gbrain eval prune`. */
+  deleteEvalCandidatesBefore(date: Date): Promise<number>;
+  /** Log a capture failure so `gbrain doctor` can surface drops cross-process. Best-effort; symmetric with logEvalCandidate (failure-of-failure is lost). */
+  logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void>;
+  /** Read capture failures within an optional time window. Used by `gbrain doctor`. */
+  listEvalCaptureFailures(filter?: { since?: Date }): Promise<EvalCaptureFailure[]>;
 }
