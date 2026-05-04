@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { resolve } from 'path';
 
 const REPO_ROOT = resolve(import.meta.dir, '..', '..');
@@ -27,6 +27,15 @@ function dryRunList(): string[] {
     env: { ...process.env, SHARD: '' },
   });
   return out.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+function runShard(args: string[]): { code: number; stderr: string } {
+  const result = spawnSync('bash', [SHARD_SH, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf-8',
+    env: { ...process.env, SHARD: '' },
+  });
+  return { code: result.status ?? -1, stderr: result.stderr || '' };
 }
 
 describe('run-unit-shard.sh exclusion symmetry', () => {
@@ -52,5 +61,17 @@ describe('run-unit-shard.sh exclusion symmetry', () => {
     const files = dryRunList();
     const leaks = files.filter(f => f.startsWith('test/e2e/'));
     expect(leaks).toEqual([]);
+  });
+
+  it('rejects missing --max-concurrency value before test discovery', () => {
+    const r = runShard(['--max-concurrency', '--dry-run-list']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--max-concurrency requires');
+  });
+
+  it('rejects non-positive --max-concurrency values', () => {
+    const r = runShard(['--max-concurrency=0', '--dry-run-list']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('positive integer');
   });
 });

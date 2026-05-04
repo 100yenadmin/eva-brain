@@ -26,6 +26,10 @@ export function App() {
     window.location.hash = p;
     setPage(p);
   };
+  const handleNav = (event: React.MouseEvent<HTMLAnchorElement>, p: Page) => {
+    event.preventDefault();
+    navigate(p);
+  };
 
   if (page === 'login') {
     return <LoginPage onLogin={() => navigate('dashboard')} />;
@@ -48,12 +52,12 @@ export function App() {
       <nav className="sidebar">
         <div className="sidebar-logo">GBrain</div>
         <div className="sidebar-nav">
-          <a className={`nav-item ${page === 'dashboard' ? 'active' : ''}`}
-             onClick={() => navigate('dashboard')}>Dashboard</a>
-          <a className={`nav-item ${page === 'agents' ? 'active' : ''}`}
-             onClick={() => navigate('agents')}>Agents</a>
-          <a className={`nav-item ${page === 'log' ? 'active' : ''}`}
-             onClick={() => navigate('log')}>Request Log</a>
+          <a href="#dashboard" className={`nav-item ${page === 'dashboard' ? 'active' : ''}`}
+             onClick={(event) => handleNav(event, 'dashboard')}>Dashboard</a>
+          <a href="#agents" className={`nav-item ${page === 'agents' ? 'active' : ''}`}
+             onClick={(event) => handleNav(event, 'agents')}>Agents</a>
+          <a href="#log" className={`nav-item ${page === 'log' ? 'active' : ''}`}
+             onClick={(event) => handleNav(event, 'log')}>Request Log</a>
         </div>
         <div style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid var(--border)' }}>
           <button

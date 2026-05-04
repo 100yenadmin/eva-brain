@@ -254,26 +254,53 @@ async function revokeClient(clientId: string) {
 }
 
 async function registerClient(name: string, args: string[]) {
-  if (!name) { console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S]'); process.exit(1); }
+  if (!name) { console.error('Usage: auth register-client <name> [--grant-types G] [--scopes S] [--redirect-uri URL]'); process.exit(1); }
   const grantsIdx = args.indexOf('--grant-types');
   const scopesIdx = args.indexOf('--scopes');
   const grantTypes = grantsIdx >= 0 && args[grantsIdx + 1]
     ? args[grantsIdx + 1].split(',').map(s => s.trim()).filter(Boolean)
     : ['client_credentials'];
   const scopes = scopesIdx >= 0 && args[scopesIdx + 1] ? args[scopesIdx + 1] : 'read';
+  const redirectUris: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '--redirect-uri') continue;
+    const uri = args[i + 1];
+    if (!uri || uri.startsWith('--')) {
+      console.error('--redirect-uri requires a URL value.');
+      process.exit(1);
+    }
+    try {
+      const parsed = new URL(uri);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('expected http or https URL');
+      }
+    } catch {
+      console.error(`Invalid --redirect-uri value: ${uri}`);
+      process.exit(1);
+    }
+    redirectUris.push(uri);
+    i++;
+  }
+  if (grantTypes.includes('authorization_code') && redirectUris.length === 0) {
+    console.error('authorization_code clients require at least one --redirect-uri URL.');
+    process.exit(1);
+  }
 
   const sql = postgres(getDatabaseUrl(true)!);
   try {
     const { GBrainOAuthProvider } = await import('../core/oauth-provider.ts');
     const provider = new GBrainOAuthProvider({ sql: sql as any });
     const { clientId, clientSecret } = await provider.registerClientManual(
-      name, grantTypes, scopes, [],
+      name, grantTypes, scopes, redirectUris,
     );
     console.log(`OAuth client registered: "${name}"\n`);
     console.log(`  Client ID:     ${clientId}`);
     console.log(`  Client Secret: ${clientSecret}\n`);
     console.log(`  Grant types: ${grantTypes.join(', ')}`);
     console.log(`  Scopes:      ${scopes}\n`);
+    if (redirectUris.length > 0) {
+      console.log(`  Redirect URIs: ${redirectUris.join(', ')}\n`);
+    }
     console.log('Save the client secret — it will not be shown again.');
     console.log(`Revoke with: gbrain auth revoke-client "${clientId}"`);
   } catch (e: any) {
@@ -314,6 +341,7 @@ Usage:
   gbrain auth register-client <name> [options]            Register an OAuth 2.1 client
      --grant-types <client_credentials,authorization_code> (default: client_credentials)
      --scopes "<read write admin>"                         (default: read)
+     --redirect-uri <url>                                  Repeatable; required for authorization_code
   gbrain auth revoke-client <client_id>                   Hard-delete an OAuth 2.1 client (cascades to tokens + codes)
   gbrain auth test <url> --token <token>                  Smoke-test a remote MCP server
 `);

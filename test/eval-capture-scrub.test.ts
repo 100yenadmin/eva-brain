@@ -42,6 +42,12 @@ describe('scrubPii', () => {
     expect(scrubPii('intl +1 555 123 4567')).toContain('[REDACTED]');
   });
 
+  test('redacts international phone with country and city code', () => {
+    const out = scrubPii('office +44 20 7946 0958');
+    expect(out).not.toContain('+44 20 7946 0958');
+    expect(out).toContain('[REDACTED]');
+  });
+
   test('redacts SSN with dashes (XXX-XX-XXXX)', () => {
     expect(scrubPii('ssn is 123-45-6789 on file')).toContain('[REDACTED]');
     expect(scrubPii('ssn is 123-45-6789 on file')).not.toContain('123-45-6789');
@@ -86,6 +92,12 @@ describe('scrubPii', () => {
   test('redacts bearer lowercase too', () => {
     const out = scrubPii('header bearer abc123DEF456ghi789');
     expect(out).not.toContain('abc123DEF456ghi789');
+  });
+
+  test('redacts uppercase bearer prefix too', () => {
+    const out = scrubPii('AUTH BEARER abc123DEF456ghi789');
+    expect(out).not.toContain('abc123DEF456ghi789');
+    expect(out).toContain('Bearer [REDACTED]');
   });
 
   test('handles adversarial nested-group input without hanging', () => {

@@ -34,6 +34,7 @@ const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 // false positives on order numbers and other generic long integers.
 const PHONE_RE =
   /(?<!\d)(?:\+\d{1,3}[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]?\d{4}(?!\d)/g;
+const PHONE_INTL_RE = /(?<![\d+])\+(?:\d[\s().-]?){8,15}\d(?!\d)/g;
 
 // SSN: XXX-XX-XXXX with dashes required (bare 9-digit blobs are too
 // ambiguous — phone numbers, account IDs).
@@ -45,7 +46,7 @@ const JWT_RE =
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
 
 // Bearer tokens after Authorization header literal or "Bearer " prefix.
-const BEARER_RE = /\b(?:bearer|Bearer)\s+[A-Za-z0-9._~+/-]{10,}=*/g;
+const BEARER_RE = /\bbearer\s+[A-Za-z0-9._~+/-]{10,}=*/gi;
 
 // Credit card numbers: 13–19 digits with optional spaces/dashes. Every
 // match must pass Luhn to qualify — this is the key false-positive guard.
@@ -83,6 +84,7 @@ export function scrubPii(input: string): string {
 
   // 2. Phones (before SSN so +1-555-XX doesn't look like part of a dashes-only SSN)
   out = out.replace(PHONE_RE, REDACTED);
+  out = out.replace(PHONE_INTL_RE, REDACTED);
 
   // 3. SSN (after phones)
   out = out.replace(SSN_RE, REDACTED);

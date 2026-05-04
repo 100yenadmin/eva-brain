@@ -118,13 +118,21 @@ describe('loadMounts — entry validation', () => {
     expect(mounts[0].database_url).toBe('postgresql://localhost/luther');
   });
 
-  test('resolves paths to absolute form', () => {
+  test('preserves absolute mount paths', () => {
     const path = track(tempMountsFile({
       version: 1,
       mounts: [{ id: 'a', path: '/tmp/relative-test', engine: 'pglite', database_path: '/tmp/a/.pg' }],
     }));
     const mounts = loadMounts(path);
     expect(mounts[0].path.startsWith('/')).toBe(true);
+  });
+
+  test('rejects relative mount paths', () => {
+    const path = track(tempMountsFile({
+      version: 1,
+      mounts: [{ id: 'a', path: './relative-test', engine: 'pglite', database_path: '/tmp/a/.pg' }],
+    }));
+    expect(() => loadMounts(path)).toThrow(/path must be absolute/);
   });
 
   test('enabled=false is preserved', () => {

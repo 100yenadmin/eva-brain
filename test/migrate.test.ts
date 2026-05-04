@@ -962,6 +962,22 @@ describe('migration v32 — oauth_server_core RLS hardening', () => {
   });
 });
 
+describe('migration v34 — destructive_guard_columns', () => {
+  test('Postgres invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside DO block', () => {
+    const src = readFileSync(resolve('src/core/migrate.ts'), 'utf-8');
+    const v34Start = src.indexOf("name: 'destructive_guard_columns'");
+    expect(v34Start).toBeGreaterThan(-1);
+    const v34Block = src.slice(v34Start, v34Start + 5000);
+    expect(v34Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS pages_deleted_at_purge_idx');
+    const doBlockStart = v34Block.indexOf('DO $$');
+    if (doBlockStart !== -1) {
+      const doBlockEnd = v34Block.indexOf('END $$', doBlockStart);
+      const doBlock = v34Block.slice(doBlockStart, doBlockEnd === -1 ? v34Block.length : doBlockEnd);
+      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────
 // PR #363 regression guards — session timeouts via startup parameters
 // resolveSessionTimeouts — GBRAIN_*_TIMEOUT env overrides

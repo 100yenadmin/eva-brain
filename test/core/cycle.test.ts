@@ -494,20 +494,20 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
   });
 
   test('sources table missing (very old brain) → catch returns undefined, sync still runs', async () => {
-    // CRITICAL: do NOT DROP TABLE on the shared engine. initSchema() only
-    // re-runs PENDING migrations; once schema_version is at latest, the
-    // v20 migration that creates `sources` will not re-execute. Use a
-    // fresh one-shot engine so the shared engine isn't degraded for
-    // every later test in this file.
-    const fresh = new PGLiteEngine();
-    await fresh.connect({});
-    await fresh.initSchema();
-    await (fresh as any).db.query('DROP TABLE IF EXISTS sources CASCADE');
+    // Simulate an old brain without sources without creating a second
+    // PGLite WASM runtime inside the already-large parallel shard.
+    const originalExecuteRaw = sharedEngine.executeRaw.bind(sharedEngine);
+    sharedEngine.executeRaw = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM sources')) {
+        throw new Error('relation "sources" does not exist');
+      }
+      return originalExecuteRaw(sql, params);
+    }) as typeof sharedEngine.executeRaw;
     try {
-      await runCycle(fresh, { brainDir: '/tmp/brain-475-d' });
+      await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-d' });
       expect(syncCalls.at(-1)?.sourceId).toBeUndefined();
     } finally {
-      await fresh.disconnect();
+      sharedEngine.executeRaw = originalExecuteRaw as typeof sharedEngine.executeRaw;
     }
   });
 

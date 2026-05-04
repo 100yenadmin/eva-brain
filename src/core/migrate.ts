@@ -1367,18 +1367,23 @@ export const MIGRATIONS: Migration[] = [
       // 3. Partial index for the autopilot purge sweep. Postgres CONCURRENTLY
       //    avoids the SHARE lock on `pages`; PGLite has no concurrent writers.
       if (engine.kind === 'postgres') {
-        // Pre-drop any invalid index from a prior CONCURRENTLY failure (matches v14 pattern).
-        await engine.runMigration(34, `
-          DO $$ BEGIN
-            IF EXISTS (
-              SELECT 1 FROM pg_index i
-              JOIN pg_class c ON c.oid = i.indexrelid
-              WHERE c.relname = 'pages_deleted_at_purge_idx' AND NOT i.indisvalid
-            ) THEN
-              EXECUTE 'DROP INDEX CONCURRENTLY IF EXISTS pages_deleted_at_purge_idx';
-            END IF;
-          END $$;
+        // Pre-drop any invalid index from a prior CONCURRENTLY failure.
+        // DROP INDEX CONCURRENTLY cannot run inside a DO block, so probe first.
+        const invalidIndexRows = await engine.executeRaw<{ exists: boolean | string }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'pages_deleted_at_purge_idx' AND NOT i.indisvalid
+          ) AS exists;
         `);
+        const hasInvalidIndex = invalidIndexRows.some(
+          row => row.exists === true || String(row.exists).toLowerCase() === 'true',
+        );
+        if (hasInvalidIndex) {
+          await engine.runMigration(34, `
+            DROP INDEX CONCURRENTLY IF EXISTS pages_deleted_at_purge_idx;
+          `);
+        }
         await engine.runMigration(34, `
           CREATE INDEX CONCURRENTLY IF NOT EXISTS pages_deleted_at_purge_idx
             ON pages (deleted_at) WHERE deleted_at IS NOT NULL;

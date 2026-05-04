@@ -9,10 +9,15 @@
 import type { BrainEngine } from '../core/engine.ts';
 
 const SOFT_DELETE_TTL_HOURS_DEFAULT = 72;
+const DRY_RUN_CANDIDATE_LIMIT = 10000;
 
 function parseOlderThanHours(args: string[]): number {
   const idx = args.indexOf('--older-than');
-  if (idx === -1 || idx === args.length - 1) return SOFT_DELETE_TTL_HOURS_DEFAULT;
+  if (idx === -1) return SOFT_DELETE_TTL_HOURS_DEFAULT;
+  if (idx === args.length - 1 || args[idx + 1]?.startsWith('--')) {
+    console.error('--older-than requires a value in hours or days (e.g. 72h or 3d).');
+    process.exit(2);
+  }
   const raw = args[idx + 1];
   // Accept bare numbers (hours) or `<N>h` / `<N>d`. Reject anything ambiguous.
   const trimmed = raw.trim();
@@ -32,7 +37,17 @@ async function runPurgeDeleted(engine: BrainEngine, args: string[]): Promise<voi
   if (dryRun) {
     // Use listPages with includeDeleted to enumerate the recoverable set, then
     // count how many would be purged given the cutoff. Stays read-only.
-    const candidates = await engine.listPages({ includeDeleted: true, limit: 10000 });
+    const candidates = await engine.listPages({ includeDeleted: true, limit: DRY_RUN_CANDIDATE_LIMIT });
+    if (candidates.length >= DRY_RUN_CANDIDATE_LIMIT) {
+      const message =
+        `(dry-run) Refusing to summarize purge candidates because at least ${DRY_RUN_CANDIDATE_LIMIT} pages matched the prefilter. Narrow the data set or run against a smaller brain.`;
+      if (json) {
+        console.error(JSON.stringify({ dry_run: true, error: 'candidate_limit_exceeded', limit: DRY_RUN_CANDIDATE_LIMIT }, null, 2));
+      } else {
+        console.error(message);
+      }
+      process.exit(2);
+    }
     const cutoff = Date.now() - olderThanHours * 60 * 60 * 1000;
     const wouldPurge = candidates.filter(
       (p) => p.deleted_at && p.deleted_at instanceof Date && p.deleted_at.getTime() < cutoff,

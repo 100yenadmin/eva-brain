@@ -22,12 +22,24 @@ MAX_CONC=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --max-concurrency) MAX_CONC="$2"; shift 2 ;;
+    --max-concurrency)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "ERROR: --max-concurrency requires a positive integer value" >&2
+        exit 2
+      fi
+      MAX_CONC="$2"
+      shift 2
+      ;;
     --max-concurrency=*) MAX_CONC="${1#*=}"; shift ;;
     --dry-run-list) DRY_RUN=1; shift ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -n "$MAX_CONC" ] && ! printf '%s' "$MAX_CONC" | grep -qE '^[1-9][0-9]*$'; then
+  echo "ERROR: --max-concurrency must be a positive integer (got: $MAX_CONC)" >&2
+  exit 2
+fi
 
 # All non-E2E test files, sorted for deterministic shard splits.
 # Tier 4: *.slow.test.ts is "always-slow" (cold-path correctness checks);

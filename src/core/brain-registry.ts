@@ -23,7 +23,7 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import { homedir } from 'os';
 import type { BrainEngine } from './engine.ts';
 import type { EngineConfig } from './types.ts';
@@ -218,6 +218,13 @@ export function loadMounts(mountsPath: string = getMountsPath()): MountEntry[] {
         `mounts[${i}] "${id}": path is required`,
         `path must be a non-empty absolute filesystem path`,
         `Add "path": "/absolute/path/to/${id}" to this mount entry`,
+      );
+    }
+    if (!isAbsolute(entry.path)) {
+      throw new GBrainError(
+        `mounts[${i}] "${id}": path must be absolute`,
+        `Got relative path: ${entry.path}`,
+        `Use an absolute clone path such as "/absolute/path/to/${id}"`,
       );
     }
     const resolvedPath = resolve(entry.path);

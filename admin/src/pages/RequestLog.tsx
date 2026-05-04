@@ -28,7 +28,10 @@ export function RequestLogPage() {
     const qs = agentFilter !== 'all' ? `&agent=${encodeURIComponent(agentFilter)}` : '';
     api.requests(p, qs)
       .then((next) => { setData(next); setLoadError(''); })
-      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load request log'));
+      .catch((err) => {
+        setData({ rows: [], total: 0, page: p, pages: 1 });
+        setLoadError(err instanceof Error ? err.message : 'Failed to load request log');
+      });
   };
 
   const timeAgo = (ts: string) => {
@@ -73,7 +76,11 @@ export function RequestLogPage() {
         </div>
       )}
 
-      {data.rows.length === 0 ? (
+      {loadError ? (
+        <div style={{ textAlign: 'center', padding: 48, color: 'var(--error)' }}>
+          Request log could not be loaded.
+        </div>
+      ) : data.rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
           No requests yet.
         </div>
@@ -97,10 +104,11 @@ export function RequestLogPage() {
                       style={{ cursor: 'pointer' }}>
                     <td style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{timeAgo(r.created_at)}</td>
                     <td>
-                      <a style={{ color: 'var(--text-link, #88aaff)', cursor: 'pointer', textDecoration: 'none', fontWeight: 500 }}
+                      <button type="button"
+                         style={{ background: 'none', border: 0, padding: 0, color: 'var(--text-link, #88aaff)', cursor: 'pointer', textDecoration: 'none', fontWeight: 500 }}
                          onClick={(e) => { e.stopPropagation(); setAgentFilter(r.token_name); setPage(1); }}>
                         {r.agent_name || r.token_name}
-                      </a>
+                      </button>
                     </td>
                     <td className="mono">{r.operation}</td>
                     <td style={{ color: 'var(--text-secondary)', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
