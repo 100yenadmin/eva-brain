@@ -1258,7 +1258,7 @@ export const MIGRATIONS: Migration[] = [
           ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY;
           ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY;
         ELSE
-          RAISE WARNING 'v32: role % lacks BYPASSRLS — skipping RLS on OAuth tables. Re-run as postgres (or a BYPASSRLS role) to harden.', current_user;
+          RAISE EXCEPTION 'v32 oauth_server_core: role % does not have BYPASSRLS privilege — cannot enable OAuth RLS safely. Re-run as postgres (or another BYPASSRLS role). The migration will retry automatically on the next initSchema call.', current_user;
         END IF;
       END $$;
     `,

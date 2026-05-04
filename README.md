@@ -150,7 +150,7 @@ GBrain ships 34 skills organized by `skills/RESOLVER.md` (or your OpenClaw's `AG
 |-------|-------------|
 | **ingest** | Thin router. Detects input type and delegates to the right ingestion skill. |
 | **idea-ingest** | Links, articles, tweets become brain pages with analysis, author people pages, and cross-linking. |
-| **media-ingest** | Video, audio, PDF, books, screenshots, GitHub repos. Transcripts, entity extraction, backlink propagation. |
+| **media-ingest** | Video, audio, PDF, books, screenshots, GitHub repos. Transcripts, entity extraction, backlink propagation. See also [`docs/guides/media-evidence.md`](docs/guides/media-evidence.md) for the runtime vocabulary behind media artifacts, segments, evidence, and resolvers. |
 | **meeting-ingestion** | Transcripts become brain pages. Every attendee gets enriched. Every company gets a timeline entry. |
 | **voice-note-ingest** | Voice notes captured verbatim — exact phrasing preserved, never paraphrased. Routes to originals/concepts/people/companies/ideas/personal/voice-notes based on content. |
 | **article-enrichment** | Raw article dumps become structured pages with executive summary, verbatim quotes, key insights, and why-it-matters. |

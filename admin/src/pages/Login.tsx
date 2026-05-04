@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { api } from '../api';
 
 // v0.26.3 trust model (D11 + D12):
@@ -14,7 +14,7 @@ import { api } from '../api';
 //   for a fresh magic link or pastes the bootstrap token from the
 //   server's terminal scrollback.
 export function LoginPage({ onLogin }: { onLogin: () => void }) {
-  const [token, setToken] = useState('');
+  const tokenRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -22,11 +22,12 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
     e.preventDefault();
     setError('');
     setLoading(true);
+    const token = tokenRef.current?.value ?? '';
     try {
       await api.login(token);
       // Don't persist the token. The HttpOnly cookie is the only
       // session credential after this point.
-      setToken('');
+      if (tokenRef.current) tokenRef.current.value = '';
       onLogin();
     } catch (err) {
       setError('Invalid token.');
@@ -78,10 +79,9 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
           <form onSubmit={handleSubmit} style={{ marginTop: 12 }}>
             <div style={{ marginBottom: 12 }}>
               <input
+                ref={tokenRef}
                 type="password"
                 placeholder="Admin Token"
-                value={token}
-                onChange={e => setToken(e.target.value)}
               />
             </div>
             <button className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>

@@ -168,6 +168,31 @@ describe('client credentials', () => {
     ).rejects.toThrow('Invalid client secret');
   });
 
+  test('non-schema SQL failures are not swallowed by client credentials soft-delete probe', async () => {
+    const sqlFailure = Object.assign(new Error('database session failed'), { code: '57P01' });
+    const fakeSql = async (strings: TemplateStringsArray): Promise<Record<string, unknown>[]> => {
+      const query = strings.join('$');
+      if (query.includes('SELECT client_id, client_secret_hash')) {
+        return [{
+          client_id: 'gbrain_cl_fake',
+          client_secret_hash: hashToken('secret'),
+          client_name: 'fake',
+          redirect_uris: [],
+          grant_types: ['client_credentials'],
+          scope: 'read',
+          client_id_issued_at: 1,
+        }];
+      }
+      if (query.includes('SELECT deleted_at')) throw sqlFailure;
+      return [];
+    };
+    const failingProvider = new GBrainOAuthProvider({ sql: fakeSql as any });
+
+    await expect(
+      failingProvider.exchangeClientCredentials('gbrain_cl_fake', 'secret', 'read'),
+    ).rejects.toThrow('database session failed');
+  });
+
   test('client without CC grant is rejected', async () => {
     const { clientId: noCC } = await provider.registerClientManual(
       'no-cc-agent', ['authorization_code'], 'read',
@@ -371,6 +396,32 @@ describe('authorization code flow', () => {
     await expect(provider.exchangeAuthorizationCode(client, code)).rejects.toThrow();
   });
 
+  test('wrong client cannot consume another client authorization code', async () => {
+    const { clientId: ownerId } = await provider.registerClientManual(
+      'authcode-owner-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const { clientId: attackerId } = await provider.registerClientManual(
+      'authcode-attacker-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const owner = (await provider.clientsStore.getClient(ownerId))!;
+    const attacker = (await provider.clientsStore.getClient(attackerId))!;
+
+    let redirectUrl = '';
+    const mockRes = { redirect: (url: string) => { redirectUrl = url; } } as any;
+    await provider.authorize(owner, {
+      codeChallenge: 'challenge',
+      redirectUri: 'http://localhost:3000/callback',
+      scopes: ['read'],
+    }, mockRes);
+    const code = new URL(redirectUrl).searchParams.get('code')!;
+
+    await expect(provider.exchangeAuthorizationCode(attacker, code)).rejects.toThrow();
+    const tokens = await provider.exchangeAuthorizationCode(owner, code);
+    expect(tokens.access_token).toStartWith('gbrain_at_');
+  });
+
   test('expired code is rejected', async () => {
     // Insert an already-expired code
     const expiredCode = generateToken('gbrain_code_');
@@ -452,6 +503,33 @@ describe('refresh token', () => {
 
     // Old refresh token should no longer work
     await expect(provider.exchangeRefreshToken(client, tokens.refresh_token!)).rejects.toThrow();
+  });
+
+  test('wrong client cannot burn another client refresh token', async () => {
+    const { clientId: ownerId } = await provider.registerClientManual(
+      'refresh-owner-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const { clientId: attackerId } = await provider.registerClientManual(
+      'refresh-attacker-test', ['authorization_code'], 'read',
+      ['http://localhost:3000/callback'],
+    );
+    const owner = (await provider.clientsStore.getClient(ownerId))!;
+    const attacker = (await provider.clientsStore.getClient(attackerId))!;
+
+    let redirectUrl = '';
+    const mockRes = { redirect: (url: string) => { redirectUrl = url; } } as any;
+    await provider.authorize(owner, {
+      codeChallenge: 'challenge',
+      redirectUri: 'http://localhost:3000/callback',
+      scopes: ['read'],
+    }, mockRes);
+    const code = new URL(redirectUrl).searchParams.get('code')!;
+    const tokens = await provider.exchangeAuthorizationCode(owner, code);
+
+    await expect(provider.exchangeRefreshToken(attacker, tokens.refresh_token!)).rejects.toThrow();
+    const rotated = await provider.exchangeRefreshToken(owner, tokens.refresh_token!);
+    expect(rotated.access_token).toStartWith('gbrain_at_');
   });
 
   // CSO finding #3 regression. Same TOCTOU pattern as auth code; the fix is

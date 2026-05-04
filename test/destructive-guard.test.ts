@@ -142,6 +142,21 @@ describe('checkDestructiveConfirmation (gate truth table)', () => {
     expect(msg).toContain('archive');
   });
 
+  test('--yes alone is rejected when dependent data exists without pages', () => {
+    const chunksOnly: DestructiveImpact = {
+      sourceId: 'chunks-only',
+      sourceName: 'chunks-only',
+      pageCount: 0,
+      chunkCount: 1,
+      embeddingCount: 0,
+      fileCount: 0,
+      summary: 'This will permanently delete: 1 chunk',
+    };
+    const msg = checkDestructiveConfirmation(chunksOnly, { yes: true });
+    expect(msg).not.toBeNull();
+    expect(msg).toContain('--confirm-destructive');
+  });
+
   test('no flags + populated source rejects', () => {
     const msg = checkDestructiveConfirmation(populated, {});
     expect(msg).not.toBeNull();

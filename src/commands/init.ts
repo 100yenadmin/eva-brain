@@ -258,9 +258,7 @@ async function initPGLite(opts: {
       console.log('');
       console.log('When you outgrow local: gbrain migrate --to supabase');
       reportModStatus();
-      const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
-      const { VERSION } = await import('../version.ts');
-      printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
+      await printPostInstallAdvisory();
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -363,9 +361,7 @@ async function initPostgres(opts: {
         console.log('Next: gbrain import <dir>');
       }
       reportModStatus();
-      const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
-      const { VERSION } = await import('../version.ts');
-      printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
+      await printPostInstallAdvisory();
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -527,4 +523,14 @@ export function reportModStatus(): void {
   console.log('Resolver: skills/RESOLVER.md');
   console.log('Soul audit: run `gbrain soul-audit` to customize agent identity');
   console.log('');
+}
+
+async function printPostInstallAdvisory(): Promise<void> {
+  try {
+    const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
+    const { VERSION } = await import('../version.ts');
+    printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
+  } catch (e) {
+    console.error(`[warn] post-install advisory skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }

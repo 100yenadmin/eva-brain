@@ -1,5 +1,15 @@
 # Content and Media Ingestion
 
+## Current Shipping Boundary
+
+Eva Brain currently ships a text-backed media evidence path:
+
+- normalized media evidence JSON can be imported with `gbrain import-media`
+- text-backed extraction can be bridged through `gbrain ingest-media --extract openclaw`
+- OCR, captions, transcripts, summaries, entities, tags, locators, and match reasons become searchable once they are present in that normalized payload
+
+Direct binary image/video/audio understanding is the next adapter milestone. Keep binary extraction behind OpenClaw, resolver, or provider adapters; do not present it as core GBrain behavior until it is live-smoked end to end.
+
 ## Goal
 YouTube videos, social media, PDFs, and documents become searchable brain pages with the agent's own analysis and full cross-references to every entity mentioned.
 

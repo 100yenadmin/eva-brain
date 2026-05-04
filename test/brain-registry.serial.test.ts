@@ -271,11 +271,18 @@ describe('BrainRegistry — lazy init', () => {
     // test proves the fall-through to HOST_BRAIN_ID happens before any
     // lookup, not that host init actually succeeds.
     const reg = new BrainRegistry([]);
-    // Expect the host-init path to be attempted (it'll fail on missing
-    // ~/.gbrain/config.json in test env, but the error will come from
-    // initHostBrain, not UnknownBrainError — proving routing hit host).
-    await expect(reg.getBrain(null)).rejects.not.toBeInstanceOf(UnknownBrainError);
-    await expect(reg.getBrain(undefined)).rejects.not.toBeInstanceOf(UnknownBrainError);
-    await expect(reg.getBrain('')).rejects.not.toBeInstanceOf(UnknownBrainError);
+    const originalHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = track(mkdtempSync(join(tmpdir(), 'brain-registry-home-')));
+    try {
+      // Expect the host-init path to be attempted (it'll fail on missing
+      // config.json in the isolated test home, but the error will come from
+      // initHostBrain, not UnknownBrainError — proving routing hit host).
+      await expect(reg.getBrain(null)).rejects.not.toBeInstanceOf(UnknownBrainError);
+      await expect(reg.getBrain(undefined)).rejects.not.toBeInstanceOf(UnknownBrainError);
+      await expect(reg.getBrain('')).rejects.not.toBeInstanceOf(UnknownBrainError);
+    } finally {
+      if (originalHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = originalHome;
+    }
   });
 });

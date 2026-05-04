@@ -13,13 +13,15 @@
  * real embeddings to test the meta flag since we control the env).
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { hybridSearch } from '../src/core/search/hybrid.ts';
+import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 import type { PageInput, HybridSearchMeta } from '../src/core/types.ts';
 
 let engine: PGLiteEngine;
 const savedKey = process.env.OPENAI_API_KEY;
+const savedFetch = globalThis.fetch;
 
 beforeAll(async () => {
   engine = new PGLiteEngine();
@@ -36,7 +38,14 @@ beforeAll(async () => {
 afterAll(async () => {
   if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = savedKey;
+  globalThis.fetch = savedFetch;
+  resetGateway();
   await engine.disconnect();
+});
+
+afterEach(() => {
+  globalThis.fetch = savedFetch;
+  resetGateway();
 });
 
 async function runWithMeta(query: string, opts: Parameters<typeof hybridSearch>[2] = {}): Promise<HybridSearchMeta | null> {
@@ -59,6 +68,46 @@ describe('hybridSearch onMeta callback — vector_enabled', () => {
     const meta = await runWithMeta('alice');
     expect(meta).not.toBeNull();
     expect(meta!.vector_enabled).toBe(false);
+  });
+
+  test('embedding failure falls back to boosted keyword ranking', async () => {
+    try {
+      configureGateway({
+        embedding_model: 'voyage:voyage-3.5',
+        embedding_dimensions: 1024,
+        expansion_model: 'anthropic:claude-haiku-4-5-20251001',
+        env: { VOYAGE_API_KEY: 'test-voyage-key' },
+      });
+      globalThis.fetch = (async () => {
+        throw new Error('network down');
+      }) as unknown as typeof fetch;
+
+      await engine.putPage('people/boosted-alice', {
+        type: 'person',
+        title: 'Boosted Alice',
+        compiled_truth: 'needleboost appears in this boosted search result.',
+      });
+      await engine.upsertChunks('people/boosted-alice', [
+        { chunk_index: 0, chunk_text: 'needleboost appears in this boosted search result.', chunk_source: 'compiled_truth' },
+      ]);
+      await engine.putPage('people/plain-alice', {
+        type: 'person',
+        title: 'Plain Alice',
+        compiled_truth: 'needleboost appears in this plain search result.',
+      });
+      await engine.upsertChunks('people/plain-alice', [
+        { chunk_index: 0, chunk_text: 'needleboost appears in this plain search result.', chunk_source: 'compiled_truth' },
+      ]);
+      await engine.addLink('people/plain-alice', 'people/boosted-alice', 'mentions', 'boost source');
+
+      let meta: HybridSearchMeta | null = null;
+      const out = await hybridSearch(engine, 'needleboost', { onMeta: (m) => { meta = m; } });
+      expect(meta!.vector_enabled).toBe(false);
+      expect(out[0].slug).toBe('people/boosted-alice');
+    } finally {
+      globalThis.fetch = savedFetch;
+      resetGateway();
+    }
   });
 });
 

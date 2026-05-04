@@ -110,10 +110,7 @@ export async function hybridSearch(
 
   // Run keyword search (always available, no API key needed)
   const keywordResults = await engine.searchKeyword(query, searchOpts);
-
-  // Skip vector search entirely if the gateway has no embedding provider configured (Codex C3).
-  const { isAvailable } = await import('../ai/gateway.ts');
-  if (!isAvailable('embedding')) {
+  const returnKeywordOnly = async (appliedExpansion: boolean): Promise<SearchResult[]> => {
     // Apply backlink boost in keyword-only path too. One getBacklinkCounts query
     // per search request; not N+1.
     if (keywordResults.length > 0) {
@@ -126,8 +123,14 @@ export async function hybridSearch(
         // Boost failure is non-fatal: keep unboosted ranking.
       }
     }
-    emitMeta({ vector_enabled: false, detail_resolved: detailResolved, expansion_applied: false });
+    emitMeta({ vector_enabled: false, detail_resolved: detailResolved, expansion_applied: appliedExpansion });
     return dedupResults(keywordResults).slice(offset, offset + limit);
+  };
+
+  // Skip vector search entirely if the gateway has no embedding provider configured (Codex C3).
+  const { isAvailable } = await import('../ai/gateway.ts');
+  if (!isAvailable('embedding')) {
+    return returnKeywordOnly(false);
   }
 
   // Determine query variants (optionally with expansion)
@@ -160,8 +163,7 @@ export async function hybridSearch(
 
   if (vectorLists.length === 0) {
     // Embed/vector failed silently; record that vector did not run.
-    emitMeta({ vector_enabled: false, detail_resolved: detailResolved, expansion_applied: expansionApplied });
-    return dedupResults(keywordResults).slice(offset, offset + limit);
+    return returnKeywordOnly(expansionApplied);
   }
 
   // Merge all result lists via RRF (includes normalization + boost)

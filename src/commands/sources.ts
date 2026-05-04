@@ -60,6 +60,7 @@ interface SourceRow {
   last_commit: string | null;
   last_sync_at: Date | null;
   config: Record<string, unknown> | string;
+  archived?: boolean;
   created_at: Date;
 }
 
@@ -89,7 +90,7 @@ function isFederated(config: unknown): boolean {
 
 async function fetchSource(engine: BrainEngine, id: string): Promise<SourceRow | null> {
   const rows = await engine.executeRaw<SourceRow>(
-    `SELECT id, name, local_path, last_commit, last_sync_at, config, created_at
+    `SELECT id, name, local_path, last_commit, last_sync_at, config, created_at, archived
        FROM sources WHERE id = $1`,
     [id],
   );
@@ -323,6 +324,11 @@ async function runPurge(engine: BrainEngine, args: string[]): Promise<void> {
     if (!impact) {
       console.error(`Source "${id}" not found.`);
       process.exit(4);
+    }
+    const source = await fetchSource(engine, id);
+    if (!source?.archived) {
+      console.error(`Source "${id}" is not archived. Run "gbrain sources archive ${id}" before purge.`);
+      process.exit(5);
     }
 
     console.log(formatImpact(impact));

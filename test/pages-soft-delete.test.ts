@@ -72,6 +72,42 @@ describe('softDeletePage', () => {
     const second = await engine.softDeletePage('people/bob');
     expect(second).toBeNull();
   });
+
+  test('defaults to the default source when duplicate slugs exist across sources', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-soft-delete', 'alt-soft-delete') ON CONFLICT (id) DO NOTHING`,
+    );
+    await seedPage(engine, 'people/same-slug');
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-soft-delete', 'people/same-slug', 'note', 'Alt')`,
+    );
+
+    expect(await engine.softDeletePage('people/same-slug')).not.toBeNull();
+    const rows = await engine.executeRaw<{ source_id: string; deleted_at: string | null }>(
+      `SELECT source_id, deleted_at FROM pages WHERE slug = $1 ORDER BY source_id`,
+      ['people/same-slug'],
+    );
+    expect(rows.find(r => r.source_id === 'default')!.deleted_at).not.toBeNull();
+    expect(rows.find(r => r.source_id === 'alt-soft-delete')!.deleted_at).toBeNull();
+  });
+
+  test('explicit sourceId scopes soft-delete to that source only', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-explicit-delete', 'alt-explicit-delete') ON CONFLICT (id) DO NOTHING`,
+    );
+    await seedPage(engine, 'people/source-scoped');
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-explicit-delete', 'people/source-scoped', 'note', 'Alt')`,
+    );
+
+    expect(await engine.softDeletePage('people/source-scoped', { sourceId: 'alt-explicit-delete' })).not.toBeNull();
+    const rows = await engine.executeRaw<{ source_id: string; deleted_at: string | null }>(
+      `SELECT source_id, deleted_at FROM pages WHERE slug = $1 ORDER BY source_id`,
+      ['people/source-scoped'],
+    );
+    expect(rows.find(r => r.source_id === 'default')!.deleted_at).toBeNull();
+    expect(rows.find(r => r.source_id === 'alt-explicit-delete')!.deleted_at).not.toBeNull();
+  });
 });
 
 describe('restorePage', () => {
@@ -103,6 +139,24 @@ describe('restorePage', () => {
   test('returns false on already-active page (idempotent-as-false)', async () => {
     await seedPage(engine, 'people/dave');
     expect(await engine.restorePage('people/dave')).toBe(false);
+  });
+
+  test('explicit sourceId scopes restore to that source only', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-explicit-restore', 'alt-explicit-restore') ON CONFLICT (id) DO NOTHING`,
+    );
+    await seedPage(engine, 'people/restore-scoped');
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title, deleted_at) VALUES ('alt-explicit-restore', 'people/restore-scoped', 'note', 'Alt', now())`,
+    );
+
+    expect(await engine.restorePage('people/restore-scoped', { sourceId: 'alt-explicit-restore' })).toBe(true);
+    const rows = await engine.executeRaw<{ source_id: string; deleted_at: string | null }>(
+      `SELECT source_id, deleted_at FROM pages WHERE slug = $1 ORDER BY source_id`,
+      ['people/restore-scoped'],
+    );
+    expect(rows.find(r => r.source_id === 'default')!.deleted_at).toBeNull();
+    expect(rows.find(r => r.source_id === 'alt-explicit-restore')!.deleted_at).toBeNull();
   });
 });
 

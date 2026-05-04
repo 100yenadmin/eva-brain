@@ -105,6 +105,15 @@ export function coerceTimestamp(value: unknown): number | undefined {
   return n;
 }
 
+function isUndefinedColumnError(error: unknown, column: string): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : '';
+  if (code === '42703') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(column) && /does not exist|no such column|undefined column/i.test(message);
+}
+
 interface GBrainOAuthProviderOptions {
   sql: SqlQuery;
   /** Default token TTL in seconds (default: 3600 = 1 hour) */
@@ -260,13 +269,14 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     // zero rows back and fails cleanly. See CSO finding #2.
     const rows = await this.sql`
       DELETE FROM oauth_codes
-      WHERE code_hash = ${codeHash} AND expires_at > ${now}
+      WHERE code_hash = ${codeHash}
+        AND client_id = ${client.client_id}
+        AND expires_at > ${now}
       RETURNING client_id, scopes, resource
     `;
     if (rows.length === 0) throw new Error('Authorization code not found or expired');
 
     const codeRow = rows[0];
-    if (codeRow.client_id !== client.client_id) throw new Error('Client mismatch');
 
     // Issue tokens
     const scopes = (codeRow.scopes as string[]) || [];
@@ -292,13 +302,14 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     // succeed, defeating that signal. See CSO finding #3.
     const rows = await this.sql`
       DELETE FROM oauth_tokens
-      WHERE token_hash = ${tokenHash} AND token_type = 'refresh'
+      WHERE token_hash = ${tokenHash}
+        AND token_type = 'refresh'
+        AND client_id = ${client.client_id}
       RETURNING client_id, scopes, expires_at
     `;
     if (rows.length === 0) throw new Error('Refresh token not found');
 
     const row = rows[0];
-    if (row.client_id !== client.client_id) throw new Error('Client mismatch');
     // NULL expires_at is treated as expired (fail-closed). Schema permits NULL
     // even though issueTokens always sets it, so a corrupt or hand-modified row
     // can't ride past validation.
@@ -404,6 +415,7 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     } catch (e) {
       // deleted_at column may not exist on PGLite/older schemas — skip check
       if (e instanceof Error && e.message === 'Client has been revoked') throw e;
+      if (!isUndefinedColumnError(e, 'deleted_at')) throw e;
     }
 
     // Check grant type first (before verifying secret)
@@ -427,7 +439,9 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     try {
       const ttlRows = await this.sql`SELECT token_ttl FROM oauth_clients WHERE client_id = ${clientId}`;
       if (ttlRows.length > 0 && ttlRows[0].token_ttl) clientTtl = Number(ttlRows[0].token_ttl);
-    } catch { /* token_ttl column doesn't exist — use server default */ }
+    } catch (e) {
+      if (!isUndefinedColumnError(e, 'token_ttl')) throw e;
+    }
 
     // Client credentials: access token only, NO refresh token (RFC 6749 4.4.3)
     return this.issueTokens(clientId, grantedScopes, undefined, false, clientTtl);

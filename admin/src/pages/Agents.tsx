@@ -41,10 +41,15 @@ export function AgentsPage() {
   const [showApiKeyCreate, setShowApiKeyCreate] = useState(false);
   const [showApiKeyToken, setShowApiKeyToken] = useState<{ name: string; token: string } | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { loadAgents(); }, []);
 
-  const loadAgents = () => { api.agents().then(setAgents).catch(() => {}); };
+  const loadAgents = () => {
+    api.agents()
+      .then((next) => { setAgents(next); setLoadError(''); })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load agents'));
+  };
 
   return (
     <>
@@ -58,6 +63,11 @@ export function AgentsPage() {
           <button className="btn btn-primary" onClick={() => setShowRegister(true)}>+ OAuth Client</button>
         </div>
       </div>
+      {loadError && (
+        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
+          {loadError}
+        </div>
+      )}
 
       {(() => {
         // Filter once and reuse, so the empty-state guard sees the same

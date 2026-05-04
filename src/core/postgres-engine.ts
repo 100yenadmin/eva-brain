@@ -355,20 +355,20 @@ export class PostgresEngine implements BrainEngine {
     return rowToPage(rows[0]);
   }
 
-  async deletePage(slug: string): Promise<void> {
+  async deletePage(slug: string, opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
-    await sql`DELETE FROM pages WHERE slug = ${slug}`;
+    await sql`DELETE FROM pages WHERE slug = ${slug} AND source_id = ${opts?.sourceId ?? 'default'}`;
   }
 
   async softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null> {
     const sql = this.sql;
-    const sourceId = opts?.sourceId;
+    const sourceId = opts?.sourceId ?? 'default';
     // Idempotent-as-null contract: only flip rows that are currently active.
     // RETURNING projects the slug so we can tell hit-vs-miss without a probe.
-    const sourceCondition = sourceId ? sql`AND source_id = ${sourceId}` : sql``;
+    // Slugs are per-source; default to the legacy source when callers omit one.
     const rows = await sql`
       UPDATE pages SET deleted_at = now()
-      WHERE slug = ${slug} AND deleted_at IS NULL ${sourceCondition}
+      WHERE slug = ${slug} AND source_id = ${sourceId} AND deleted_at IS NULL
       RETURNING slug
     `;
     if (rows.length === 0) return null;
@@ -377,11 +377,10 @@ export class PostgresEngine implements BrainEngine {
 
   async restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean> {
     const sql = this.sql;
-    const sourceId = opts?.sourceId;
-    const sourceCondition = sourceId ? sql`AND source_id = ${sourceId}` : sql``;
+    const sourceId = opts?.sourceId ?? 'default';
     const rows = await sql`
       UPDATE pages SET deleted_at = NULL
-      WHERE slug = ${slug} AND deleted_at IS NOT NULL ${sourceCondition}
+      WHERE slug = ${slug} AND source_id = ${sourceId} AND deleted_at IS NOT NULL
       RETURNING slug
     `;
     return rows.length > 0;

@@ -405,20 +405,19 @@ export class PGLiteEngine implements BrainEngine {
     return rowToPage(rows[0] as Record<string, unknown>);
   }
 
-  async deletePage(slug: string): Promise<void> {
-    await this.db.query('DELETE FROM pages WHERE slug = $1', [slug]);
+  async deletePage(slug: string, opts?: { sourceId?: string }): Promise<void> {
+    await this.db.query('DELETE FROM pages WHERE slug = $1 AND source_id = $2', [slug, opts?.sourceId ?? 'default']);
   }
 
   async softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null> {
-    // Idempotent-as-null: only flip rows currently active. Source filter is
-    // optional; without it the first matching row across sources gets soft-deleted.
-    const sourceId = opts?.sourceId;
+    // Idempotent-as-null: only flip rows currently active. Slugs are unique
+    // per source, not globally, so callers that do not thread sourceId target
+    // the legacy/default source instead of every source that shares the slug.
+    const sourceId = opts?.sourceId ?? 'default';
     const where: string[] = ['slug = $1', 'deleted_at IS NULL'];
     const params: unknown[] = [slug];
-    if (sourceId) {
-      params.push(sourceId);
-      where.push(`source_id = $${params.length}`);
-    }
+    params.push(sourceId);
+    where.push(`source_id = $${params.length}`);
     const { rows } = await this.db.query(
       `UPDATE pages SET deleted_at = now() WHERE ${where.join(' AND ')} RETURNING slug`,
       params
@@ -428,13 +427,11 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   async restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean> {
-    const sourceId = opts?.sourceId;
+    const sourceId = opts?.sourceId ?? 'default';
     const where: string[] = ['slug = $1', 'deleted_at IS NOT NULL'];
     const params: unknown[] = [slug];
-    if (sourceId) {
-      params.push(sourceId);
-      where.push(`source_id = $${params.length}`);
-    }
+    params.push(sourceId);
+    where.push(`source_id = $${params.length}`);
     const { rows } = await this.db.query(
       `UPDATE pages SET deleted_at = NULL WHERE ${where.join(' AND ')} RETURNING slug`,
       params

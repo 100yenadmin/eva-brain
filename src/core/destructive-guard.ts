@@ -151,11 +151,6 @@ export function checkDestructiveConfirmation(
   // --confirm-destructive is the explicit "I know what I'm doing" flag
   if (opts.confirmDestructive) return null;
 
-  // --yes alone is NOT sufficient for destructive operations with data.
-  // This is the key behavior change: --yes used to be enough, now you
-  // need --confirm-destructive when there's actual data at stake.
-  if (opts.yes && impact.pageCount === 0) return null;
-
   return (
     `\n${impact.summary}\n\n` +
     `To proceed, pass --confirm-destructive (or use soft-delete: gbrain sources archive ${impact.sourceId}).\n` +

@@ -151,6 +151,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // (RFC 8414 §3.3). Honor --public-url for production deployments behind
   // reverse proxies / tunnels; default to localhost for dev.
   const issuerUrl = new URL(publicUrl || `http://localhost:${port}`);
+  const adminCookie = (req: Request, maxAge: number) => ({
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure: req.secure || issuerUrl.protocol === 'https:',
+    maxAge,
+    path: '/admin',
+  });
 
   const authRouterOptions: any = {
     provider: oauthProvider,
@@ -232,12 +239,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
     adminSessions.set(sessionId, expiresAt);
 
-    res.cookie('gbrain_admin', sessionId, {
-      httpOnly: true,
-      sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000,
-      path: '/admin',
-    });
+    res.cookie('gbrain_admin', sessionId, adminCookie(req, 24 * 60 * 60 * 1000));
     res.json({ status: 'authenticated' });
   });
 
@@ -339,12 +341,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     const sessionExpiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days for magic link
     adminSessions.set(sessionId, sessionExpiresAt);
 
-    res.cookie('gbrain_admin', sessionId, {
-      httpOnly: true,
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: '/admin',
-    });
+    res.cookie('gbrain_admin', sessionId, adminCookie(req, 7 * 24 * 60 * 60 * 1000));
     res.redirect('/admin/');
   });
 
@@ -663,6 +660,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           error: (msg: string) => console.error(`[ERROR] ${msg}`),
         },
         dryRun: !!(params?.dry_run),
+        remote: true,
         auth: authInfo,
       };
 

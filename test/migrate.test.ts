@@ -950,6 +950,18 @@ describe('migration v31 — eval_capture_tables', () => {
   });
 });
 
+describe('migration v32 — oauth_server_core RLS hardening', () => {
+  test('Postgres variant fails loudly on non-BYPASSRLS roles instead of silently bumping version', () => {
+    const pgSql = MIGRATIONS.find(m => m.version === 32)!.sql;
+    expect(pgSql).toContain('rolbypassrls');
+    expect(pgSql).toMatch(/RAISE EXCEPTION[^;]*BYPASSRLS/);
+    expect(pgSql).not.toMatch(/RAISE WARNING[^;]*BYPASSRLS/);
+    expect(pgSql).toContain('ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY');
+    expect(pgSql).toContain('ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY');
+    expect(pgSql).toContain('ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY');
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────
 // PR #363 regression guards — session timeouts via startup parameters
 // resolveSessionTimeouts — GBRAIN_*_TIMEOUT env overrides

@@ -5,7 +5,7 @@ This is the recommended customer path for eva-brain right now:
 1. **archive any old `~/.gbrain` state instead of patching it in place**
 2. **do a fresh init with Voyage 1024d**
 3. **verify provider health and brain health immediately**
-4. **treat OpenClaw Codex OAuth extraction as a host-side dependency**
+4. **treat OpenClaw Codex OAuth extraction as a host-side dependency until live-smoked**
 5. **only then import/sync content**
 
 This guide intentionally prefers a clean integrated path over legacy in-place migration complexity.
@@ -17,8 +17,8 @@ This branch already documents and ships:
 - provider probing via `gbrain providers list|explain|test`
 - safe brain verification via `gbrain doctor --json` and `gbrain stats`
 
-This branch does **not** yet claim a fully merged end-to-end OpenClaw-managed Codex OAuth `provider_auth` flow inside eva-brain itself.
-That work is tracked in `100yenadmin/eva-brain#2`.
+This branch does **not** yet claim a fully merged end-to-end OpenClaw-managed Codex OAuth extraction flow inside eva-brain itself.
+That work is tracked in `100yenadmin/eva-brain#16`.
 
 So the honest integrated install story is:
 - **eva-brain side:** fresh Voyage brain + verification
@@ -157,8 +157,9 @@ This part is a **host-side dependency**.
 
 What we can safely document here today:
 - eva-brain's fresh Voyage install path is independent of Codex OAuth
-- the durable OpenClaw Codex/OpenAI auth propagation work is tracked in `100yenadmin/eva-brain#2`
-- production extraction that relies on OpenClaw-managed Codex/OpenAI OAuth should be considered dependent on that auth branch/PR
+- the durable OpenClaw Codex/OpenAI auth propagation work is tracked in `100yenadmin/eva-brain#16`
+- today's media support is text-backed normalized evidence import/search
+- production extraction that relies on OpenClaw-managed Codex/OpenAI OAuth should be considered dependent on a rebuilt, live-smoked adapter PR
 
 ### Recommended integrated rollout
 
@@ -175,10 +176,10 @@ Because the auth adapter is host-side, the verification should also be host-side
 - the extraction command/path should stop failing on missing auth
 - no secret values should be printed during verification
 
-Until `100yenadmin/eva-brain#2` lands, the safe fallback is:
+Until `100yenadmin/eva-brain#16` is proven with a live OpenClaw runtime smoke, the safe fallback is:
 - use Voyage for embeddings as documented here
-- use API-key-backed extraction paths where applicable
-- do not claim fully supported OpenClaw-managed OAuth extraction yet
+- use normalized media evidence JSON or text-backed extraction paths where applicable
+- do not claim fully supported no-extra-key OpenClaw-managed OAuth extraction yet
 
 ## Post-init verification
 

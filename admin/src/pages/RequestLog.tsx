@@ -20,12 +20,15 @@ export function RequestLogPage() {
   const [page, setPage] = useState(1);
   const [agentFilter, setAgentFilter] = useState('all');
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { loadPage(page); }, [page, agentFilter]);
 
   const loadPage = (p: number) => {
     const qs = agentFilter !== 'all' ? `&agent=${encodeURIComponent(agentFilter)}` : '';
-    api.requests(p, qs).then(setData).catch(() => {});
+    api.requests(p, qs)
+      .then((next) => { setData(next); setLoadError(''); })
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load request log'));
   };
 
   const timeAgo = (ts: string) => {
@@ -64,6 +67,11 @@ export function RequestLogPage() {
           {[...agentMap.entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
       </div>
+      {loadError && (
+        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
+          {loadError}
+        </div>
+      )}
 
       {data.rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>

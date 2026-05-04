@@ -290,11 +290,6 @@ async function handleCliOnly(command: string, args: string[]) {
     await runIntegrations(args);
     return;
   }
-  if (command === 'auth') {
-    const { runAuth } = await import('./commands/auth.ts');
-    await runAuth(args);
-    return;
-  }
   if (command === 'resolvers') {
     const { runResolvers } = await import('./commands/resolvers.ts');
     await runResolvers(args);

@@ -15,11 +15,21 @@ export function DashboardPage() {
   const [health, setHealth] = useState({ expiring_soon: 0, error_rate: '0%' });
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [sseStatus, setSseStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
+  const [loadError, setLoadError] = useState('');
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    api.stats().then(setStats).catch(() => {});
-    api.health().then(setHealth).catch(() => {});
+    const loadSnapshot = async () => {
+      const [statsResult, healthResult] = await Promise.allSettled([api.stats(), api.health()]);
+      const errors: string[] = [];
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
+      else errors.push(statsResult.reason instanceof Error ? statsResult.reason.message : 'Failed to load dashboard stats');
+      if (healthResult.status === 'fulfilled') setHealth(healthResult.value);
+      else errors.push(healthResult.reason instanceof Error ? healthResult.reason.message : 'Failed to load token health');
+      setLoadError(errors.join(' / '));
+    };
+
+    loadSnapshot();
 
     const es = new EventSource('/admin/events');
     eventSourceRef.current = es;
@@ -40,8 +50,7 @@ export function DashboardPage() {
     };
 
     const interval = setInterval(() => {
-      api.stats().then(setStats).catch(() => {});
-      api.health().then(setHealth).catch(() => {});
+      loadSnapshot();
     }, 30000);
 
     return () => { es.close(); clearInterval(interval); };
@@ -57,6 +66,11 @@ export function DashboardPage() {
   return (
     <>
       <h1 className="page-title">Dashboard</h1>
+      {loadError && (
+        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
+          {loadError}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 24 }}>
         <div style={{ flex: 1 }}>
