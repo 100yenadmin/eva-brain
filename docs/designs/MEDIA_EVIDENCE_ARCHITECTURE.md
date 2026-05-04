@@ -333,7 +333,7 @@ A realistic upstream contribution should stay narrow:
 
 - make segment-level evidence a clearer runtime concept
 - add optional multimodal embedding backends
-- support page/time-range/frame scoped retrieval
+- support page/time-range/frame-scoped retrieval
 
 ### Phase D - Upstream Formalization
 
