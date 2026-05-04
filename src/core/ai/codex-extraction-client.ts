@@ -136,7 +136,7 @@ export class CommandCodexExtractionClient implements CodexExtractionClient {
       throw new Error('Codex extraction command fallback only supports text-backed media extraction');
     }
     return await this.completeJson<T>({
-      prompt: request.text,
+      prompt: buildMediaExtractionPrompt(request),
       model: request.model,
       signal: request.signal,
     });
@@ -188,6 +188,26 @@ function toHostPayload(request: CodexExtractionRequest, responseFormat: 'text' |
     // auth through the OpenClaw runtime for the active user.
     auth: { mode: 'openclaw-runtime' },
   };
+}
+
+function buildMediaExtractionPrompt(request: CodexMediaExtractionRequest): string {
+  return `Extract this text-backed media into JSON matching gbrain.media-extraction.v1.
+
+Return ONLY JSON. Required shape:
+{
+  "schemaVersion": "gbrain.media-extraction.v1",
+  "kind": "image|pdf|video|audio",
+  "sourceRef": "...",
+  "title": "...",
+  "summary": "...",
+  "segments": [{ "id": "segment-0", "kind": "page|transcript_segment|audio_segment|asset", "summary": "...", "transcriptText": "...", "ocrText": "...", "entities": [{"text":"...","type":"..."}], "tags": [{"value":"..."}] }]
+}
+
+Use kind "${request.kind}" and sourceRef "${request.sourceRef}". Preserve important quotes and names.
+Title hint: ${request.title ?? '(none)'}
+
+Content:
+${request.text}`;
 }
 
 function coerceTextReply(stdout: string): string {

@@ -44,10 +44,10 @@ describe('CodexExtractionClient', () => {
   });
 
   test('parses direct JSON extraction output from the host command', async () => {
-    const command = `node -e "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',segments:[{id:'segment-0',kind:'page',summary:'ok'}]})))"`;
+    const command = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const p=JSON.parse(s);if(!p.prompt.includes('gbrain.media-extraction.v1')) process.exit(2);process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',segments:[{id:'segment-0',kind:'page',summary:'ok'}]}));})"`;
     const client = new CommandCodexExtractionClient(command, process.env);
 
-    const json = await client.completeJson<any>({ prompt: 'extract JSON' });
+    const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON' });
 
     expect(json.schemaVersion).toBe('gbrain.media-extraction.v1');
     expect(json.segments[0].summary).toBe('ok');
