@@ -414,6 +414,8 @@ export interface BrainEngine {
   logEvalCandidate(input: EvalCandidateInput): Promise<number>;
   /** Read candidates by time window / limit / tool filter. Used by `gbrain eval export`. */
   listEvalCandidates(filter?: { since?: Date; limit?: number; tool?: 'query' | 'search' }): Promise<EvalCandidate[]>;
+  /** Count candidates created before `date`. Used by destructive dry-run previews. */
+  countEvalCandidatesBefore(date: Date): Promise<number>;
   /** Delete candidates created before `date`. Returns rows deleted. Used by `gbrain eval prune`. */
   deleteEvalCandidatesBefore(date: Date): Promise<number>;
   /** Log a capture failure so `gbrain doctor` can surface drops cross-process. Best-effort; symmetric with logEvalCandidate (failure-of-failure is lost). */

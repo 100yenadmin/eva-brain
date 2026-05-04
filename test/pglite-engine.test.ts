@@ -76,6 +76,19 @@ describe('PGLiteEngine: Pages', () => {
     expect(result).toBeNull();
   });
 
+  test('getPage defaults to the default source when duplicate slugs exist', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-read', 'alt-read') ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('test/source-read', testPage);
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-read', 'test/source-read', 'note', 'Alt')`,
+    );
+
+    expect((await engine.getPage('test/source-read'))?.title).toBe('Test Page');
+    expect((await engine.getPage('test/source-read', { sourceId: 'alt-read' }))?.title).toBe('Alt');
+  });
+
   test('deletePage removes page', async () => {
     await engine.putPage('test/delete-me', testPage);
     await engine.deletePage('test/delete-me');

@@ -95,18 +95,8 @@ export async function runEvalPrune(engine: BrainEngine, args: string[]): Promise
   const cutoff = new Date(Date.now() - opts.olderThanMs);
 
   if (opts.dryRun) {
-    // Snapshot-count the rows we *would* delete — the list call caps at
-    // 100k which matches the export ceiling, so larger windows get a
-    // floor-estimate that's still useful signal.
-    const rows = await engine.listEvalCandidates({
-      since: new Date(0),
-      limit: 100_000,
-    });
-    const wouldDelete = rows.filter(r => new Date(r.created_at) < cutoff).length;
+    const wouldDelete = await engine.countEvalCandidatesBefore(cutoff);
     console.log(`[dry-run] would delete ${wouldDelete} row(s) created before ${cutoff.toISOString()}`);
-    if (rows.length === 100_000) {
-      console.log('[dry-run] (count may be undercounted — the scan hit the 100k row limit)');
-    }
     return;
   }
 

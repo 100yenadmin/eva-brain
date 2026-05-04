@@ -312,15 +312,12 @@ export class PostgresEngine implements BrainEngine {
   async getPage(slug: string, opts?: { sourceId?: string; includeDeleted?: boolean }): Promise<Page | null> {
     const sql = this.sql;
     const includeDeleted = opts?.includeDeleted === true;
-    const sourceId = opts?.sourceId;
-    // v0.26.5: default hides soft-deleted rows. Compose with optional sourceId
-    // filter via fragment chaining (postgres.js supports sql`` composition).
-    const sourceCondition = sourceId ? sql`AND source_id = ${sourceId}` : sql``;
+    const sourceId = opts?.sourceId ?? 'default';
     const deletedCondition = includeDeleted ? sql`` : sql`AND deleted_at IS NULL`;
     const rows = await sql`
       SELECT id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at
       FROM pages
-      WHERE slug = ${slug} ${sourceCondition} ${deletedCondition}
+      WHERE slug = ${slug} AND source_id = ${sourceId} ${deletedCondition}
       LIMIT 1
     `;
     if (rows.length === 0) return null;
@@ -1899,10 +1896,23 @@ export class PostgresEngine implements BrainEngine {
 
   async deleteEvalCandidatesBefore(date: Date): Promise<number> {
     const sql = this.sql;
-    const rows = await sql`
-      DELETE FROM eval_candidates WHERE created_at < ${date} RETURNING id
+    const [row] = await sql<{ count: number }[]>`
+      WITH deleted AS (
+        DELETE FROM eval_candidates
+        WHERE created_at < ${date}
+        RETURNING 1
+      )
+      SELECT count(*)::int AS count FROM deleted
     `;
-    return rows.length;
+    return Number(row?.count ?? 0);
+  }
+
+  async countEvalCandidatesBefore(date: Date): Promise<number> {
+    const sql = this.sql;
+    const [row] = await sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM eval_candidates WHERE created_at < ${date}
+    `;
+    return Number(row?.count ?? 0);
   }
 
   async logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void> {

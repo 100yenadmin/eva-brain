@@ -29,7 +29,7 @@ import { hashToken, generateToken } from './utils.ts';
 // ---------------------------------------------------------------------------
 
 /** Raw SQL query function — works with both PGLite and postgres tagged templates */
-type SqlQuery = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
+export type SqlQuery = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
 
 /**
  * Convert a JS array to a PostgreSQL array literal for PGLite compat.
@@ -120,6 +120,8 @@ interface GBrainOAuthProviderOptions {
   tokenTtl?: number;
   /** Default refresh token TTL in seconds (default: 30 days) */
   refreshTtl?: number;
+  /** Disable Dynamic Client Registration while preserving client lookup. */
+  dcrDisabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,17 +196,24 @@ class GBrainClientsStore implements OAuthRegisteredClientsStore {
 export class GBrainOAuthProvider implements OAuthServerProvider {
   private sql: SqlQuery;
   private _clientsStore: GBrainClientsStore;
+  private readonly dcrDisabled: boolean;
   private tokenTtl: number;
   private refreshTtl: number;
 
   constructor(options: GBrainOAuthProviderOptions) {
     this.sql = options.sql;
     this._clientsStore = new GBrainClientsStore(this.sql);
+    this.dcrDisabled = options.dcrDisabled === true;
     this.tokenTtl = options.tokenTtl || 3600;
     this.refreshTtl = options.refreshTtl || 30 * 24 * 3600;
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
+    if (this.dcrDisabled) {
+      return {
+        getClient: this._clientsStore.getClient.bind(this._clientsStore),
+      } as OAuthRegisteredClientsStore;
+    }
     return this._clientsStore;
   }
 

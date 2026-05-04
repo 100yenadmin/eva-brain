@@ -357,13 +357,9 @@ export class PGLiteEngine implements BrainEngine {
   async getPage(slug: string, opts?: { sourceId?: string; includeDeleted?: boolean }): Promise<Page | null> {
     // v0.26.5: hide soft-deleted by default; opt-in via opts.includeDeleted.
     const includeDeleted = opts?.includeDeleted === true;
-    const sourceId = opts?.sourceId;
-    const where: string[] = ['slug = $1'];
-    const params: unknown[] = [slug];
-    if (sourceId) {
-      params.push(sourceId);
-      where.push(`source_id = $${params.length}`);
-    }
+    const sourceId = opts?.sourceId ?? 'default';
+    const where: string[] = ['slug = $1', 'source_id = $2'];
+    const params: unknown[] = [slug, sourceId];
     if (!includeDeleted) {
       where.push('deleted_at IS NULL');
     }
@@ -1830,10 +1826,23 @@ export class PGLiteEngine implements BrainEngine {
 
   async deleteEvalCandidatesBefore(date: Date): Promise<number> {
     const { rows } = await this.db.query(
-      `DELETE FROM eval_candidates WHERE created_at < $1 RETURNING id`,
+      `WITH deleted AS (
+         DELETE FROM eval_candidates
+         WHERE created_at < $1
+         RETURNING 1
+       )
+       SELECT count(*)::int AS count FROM deleted`,
       [date]
     );
-    return rows.length;
+    return Number((rows[0] as { count?: number | string } | undefined)?.count ?? 0);
+  }
+
+  async countEvalCandidatesBefore(date: Date): Promise<number> {
+    const { rows } = await this.db.query(
+      `SELECT count(*)::int AS count FROM eval_candidates WHERE created_at < $1`,
+      [date]
+    );
+    return Number((rows[0] as { count?: number | string } | undefined)?.count ?? 0);
   }
 
   async logEvalCaptureFailure(reason: EvalCaptureFailureReason): Promise<void> {

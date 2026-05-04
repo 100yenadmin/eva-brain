@@ -29,6 +29,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { BrainEngine } from '../core/engine.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { waitForCompletion, TimeoutError } from '../core/minions/wait-for-completion.ts';
@@ -54,6 +55,7 @@ interface BookMirrorFlags {
   noConfirm: boolean;
   follow: boolean;
   dryRun: boolean;
+  progressJson: boolean;
 }
 
 interface ChapterEntry {
@@ -102,6 +104,7 @@ function parseFlags(args: string[]): BookMirrorFlags {
     noConfirm: hasFlag(args, '--no-confirm') || hasFlag(args, '--yes'),
     follow: process.stdout.isTTY === true && !hasFlag(args, '--no-follow'),
     dryRun: hasFlag(args, '--dry-run'),
+    progressJson: hasFlag(args, '--progress-json'),
   };
 }
 
@@ -134,6 +137,7 @@ OPTIONAL
   --timeout-ms <n>          Per-chapter wall-clock timeout.
   --no-confirm / --yes      Skip the cost-estimate confirmation prompt.
   --no-follow               Submit and exit; don't tail children.
+  --progress-json           Emit machine-readable JSON to stdout.
   --dry-run                 Validate inputs + print plan; submit nothing.
 
 TRUST CONTRACT (read this)
@@ -293,16 +297,17 @@ function buildAssembledPage(opts: {
   chapterAnalyses: Array<{ index: number; result: string; failed: boolean; error?: string }>;
 }): string {
   const today = new Date().toISOString().split('T')[0];
-  const authorLine = opts.author ? `\nauthor: "${opts.author}"` : '';
+  const yamlScalar = (value: string): string => JSON.stringify(value);
+  const authorLine = opts.author ? `\nauthor: ${yamlScalar(opts.author)}` : '';
   const contextSummary = opts.contextPack
     ? opts.contextPack.split('\n').slice(0, 3).join(' ').slice(0, 200)
     : 'No reader-context pack supplied.';
 
   const frontmatter = `---
-title: "${opts.title} — Personalized"
+title: ${yamlScalar(`${opts.title} — Personalized`)}
 type: book-analysis${authorLine}
 date: ${today}
-context: "${contextSummary.replace(/"/g, '\\"')}"
+context: ${yamlScalar(contextSummary)}
 tags: [book, personalized, two-column]
 ---`;
 
@@ -411,9 +416,16 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     };
     const submitOpts: Partial<MinionJobInput> = {
       max_stalled: 3,
-      // Loose idempotency: same chapter file + slug → same idempotency key,
-      // so re-running the CLI on identical input dedups against the queue.
-      idempotency_key: `book-mirror:${flags.slug}:ch-${ch.index}`,
+      idempotency_key: `book-mirror:${flags.slug}:ch-${ch.index}:` +
+        createHash('sha256')
+          .update(JSON.stringify({
+            text: ch.text,
+            contextPack,
+            model: flags.model,
+            maxTurns: flags.maxTurns,
+            timeoutMs: flags.timeoutMs,
+          }))
+          .digest('hex'),
     };
     if (flags.timeoutMs) submitOpts.timeout_ms = flags.timeoutMs;
     const job = await queue.add(
@@ -430,7 +442,9 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   );
 
   if (!flags.follow) {
-    process.stdout.write(JSON.stringify({ child_ids: childIds, slug: targetSlug }) + '\n');
+    if (flags.progressJson) {
+      process.stdout.write(JSON.stringify({ child_ids: childIds, slug: targetSlug }) + '\n');
+    }
     process.stderr.write(
       `gbrain book-mirror: detached. Run \`gbrain jobs get <id>\` per child, then re-run with same args once all are complete.\n`
     );
@@ -451,8 +465,18 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
       });
       if (job.status === 'completed' && job.result && typeof job.result === 'object') {
         const result = (job.result as { result?: string }).result ?? '';
-        analyses.push({ index: chapterIndex, result, failed: false });
-        process.stderr.write(`  chapter ${chapterIndex}: complete (job ${childId})\n`);
+        if (result.trim().length > 0) {
+          analyses.push({ index: chapterIndex, result, failed: false });
+          process.stderr.write(`  chapter ${chapterIndex}: complete (job ${childId})\n`);
+        } else {
+          analyses.push({
+            index: chapterIndex,
+            result: '',
+            failed: true,
+            error: `job ${childId} returned empty result`,
+          });
+          process.stderr.write(`  chapter ${chapterIndex}: FAILED (job ${childId} returned empty result)\n`);
+        }
       } else {
         analyses.push({
           index: chapterIndex,
@@ -502,7 +526,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     {
       engine,
       config: loadConfig() || { engine: 'postgres' },
-      logger: { info: console.log, warn: console.warn, error: console.error },
+      logger: { info: console.error, warn: console.warn, error: console.error },
       dryRun: false,
       remote: false,             // local CLI caller — operator trust path
       cliOpts: getCliOptions(),
@@ -516,12 +540,17 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   );
 
   process.stderr.write(`\nwrote: ${targetSlug} (${chapters.length} chapter sections, ${assembled.length} bytes)\n`);
-  process.stdout.write(JSON.stringify({
+  const output = {
     slug: targetSlug,
     chapters_total: chapters.length,
     chapters_completed: completed,
     chapters_failed: failed,
-  }) + '\n');
+  };
+  if (flags.progressJson) {
+    process.stdout.write(JSON.stringify(output) + '\n');
+  } else {
+    process.stderr.write(`summary: ${JSON.stringify(output)}\n`);
+  }
 
   if (failed > 0) {
     process.stderr.write(

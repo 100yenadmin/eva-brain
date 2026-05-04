@@ -25,6 +25,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { GBrainOAuthProvider } from '../core/oauth-provider.ts';
+import type { SqlQuery } from '../core/oauth-provider.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
 import { VERSION } from '../version.ts';
@@ -86,12 +87,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   const config = loadConfig() || { engine: 'pglite' as const };
 
   // Get raw SQL connection for OAuth provider
-  const sql = db.getConnection();
+  const sql = db.getConnection() as SqlQuery;
 
   // Initialize OAuth provider
   const oauthProvider = new GBrainOAuthProvider({
-    sql: sql as any,
+    sql,
     tokenTtl,
+    dcrDisabled: !enableDcr,
   });
 
   // Sweep expired tokens on startup (non-blocking)
@@ -203,16 +205,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     scopesSupported: ['read', 'write', 'admin'],
     resourceName: 'GBrain MCP Server',
   };
-
-  // Disable DCR by removing registerClient from the clients store
-  if (!enableDcr) {
-    // Override the provider's clientsStore to remove registerClient
-    const originalStore = oauthProvider.clientsStore;
-    (oauthProvider as any)._clientsStore = {
-      getClient: originalStore.getClient.bind(originalStore),
-      // No registerClient = DCR disabled
-    };
-  }
 
   const authRouter = mcpAuthRouter(authRouterOptions);
 
@@ -755,6 +747,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           agent: agentName,
           operation: name,
           params: safeParams,
+          scopes: authInfo.scopes.join(','),
           latency_ms: latency,
           status: 'error',
           error: errorPayload,

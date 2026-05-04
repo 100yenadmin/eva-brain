@@ -150,6 +150,15 @@ describe('listEvalCandidates', () => {
 });
 
 describe('deleteEvalCandidatesBefore', () => {
+  test('counts rows without deleting them', async () => {
+    for (let i = 0; i < 3; i++) {
+      await engine.logEvalCandidate(makeInput());
+    }
+    const futureCutoff = new Date(Date.now() + 60_000);
+    expect(await engine.countEvalCandidatesBefore(futureCutoff)).toBe(3);
+    expect(await engine.listEvalCandidates()).toHaveLength(3);
+  });
+
   test('returns the number of rows deleted', async () => {
     for (let i = 0; i < 3; i++) {
       await engine.logEvalCandidate(makeInput());
