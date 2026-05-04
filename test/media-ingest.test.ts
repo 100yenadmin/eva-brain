@@ -140,6 +140,26 @@ describe('ingest-media normalized integration', () => {
     }
   }, 30000);
 
+  test('rejects unknown binary document types for OpenClaw extraction', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-ingest-media-docx-'));
+    const mediaPath = join(dir, 'document.docx');
+    const prevCommand = process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND;
+    writeFileSync(mediaPath, 'fake-docx-binary');
+    process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND = 'cat';
+
+    try {
+      await expect(runIngestMedia(engine, [
+        mediaPath,
+        '--extract', 'openclaw',
+        '--slug', 'media/evidence/document',
+      ])).rejects.toThrow('does not support .docx files yet');
+    } finally {
+      if (prevCommand === undefined) delete process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND;
+      else process.env.GBRAIN_OPENCLAW_COMPLETION_COMMAND = prevCommand;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   test('requires the OpenClaw gateway for image extraction', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-ingest-media-image-command-'));
     const mediaPath = join(dir, 'receipt.png');

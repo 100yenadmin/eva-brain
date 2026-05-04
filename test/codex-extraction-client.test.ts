@@ -46,6 +46,7 @@ describe('CodexExtractionClient', () => {
   test('parses direct JSON extraction output from the host command', async () => {
     const command = `node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const p=JSON.parse(s);if(!p.prompt.includes('gbrain.media-extraction.v1')) process.exit(2);process.stdout.write(JSON.stringify({schemaVersion:'gbrain.media-extraction.v1',kind:'pdf',segments:[{id:'segment-0',kind:'page',summary:'ok'}]}));})"`;
     const client = new CommandCodexExtractionClient(command, process.env);
+    expect(client.supportsFileMedia).toBe(false);
 
     const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON' });
 
@@ -65,6 +66,7 @@ describe('CodexExtractionClient', () => {
     }) as typeof fetch;
     try {
       const client = new OpenClawGatewayCodexExtractionClient({ gatewayUrl: 'http://127.0.0.1:18789', gatewayToken: 'gateway-token' });
+      expect(client.supportsFileMedia).toBe(true);
       const json = await client.extractMedia<any>({ kind: 'pdf', sourceRef: 'note.txt', text: 'extract JSON' });
 
       expect(json.schemaVersion).toBe('gbrain.media-extraction.v1');

@@ -23,6 +23,7 @@ export interface CodexMediaExtractionRequest {
 }
 
 export interface CodexExtractionClient {
+  readonly supportsFileMedia: boolean;
   completeText(request: CodexExtractionRequest): Promise<string>;
   completeJson<T = unknown>(request: CodexExtractionRequest): Promise<T>;
   extractMedia<T = unknown>(request: CodexMediaExtractionRequest): Promise<T>;
@@ -56,6 +57,8 @@ export function createConfiguredCodexExtractionClient(env: CodexExtractionEnv = 
 }
 
 export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClient {
+  readonly supportsFileMedia = true;
+
   constructor(private readonly options: { gatewayUrl: string; gatewayToken?: string; completionPath?: string; extractPath?: string }) {}
 
   async completeText(request: CodexExtractionRequest): Promise<string> {
@@ -119,6 +122,8 @@ export class OpenClawGatewayCodexExtractionClient implements CodexExtractionClie
 }
 
 export class CommandCodexExtractionClient implements CodexExtractionClient {
+  readonly supportsFileMedia = false;
+
   constructor(private readonly command: string, private readonly env: CodexExtractionEnv = process.env) {}
 
   async completeText(request: CodexExtractionRequest): Promise<string> {
