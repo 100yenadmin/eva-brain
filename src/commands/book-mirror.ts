@@ -371,12 +371,8 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     console.error('gbrain book-mirror: --slug is required. Run with --help.');
     process.exit(2);
   }
-  if (!/^[a-z0-9][a-z0-9-]*$/i.test(flags.slug)) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(flags.slug)) {
     console.error(`gbrain book-mirror: invalid --slug "${flags.slug}". Use kebab-case (a-z, 0-9, hyphens).`);
-    process.exit(2);
-  }
-  if (flags.contextFile && !fs.existsSync(flags.contextFile)) {
-    console.error(`gbrain book-mirror: --context-file not found: ${flags.contextFile}`);
     process.exit(2);
   }
 
@@ -389,7 +385,18 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     process.exit(2);
   }
 
-  const contextPack = flags.contextFile ? fs.readFileSync(flags.contextFile, 'utf8') : undefined;
+  const contextPack = (() => {
+    if (!flags.contextFile) return undefined;
+    try {
+      const stat = fs.statSync(flags.contextFile);
+      if (!stat.isFile()) throw new Error(`--context-file is not a file: ${flags.contextFile}`);
+      return fs.readFileSync(flags.contextFile, 'utf8');
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`gbrain book-mirror: ${message}`);
+      process.exit(2);
+    }
+  })();
   const bookTitle = flags.title ?? flags.slug;
   const targetSlug = `media/books/${flags.slug}-personalized`;
 
@@ -440,6 +447,8 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
           .update(JSON.stringify({
             text: ch.text,
             contextPack,
+            bookTitle,
+            bookAuthor: flags.author,
             model: flags.model,
             maxTurns: flags.maxTurns,
             timeoutMs: flags.timeoutMs,

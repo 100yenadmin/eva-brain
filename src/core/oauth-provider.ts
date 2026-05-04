@@ -327,7 +327,11 @@ export class GBrainOAuthProvider implements OAuthServerProvider {
     const expiresAt = coerceTimestamp(row.expires_at);
     if (expiresAt === undefined || expiresAt < now) throw new Error('Refresh token expired');
 
-    const tokenScopes = scopes || (row.scopes as string[]) || [];
+    const grantedScopes = (row.scopes as string[]) || [];
+    if (scopes && scopes.some((scope) => !grantedScopes.includes(scope))) {
+      throw new Error('Requested scope exceeds refresh token grant');
+    }
+    const tokenScopes = scopes ?? grantedScopes;
     return this.issueTokens(client.client_id, tokenScopes, resource, true);
   }
 

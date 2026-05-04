@@ -546,6 +546,26 @@ describe('refresh token', () => {
     await expect(provider.exchangeRefreshToken(client, tokens.refresh_token!)).rejects.toThrow();
   });
 
+  test('refresh cannot request scopes outside the original grant', async () => {
+    const { clientId } = await provider.registerClientManual(
+      'refresh-scope-test', ['authorization_code'], 'read write',
+      ['http://localhost:3000/callback'],
+    );
+    const client = (await provider.clientsStore.getClient(clientId))!;
+
+    let redirectUrl = '';
+    const mockRes = { redirect: (url: string) => { redirectUrl = url; } } as any;
+    await provider.authorize(client, {
+      codeChallenge: 'challenge',
+      redirectUri: 'http://localhost:3000/callback',
+      scopes: ['read'],
+    }, mockRes);
+    const code = new URL(redirectUrl).searchParams.get('code')!;
+    const tokens = await provider.exchangeAuthorizationCode(client, code);
+
+    await expect(provider.exchangeRefreshToken(client, tokens.refresh_token!, ['read', 'write'])).rejects.toThrow();
+  });
+
   test('wrong client cannot burn another client refresh token', async () => {
     const { clientId: ownerId } = await provider.registerClientManual(
       'refresh-owner-test', ['authorization_code'], 'read',

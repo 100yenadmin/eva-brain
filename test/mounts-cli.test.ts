@@ -1,10 +1,10 @@
 import { describe, test, expect, afterEach, beforeEach } from 'bun:test';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
 import { __testing } from '../src/commands/mounts.ts';
 
-const { parseAddArgs, redactUrl, readMountsFile, writeMountsFile } = __testing;
+const { parseAddArgs, redactUrl, readMountsFile, writeMountsFile, withMountsFileLock } = __testing;
 
 const toCleanup: string[] = [];
 let tempHome: string | null = null;
@@ -198,6 +198,22 @@ describe('readMountsFile / writeMountsFile', () => {
     expect(existsSync(path)).toBe(true);
     // .tmp should be gone after atomic rename.
     expect(existsSync(path + '.tmp')).toBe(false);
+  });
+});
+
+describe('withMountsFileLock', () => {
+  test('evicts stale lock file before writing', () => {
+    withFakeHome(() => {
+      const lockPath = join(homedir(), '.gbrain', 'mounts.json.lock');
+      writeFileSync(lockPath, '{"pid":1}\n');
+      const stale = new Date(Date.now() - 10 * 60 * 1000);
+      utimesSync(lockPath, stale, stale);
+
+      const result = withMountsFileLock(() => 'ok');
+
+      expect(result).toBe('ok');
+      expect(existsSync(lockPath)).toBe(false);
+    });
   });
 });
 

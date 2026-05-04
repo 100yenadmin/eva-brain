@@ -109,6 +109,14 @@ describe('gbrain book-mirror — source file invariants', () => {
     // chapters at the queue layer.
     expect(source).toContain('idempotency_key');
     expect(source).toContain('book-mirror:');
+    expect(source).toContain('bookTitle');
+    expect(source).toContain('bookAuthor');
+  });
+
+  it('enforces lowercase slugs and validates context file reads', () => {
+    expect(source).toContain('/^[a-z0-9][a-z0-9-]*$/.test(flags.slug)');
+    expect(source).toContain('stat.isFile()');
+    expect(source).toContain('process.exit(2)');
   });
 
   it('handles partial-failure (continues + flags failed chapters)', () => {

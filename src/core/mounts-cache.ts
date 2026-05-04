@@ -52,6 +52,8 @@ export interface ComposedResolverEntry {
    * for mount skills, resolved against the mount's clone path.
    */
   absolutePath: string;
+  /** Resolver-compatible path for markdown consumers when available. */
+  relativePath?: string;
   /** Mount id ('host' for host skills, else the mount id). */
   brainId: string;
   /** Section header from RESOLVER.md ('Brain operations', etc.) */
@@ -146,6 +148,7 @@ export function composeResolvers(
       trigger: e.trigger,
       qualifiedName: name,
       absolutePath: abs,
+      relativePath: isExternal ? undefined : e.skillPath,
       brainId: HOST_BRAIN_ID,
       section: e.section,
       isExternal,
@@ -181,6 +184,7 @@ export function composeResolvers(
         trigger: e.trigger,
         qualifiedName,
         absolutePath: abs,
+        relativePath: isExternal ? undefined : e.skillPath,
         brainId: mount.id,
         section: e.section,
         isExternal,
@@ -260,8 +264,14 @@ function readManifestSkills(skillsDir: string, readFile?: (p: string) => string 
   const content = reader(path);
   if (!content) return [];
   try {
-    const parsed = JSON.parse(content);
-    return Array.isArray(parsed.skills) ? parsed.skills : [];
+    const parsed = JSON.parse(content) as { skills?: unknown };
+    if (!Array.isArray(parsed.skills)) return [];
+    return parsed.skills.filter((skill): skill is { name: string; path: string } => (
+      !!skill &&
+      typeof skill === 'object' &&
+      typeof (skill as { name?: unknown }).name === 'string' &&
+      typeof (skill as { path?: unknown }).path === 'string'
+    ));
   } catch {
     return [];
   }
@@ -342,7 +352,7 @@ export function renderResolverMarkdown(composed: ComposedResolver): string {
     lines.push('| Trigger | Skill | Brain |');
     lines.push('|---------|-------|-------|');
     for (const e of entries) {
-      const skillCol = e.isExternal ? e.absolutePath : `\`${e.absolutePath}\``;
+      const skillCol = e.isExternal ? e.absolutePath : `\`${e.relativePath ?? e.absolutePath}\``;
       lines.push(`| ${e.trigger} | ${skillCol} | ${e.brainId} |`);
     }
     lines.push('');

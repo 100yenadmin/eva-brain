@@ -22,7 +22,7 @@
  *   gbrain mounts add --mcp-url         — HTTP MCP transport + OAuth (PR 2)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, openSync, closeSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, openSync, closeSync, unlinkSync, writeSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import {
@@ -72,12 +72,25 @@ function withMountsFileLock<T>(fn: () => T): T {
   mkdirSync(getMountsDir(), { recursive: true });
   const lockPath = `${getMountsPath()}.lock`;
   const deadline = Date.now() + 5000;
+  const staleAfterMs = 5 * 60 * 1000;
   let fd: number | undefined;
   while (fd === undefined) {
     try {
       fd = openSync(lockPath, 'wx', 0o600);
+      writeSync(fd, JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() }) + '\n');
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        try {
+          const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+          if (ageMs > staleAfterMs) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          try { unlinkSync(lockPath); continue; } catch { /* best effort */ }
+        }
+      }
       if (code !== 'EEXIST' || Date.now() >= deadline) {
         throw new GBrainError(
           'mounts.json is locked',
