@@ -76,11 +76,48 @@ describe('PGLiteEngine: Pages', () => {
     expect(result).toBeNull();
   });
 
+  test('getPage defaults to the default source when duplicate slugs exist', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-read', 'alt-read') ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('test/source-read', testPage);
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-read', 'test/source-read', 'note', 'Alt')`,
+    );
+
+    expect((await engine.getPage('test/source-read'))?.title).toBe('Test Page');
+    expect((await engine.getPage('test/source-read', { sourceId: 'alt-read' }))?.title).toBe('Alt');
+  });
+
   test('deletePage removes page', async () => {
     await engine.putPage('test/delete-me', testPage);
     await engine.deletePage('test/delete-me');
     const result = await engine.getPage('test/delete-me');
     expect(result).toBeNull();
+  });
+
+  test('deletePage is source-scoped when duplicate slugs exist', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt-delete', 'alt-delete') ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('test/source-delete', testPage);
+    await engine.executeRaw(
+      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-delete', 'test/source-delete', 'note', 'Alt')`,
+    );
+
+    await engine.deletePage('test/source-delete');
+    let rows = await engine.executeRaw<{ source_id: string }>(
+      `SELECT source_id FROM pages WHERE slug = $1 ORDER BY source_id`,
+      ['test/source-delete'],
+    );
+    expect(rows.map(r => r.source_id)).toEqual(['alt-delete']);
+
+    await engine.deletePage('test/source-delete', { sourceId: 'alt-delete' });
+    rows = await engine.executeRaw<{ source_id: string }>(
+      `SELECT source_id FROM pages WHERE slug = $1`,
+      ['test/source-delete'],
+    );
+    expect(rows.length).toBe(0);
   });
 
   test('listPages with type filter', async () => {

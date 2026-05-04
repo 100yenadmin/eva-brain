@@ -205,6 +205,42 @@ describe('sources remove', () => {
     const del = calls.find(c => c.sql.startsWith('DELETE FROM sources'));
     expect(del).toBeUndefined();
   });
+
+  test('--yes remains a compatibility alias for --confirm-destructive', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
+        { id: 'gstack', name: 'gstack', local_path: '/tmp/g', last_commit: null, last_sync_at: null, config: '{}', created_at: new Date() },
+      ],
+      'SELECT id, name FROM sources WHERE id': [{ id: 'gstack', name: 'gstack' }],
+      'COUNT(*)::int AS n FROM pages': [{ n: 1 }],
+      'COUNT(*)::int AS n FROM content_chunks cc': [{ n: 0 }],
+      'SELECT EXISTS': [{ exists: false }],
+    });
+    await runSources(engine, ['remove', 'gstack', '--yes']);
+    const del = calls.find(c => c.sql.startsWith('DELETE FROM sources'));
+    expect(del).toBeDefined();
+  });
+});
+
+// ── purge ───────────────────────────────────────────────────
+
+describe('sources purge', () => {
+  test('refuses to purge a source that is not archived', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name FROM sources WHERE id': [
+        { id: 'live-src', name: 'live-src' },
+      ],
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
+        { id: 'live-src', name: 'live-src', local_path: null, last_commit: null, last_sync_at: null, config: '{}', created_at: new Date(), archived: false },
+      ],
+      'COUNT(*)::int AS n FROM pages': [{ n: 1 }],
+    });
+
+    const code = await withExitCapture(() => runSources(engine, ['purge', 'live-src', '--confirm-destructive']));
+    expect(code).toBe(5);
+    const del = calls.find(c => c.sql.startsWith('DELETE FROM sources'));
+    expect(del).toBeUndefined();
+  });
 });
 
 // ── default ─────────────────────────────────────────────────

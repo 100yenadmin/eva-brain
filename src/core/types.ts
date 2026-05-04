@@ -18,6 +18,12 @@ export interface Page {
   content_hash?: string;
   created_at: Date;
   updated_at: Date;
+  /**
+   * v0.26.5: when present, the page is soft-deleted. Hidden from search and
+   * from `getPage` / `listPages` by default; surface via `include_deleted: true`.
+   * The autopilot purge phase hard-deletes rows where `deleted_at < now() - 72h`.
+   */
+  deleted_at?: Date | null;
 }
 
 export type PageKind = 'markdown' | 'code';
@@ -53,6 +59,21 @@ export interface PageFilters {
    * queries to a tier directory without loading every page into memory.
    */
   slugPrefix?: string;
+  /**
+   * v0.26.5: include soft-deleted pages (rows with `deleted_at IS NOT NULL`).
+   * Default false: hides soft-deleted pages from `list_pages` so agents see the
+   * same set search returns. Set true to enumerate the recoverable set during
+   * the 72h window before the autopilot purge phase hard-deletes them.
+   */
+  includeDeleted?: boolean;
+}
+
+/** v0.26.5 — opts for getPage / softDeletePage / restorePage. */
+export interface GetPageOpts {
+  /** Filter to a specific source. When omitted, getPage returns the first slug match across sources (pre-existing semantics). */
+  sourceId?: string;
+  /** Include soft-deleted pages. Default false. See PageFilters.includeDeleted. */
+  includeDeleted?: boolean;
 }
 
 // Chunks
@@ -387,6 +408,69 @@ export interface IngestLogInput {
   source_ref: string;
   pages_updated: string[];
   summary: string;
+}
+
+// Eval capture (v0.25.0)
+// Real MCP/CLI/subagent query+search calls are captured into eval_candidates
+// so gbrain-evals can replay them as BrainBench-Real. The companion
+// eval_capture_failures table records insert failures so gbrain doctor can
+// surface silent capture drops cross-process.
+export interface EvalCandidateInput {
+  tool_name: 'query' | 'search';
+  /** Already PII-scrubbed by captureEvalCandidate before this point. */
+  query: string;
+  retrieved_slugs: string[];
+  retrieved_chunk_ids: number[];
+  source_ids: string[];
+  /** Whether multi-query Haiku expansion was enabled on the call. Null for 'search'. */
+  expand_enabled: boolean | null;
+  /** The detail level the call requested (pre-auto-detect). */
+  detail: 'low' | 'medium' | 'high' | null;
+  /** What hybridSearch actually ran (post-auto-detect). Null for 'search'. */
+  detail_resolved: 'low' | 'medium' | 'high' | null;
+  /** True when vector search actually ran (false when OPENAI_API_KEY missing or embed failed). */
+  vector_enabled: boolean;
+  /** True when Haiku expansion actually fired. */
+  expansion_applied: boolean;
+  latency_ms: number;
+  /** ctx.remote: true for MCP callers (untrusted), false for local CLI. */
+  remote: boolean;
+  job_id: number | null;
+  subagent_id: number | null;
+}
+
+export interface EvalCandidate extends EvalCandidateInput {
+  id: number;
+  created_at: Date;
+}
+
+export type EvalCaptureFailureReason =
+  | 'db_down'
+  | 'rls_reject'
+  | 'check_violation'
+  | 'scrubber_exception'
+  | 'other';
+
+export interface EvalCaptureFailure {
+  id: number;
+  ts: Date;
+  reason: EvalCaptureFailureReason;
+}
+
+/**
+ * Side-channel metadata that hybridSearch reports about what actually ran.
+ * Surfaced via the optional `onMeta` callback in HybridSearchOpts so
+ * existing SearchResult[] consumers (Cathedral II, gbrain-evals, etc.)
+ * stay unchanged. Used by op-layer eval capture to distinguish
+ * "keyword-only fallback" from "full hybrid with expansion."
+ */
+export interface HybridSearchMeta {
+  /** True iff vector search actually ran. False when OPENAI_API_KEY missing or embed failed. */
+  vector_enabled: boolean;
+  /** Post-auto-detect detail level. */
+  detail_resolved: 'low' | 'medium' | 'high' | null;
+  /** True iff multi-query expansion (Haiku) actually fired and produced variants. */
+  expansion_applied: boolean;
 }
 
 // Config

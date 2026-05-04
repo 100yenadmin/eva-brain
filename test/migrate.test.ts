@@ -82,6 +82,60 @@ describe('migrate v20 — sources_table_additive', () => {
 // ─────────────────────────────────────────────────────────────────
 // v0.18.0 — v17 pages_source_id_composite_unique (Step 2, Lane B)
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// v0.26.3 — v33 admin_dashboard_columns_v0_26_3
+// ─────────────────────────────────────────────────────────────────
+// SQL-shape guard: PR #586 referenced 5 columns + a new index that didn't
+// exist in any prior migration. Without v33, /admin/api/agents 503s and
+// the request-log INSERT silently swallows column-doesn't-exist errors.
+// This test pins the column set so a future refactor can't silently drop
+// part of the migration without the test failing.
+describe('migrate v33 — admin_dashboard_columns_v0_26_3', () => {
+  const v33 = MIGRATIONS.find(m => m.version === 33);
+
+  test('v33 exists with the expected name', () => {
+    expect(v33).toBeDefined();
+    expect(v33!.name).toBe('admin_dashboard_columns_v0_26_3');
+  });
+
+  test('v33 adds all 5 columns referenced by serve-http.ts and oauth-provider.ts', () => {
+    const sql = v33!.sql;
+    expect(sql).toContain('ALTER TABLE oauth_clients');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS token_ttl INTEGER');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');
+    expect(sql).toContain('ALTER TABLE mcp_request_log');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS agent_name TEXT');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS params JSONB');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS error_message TEXT');
+  });
+
+  test('v33 backfills mcp_request_log.agent_name from oauth_clients + access_tokens', () => {
+    const sql = v33!.sql;
+    expect(sql).toContain('UPDATE mcp_request_log');
+    expect(sql).toContain('SET agent_name = COALESCE(');
+    expect(sql).toContain('FROM oauth_clients WHERE client_id = m.token_name');
+    expect(sql).toContain('FROM access_tokens WHERE name = m.token_name');
+    expect(sql).toContain('WHERE agent_name IS NULL');
+  });
+
+  test('v33 creates idx_mcp_log_agent_time for the new agent filter', () => {
+    expect(v33!.sql).toContain('idx_mcp_log_agent_time');
+    expect(v33!.sql).toContain('mcp_request_log(agent_name, created_at DESC)');
+  });
+
+  test('v33 uses ADD COLUMN IF NOT EXISTS so re-runs are idempotent', () => {
+    // All ALTER lines must be IF NOT EXISTS — re-running migrations on a
+    // brain that already has v33 columns must be a no-op, not a duplicate
+    // column error.
+    const sql = v33!.sql;
+    const addColumnLines = sql.match(/ADD COLUMN[^,;]+/gi) || [];
+    expect(addColumnLines.length).toBeGreaterThanOrEqual(5);
+    for (const line of addColumnLines) {
+      expect(line).toContain('IF NOT EXISTS');
+    }
+  });
+});
+
 describe('migrate v21 — pages_source_id_composite_unique', () => {
   const v21 = MIGRATIONS.find(m => m.version === 21);
 
@@ -827,6 +881,117 @@ describe('PR #356 — non-transactional DDL runs via reserved connection', () =>
     const fnBody = source.slice(runFnIdx, runFnIdx + 2500);
     expect(fnBody).toContain('withReservedConnection');
     expect(fnBody).toContain("SET statement_timeout = '600000'");
+  });
+});
+
+describe('migration v31 — eval_capture_tables', () => {
+  test('exists with the expected name and is engine-specific (sqlFor)', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31);
+    expect(v31).toBeDefined();
+    expect(v31?.name).toBe('eval_capture_tables');
+    expect(v31?.sqlFor?.postgres).toBeDefined();
+    expect(v31?.sqlFor?.pglite).toBeDefined();
+    expect(v31?.sql).toBe('');
+  });
+
+  test('creates both eval_candidates and eval_capture_failures on both engines', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31)!;
+    for (const variant of ['postgres', 'pglite'] as const) {
+      const sql = v31.sqlFor![variant]!;
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS eval_candidates');
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS eval_capture_failures');
+    }
+  });
+
+  test('enforces CHECK length(query) <= 51200', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31)!;
+    for (const variant of ['postgres', 'pglite'] as const) {
+      expect(v31.sqlFor![variant]!).toContain('CHECK (length(query) <= 51200)');
+    }
+  });
+
+  test('enforces tool_name enum + reason enum', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31)!;
+    for (const variant of ['postgres', 'pglite'] as const) {
+      const sql = v31.sqlFor![variant]!;
+      expect(sql).toContain(`tool_name IN ('query', 'search')`);
+      expect(sql).toContain(`reason IN ('db_down', 'rls_reject', 'check_violation', 'scrubber_exception', 'other')`);
+    }
+  });
+
+  test('creates DESC indexes on both tables', () => {
+    const v31 = MIGRATIONS.find(m => m.version === 31)!;
+    for (const variant of ['postgres', 'pglite'] as const) {
+      const sql = v31.sqlFor![variant]!;
+      expect(sql).toContain('idx_eval_candidates_created_at');
+      expect(sql).toContain('idx_eval_capture_failures_ts');
+      expect(sql).toContain('created_at DESC');
+      expect(sql).toContain('ts DESC');
+    }
+  });
+
+  test('Postgres variant gates RLS on BYPASSRLS and fails loudly', () => {
+    const pgSql = MIGRATIONS.find(m => m.version === 31)!.sqlFor!.postgres!;
+    expect(pgSql).toContain('rolbypassrls');
+    expect(pgSql).toMatch(/IF NOT has_bypass/);
+    expect(pgSql).toMatch(/RAISE EXCEPTION[^;]*BYPASSRLS/);
+    expect(pgSql).toContain('ALTER TABLE eval_candidates ENABLE ROW LEVEL SECURITY');
+    expect(pgSql).toContain('ALTER TABLE eval_capture_failures ENABLE ROW LEVEL SECURITY');
+  });
+
+  test('PGLite variant has no RLS / no BYPASSRLS gate', () => {
+    const pgliteSql = MIGRATIONS.find(m => m.version === 31)!.sqlFor!.pglite!;
+    expect(pgliteSql).not.toContain('rolbypassrls');
+    expect(pgliteSql).not.toContain('ENABLE ROW LEVEL SECURITY');
+  });
+
+  test('LATEST_VERSION caught up to 31', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(31);
+  });
+});
+
+describe('migration v32 — oauth_server_core RLS hardening', () => {
+  test('uses engine-specific SQL paths so PGLite avoids Postgres-only RLS SQL', () => {
+    const v32 = MIGRATIONS.find(m => m.version === 32)!;
+    expect(v32.sql).toBe('');
+    expect(v32.sqlFor?.postgres).toBeDefined();
+    expect(v32.sqlFor?.pglite).toBeDefined();
+  });
+
+  test('Postgres variant fails loudly on non-BYPASSRLS roles instead of silently bumping version', () => {
+    const pgSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.postgres!;
+    expect(pgSql).toContain('rolbypassrls');
+    expect(pgSql).toMatch(/RAISE EXCEPTION[^;]*BYPASSRLS/);
+    expect(pgSql).not.toMatch(/RAISE WARNING[^;]*BYPASSRLS/);
+    expect(pgSql).toContain('ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY');
+    expect(pgSql).toContain('ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY');
+    expect(pgSql).toContain('ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY');
+  });
+
+  test('PGLite variant creates OAuth tables without pg_roles or RLS statements', () => {
+    const pgliteSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.pglite!;
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_clients');
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_tokens');
+    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_codes');
+    expect(pgliteSql).not.toContain('pg_roles');
+    expect(pgliteSql).not.toContain('ENABLE ROW LEVEL SECURITY');
+    expect(pgliteSql).not.toContain('DO $$');
+  });
+});
+
+describe('migration v34 — destructive_guard_columns', () => {
+  test('Postgres invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside DO block', () => {
+    const src = readFileSync(resolve('src/core/migrate.ts'), 'utf-8');
+    const v34Start = src.indexOf("name: 'destructive_guard_columns'");
+    expect(v34Start).toBeGreaterThan(-1);
+    const v34Block = src.slice(v34Start, v34Start + 5000);
+    expect(v34Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS pages_deleted_at_purge_idx');
+    const doBlockStart = v34Block.indexOf('DO $$');
+    if (doBlockStart !== -1) {
+      const doBlockEnd = v34Block.indexOf('END $$', doBlockStart);
+      const doBlock = v34Block.slice(doBlockStart, doBlockEnd === -1 ? v34Block.length : doBlockEnd);
+      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
+    }
   });
 });
 

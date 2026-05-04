@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 const repoRoot = new URL('..', import.meta.url).pathname;
 
 async function runCli(args: string[], env: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number }> {
-  const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', ...args], {
+  const proc = Bun.spawn([process.execPath, 'run', 'src/cli.ts', ...args], {
     cwd: repoRoot,
     env: { ...process.env, ...env },
     stdout: 'pipe',

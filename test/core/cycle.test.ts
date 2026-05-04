@@ -135,10 +135,10 @@ beforeAll(async () => {
   sharedEngine = new PGLiteEngine();
   await sharedEngine.connect({});
   await sharedEngine.initSchema();
-}, 60_000);
+}, 60_000); // OAuth v25 + full migration chain needs breathing room
 
 afterAll(async () => {
-  await sharedEngine.disconnect();
+  if (sharedEngine) await sharedEngine.disconnect();
 }, 60_000);
 
 beforeEach(() => {
@@ -377,8 +377,8 @@ describe('runCycle — yieldBetweenPhases hook', () => {
         hookCalls++;
       },
     });
-    // v0.23: 8 phases → 8 yield calls (one after each).
-    expect(hookCalls).toBe(8);
+    // v0.26.5: 9 phases (added `purge`) → 9 yield calls (one after each).
+    expect(hookCalls).toBe(9);
   });
 
   test('hook exceptions do not abort the cycle', async () => {
@@ -388,8 +388,8 @@ describe('runCycle — yieldBetweenPhases hook', () => {
         throw new Error('synthetic hook error');
       },
     });
-    // Cycle still completed all phases (v0.23: 8).
-    expect(report.phases.length).toBe(8);
+    // Cycle still completed all phases (v0.26.5: 9 with the new purge phase).
+    expect(report.phases.length).toBe(9);
   });
 });
 
@@ -494,20 +494,20 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
   });
 
   test('sources table missing (very old brain) → catch returns undefined, sync still runs', async () => {
-    // CRITICAL: do NOT DROP TABLE on the shared engine. initSchema() only
-    // re-runs PENDING migrations; once schema_version is at latest, the
-    // v20 migration that creates `sources` will not re-execute. Use a
-    // fresh one-shot engine so the shared engine isn't degraded for
-    // every later test in this file.
-    const fresh = new PGLiteEngine();
-    await fresh.connect({});
-    await fresh.initSchema();
-    await (fresh as any).db.query('DROP TABLE IF EXISTS sources CASCADE');
+    // Simulate an old brain without sources without creating a second
+    // PGLite WASM runtime inside the already-large parallel shard.
+    const originalExecuteRaw = sharedEngine.executeRaw.bind(sharedEngine);
+    sharedEngine.executeRaw = (async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM sources')) {
+        throw new Error('relation "sources" does not exist');
+      }
+      return originalExecuteRaw(sql, params);
+    }) as typeof sharedEngine.executeRaw;
     try {
-      await runCycle(fresh, { brainDir: '/tmp/brain-475-d' });
+      await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-d' });
       expect(syncCalls.at(-1)?.sourceId).toBeUndefined();
     } finally {
-      await fresh.disconnect();
+      sharedEngine.executeRaw = originalExecuteRaw as typeof sharedEngine.executeRaw;
     }
   });
 

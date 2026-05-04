@@ -125,6 +125,25 @@ describe('put_page — trusted-workspace allow-list', () => {
   });
 });
 
+describe('purge_deleted_pages — safety validation', () => {
+  const purgeDeletedPages = findOp('purge_deleted_pages');
+
+  test('rejects non-positive older_than_hours before engine call', async () => {
+    const ctx = makeCtx({ remote: false, viaSubagent: false });
+    await expect(purgeDeletedPages.handler(ctx, { older_than_hours: 0 })).rejects.toMatchObject({
+      code: 'invalid_params',
+    });
+  });
+
+  test('dry-run default preserves the 72 hour recovery window', async () => {
+    const ctx = makeCtx({ dryRun: true, remote: false, viaSubagent: false });
+    await expect(purgeDeletedPages.handler(ctx, {})).resolves.toMatchObject({
+      dry_run: true,
+      older_than_hours: 72,
+    });
+  });
+});
+
 describe('put_page — legacy namespace check (regression guard)', () => {
   const put_page = findOp('put_page');
 
