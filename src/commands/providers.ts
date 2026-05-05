@@ -427,7 +427,7 @@ function pickRecommended(options: ProviderOption[], env: Record<string, boolean>
   }
   if (env.VOYAGE_API_KEY) {
     const voyage = embOpts.find(o => o.id.startsWith('voyage:'));
-    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Voyage at 1024 dims.' };
+    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Voyage at 2048 dims.' };
   }
   return {
     id: 'openai:text-embedding-3-large',

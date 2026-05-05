@@ -13,6 +13,17 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 function home(): string {
+  const override = process.env.GBRAIN_HOME;
+  if (override && override.trim()) {
+    const trimmed = override.trim();
+    if (!trimmed.startsWith('/')) {
+      throw new Error(`GBRAIN_HOME must be an absolute path; got: ${trimmed}`);
+    }
+    if (trimmed.split('/').includes('..')) {
+      throw new Error(`GBRAIN_HOME must not contain '..' segments; got: ${trimmed}`);
+    }
+    return trimmed;
+  }
   // `os.homedir()` in Bun caches its initial value and ignores later
   // `process.env.HOME` mutations, which breaks test isolation and any
   // workflow that needs to run against a specific $HOME (CI, scripted installs).

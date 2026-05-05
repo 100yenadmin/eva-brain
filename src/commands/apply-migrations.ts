@@ -163,10 +163,17 @@ interface Plan {
  */
 function buildPlan(idx: CompletedIndex, installed: string, filterVersion?: string): Plan {
   const plan: Plan = { applied: [], partial: [], pending: [], skippedFuture: [], wedged: [] };
+  const completedVersions = Array.from(idx.byVersion.entries())
+    .filter(([, entries]) => entries.some(e => e.status === 'complete'))
+    .map(([version]) => version);
   for (const m of migrations) {
     if (filterVersion && m.version !== filterVersion) continue;
     if (compareVersions(m.version, installed) > 0) {
       plan.skippedFuture.push(m);
+      continue;
+    }
+    if (completedVersions.some(version => compareVersions(version, m.version) >= 0)) {
+      plan.applied.push(m);
       continue;
     }
     const status = statusForVersion(m.version, idx);

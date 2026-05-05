@@ -1,9 +1,9 @@
-# Clean integrated install: 1024d embeddings + safe cleanup + verification
+# Clean integrated install: 2048d embeddings + safe cleanup + verification
 
 This is the recommended customer path for your agent fork right now:
 
 1. **archive any old `~/.gbrain` state instead of patching it in place**
-2. **do a fresh init with 1024d embeddings**
+2. **do a fresh init with 2048d embeddings**
 3. **verify provider health and brain health immediately**
 4. **treat host-managed OAuth extraction as a host-side dependency until live-smoked**
 5. **only then import/sync content**
@@ -21,15 +21,15 @@ This branch does **not** yet claim a fully merged end-to-end host-managed OAuth 
 That work is tracked in the downstream adapter issue.
 
 So the honest integrated install story is:
-- **fork side:** fresh 1024d embedding brain + verification
+- **fork side:** fresh 2048d embedding brain + verification
 - **host side:** complete the OAuth adapter/auth setup on the host, then verify extraction there
 - **cut over only after both halves are green**
 
 ## Recommended production target
 
-- embedding provider: **1024d-capable provider**
-- model: **`voyage:voyage-3.5`**
-- embedding dimension: **1024**
+- embedding provider: **2048d-capable provider**
+- model: **`voyage:voyage-4-large`**
+- embedding dimension: **2048**
 - install style: **fresh init**
 - old state handling: **archive, never destructive delete first**
 
@@ -53,10 +53,10 @@ export VOYAGE_API_KEY=...
 # 3) verify provider before init
 gbrain providers list
 gbrain providers explain
-gbrain providers test --model voyage:voyage-3.5
+gbrain providers test --model voyage:voyage-4-large
 
-# 4) fresh init at 1024d
-gbrain init --pglite --embedding-model voyage:voyage-3.5
+# 4) fresh init at 2048d
+gbrain init --pglite --embedding-model voyage:voyage-4-large --embedding-dimensions 2048
 
 # 5) verify the fresh brain
 gbrain doctor --json
@@ -100,14 +100,14 @@ Old customer installs may have any of these problems:
 
 A fresh init is faster and safer than trying to repair every old state shape.
 
-## Fresh init with 1024d embeddings
+## Fresh init with 2048d embeddings
 
 ### PGLite
 
 ```bash
 export VOYAGE_API_KEY=...
-gbrain providers test --model voyage:voyage-3.5
-gbrain init --pglite --embedding-model voyage:voyage-3.5
+gbrain providers test --model voyage:voyage-4-large
+gbrain init --pglite --embedding-model voyage:voyage-4-large --embedding-dimensions 2048
 gbrain doctor --json
 gbrain stats
 ```
@@ -115,15 +115,16 @@ gbrain stats
 ### Supabase / Postgres
 
 Use a fresh target database or fresh customer database URL.
-Do not point a new 1024d install at an old 1536d database.
+Do not point a new 2048d install at an old 1536d database.
 
 ```bash
 export VOYAGE_API_KEY=...
 export GBRAIN_DATABASE_URL='postgresql://...'
 
-gbrain providers test --model voyage:voyage-3.5
+gbrain providers test --model voyage:voyage-4-large
 gbrain init --supabase --non-interactive \
-  --embedding-model voyage:voyage-3.5 \
+  --embedding-model voyage:voyage-4-large \
+  --embedding-dimensions 2048 \
   --url "$GBRAIN_DATABASE_URL"
 
 gbrain doctor --json
@@ -136,14 +137,14 @@ The embedding dimension is schema-level state.
 
 For common providers:
 - OpenAI `text-embedding-3-large` → **1536**
-- 1024d provider model → **1024**
+- 2048d provider model → **2048**
 - Google `text-embedding-004` → **768**
 - Ollama `nomic-embed-text` recipe default → **768**
 - LiteLLM → **must be declared explicitly by the operator**
 
 ### Operational rule
 
-If the install target is 1024d embeddings, initialize the brain that way from the start.
+If the install target is 2048d embeddings, initialize the brain that way from the start.
 Do not reuse a 1536d brain and expect the dimension mismatch to self-heal.
 
 ### Mismatch behavior
@@ -156,14 +157,14 @@ That is expected and correct.
 This part is a **host-side dependency**.
 
 What we can safely document here today:
-- the fork's fresh 1024d install path is independent of host OAuth
+- the fork's fresh 2048d install path is independent of host OAuth
 - the durable host OAuth auth propagation work is tracked in the downstream adapter issue
 - today's media support is text-backed normalized evidence import/search
 - production extraction that relies on host-managed OAuth should be considered dependent on a rebuilt, live-smoked adapter PR
 
 ### Recommended integrated rollout
 
-1. complete the fresh 1024d brain install first
+1. complete the fresh 2048d brain install first
 2. verify it with `gbrain doctor --json` and `gbrain stats`
 3. separately complete the host OAuth adapter/auth flow
 4. verify extraction on the host side
@@ -177,7 +178,7 @@ Because the auth adapter is host-side, the verification should also be host-side
 - no secret values should be printed during verification
 
 Until the downstream adapter issue is proven with a live host runtime smoke, the safe fallback is:
-- use the documented 1024d embedding provider
+- use the documented 2048d embedding provider
 - use normalized media evidence JSON or text-backed extraction paths where applicable
 - do not claim fully supported no-extra-key host-managed OAuth extraction yet
 
@@ -188,13 +189,13 @@ Run these immediately after fresh init:
 ```bash
 gbrain providers list
 gbrain providers explain
-gbrain providers test --model voyage:voyage-3.5
+gbrain providers test --model voyage:voyage-4-large
 gbrain doctor --json
 gbrain stats
 ```
 
 Expected outcomes:
-- provider test succeeds and prints a 1024-dim result
+- provider test succeeds and prints a 2048-dim result
 - doctor reports healthy schema
 - stats returns a working brain with no initialization failure
 
@@ -215,7 +216,7 @@ Expected outcomes after import:
 
 ### Local rollback
 
-If the fresh 1024d install is bad, restore the archived state:
+If the fresh 2048d install is bad, restore the archived state:
 
 ```bash
 rm -rf ~/.gbrain
@@ -240,7 +241,7 @@ gbrain stats
 ### `Embedding dim mismatch`
 
 Cause:
-- a 1024d provider pointed at a 1536d brain, or vice versa
+- a 2048d provider pointed at a 1536d brain, or vice versa
 
 Response:
 - stop retrying
@@ -258,7 +259,7 @@ Response:
 
 ```bash
 gbrain providers env voyage
-gbrain providers test --model voyage:voyage-3.5
+gbrain providers test --model voyage:voyage-4-large
 ```
 
 Fix the env/setup first, then rerun init.
@@ -276,7 +277,7 @@ Response:
 If you're installing this fork for a customer today, the safest story is:
 
 1. archive old `~/.gbrain`
-2. fresh init with 1024d embeddings
+2. fresh init with 2048d embeddings
 3. verify provider + brain health immediately
 4. treat host OAuth extraction as a separately verified dependency
 5. only import customer data after both sides are green

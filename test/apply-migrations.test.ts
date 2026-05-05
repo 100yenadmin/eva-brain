@@ -118,6 +118,28 @@ describe('buildPlan — diff against completed + installed VERSION', () => {
     expect(plan.pending).toEqual([]);
   });
 
+  test('later completed migration supersedes older partial/pending ledger noise', () => {
+    const idx = indexCompleted([
+      { version: '0.11.0', status: 'partial' },
+      { version: '0.11.0', status: 'partial' },
+      { version: '0.11.0', status: 'partial' },
+      { version: '0.12.0', status: 'partial' },
+      { version: '0.16.0', status: 'complete' },
+    ]);
+    const plan = buildPlan(idx, '0.27.0');
+    expect(plan.applied.map(m => m.version)).toEqual([
+      '0.11.0',
+      '0.12.0',
+      '0.12.2',
+      '0.13.0',
+      '0.13.1',
+      '0.14.0',
+      '0.16.0',
+    ]);
+    expect(plan.wedged.map(m => m.version)).not.toContain('0.11.0');
+    expect(plan.partial.map(m => m.version)).not.toContain('0.12.0');
+  });
+
   test('stopgap wrote partial → v0.11.0 lands in `partial` bucket (resumable)', () => {
     const idx = indexCompleted([
       { version: '0.11.0', status: 'partial', apply_migrations_pending: true },

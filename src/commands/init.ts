@@ -10,6 +10,8 @@ import { saveConfig, loadConfig, toEngineConfig, gbrainPath, type GBrainConfig }
 import { createEngine } from '../core/engine-factory.ts';
 import { getRecipe } from '../core/ai/recipes/index.ts';
 import { configureGateway } from '../core/ai/gateway.ts';
+import { appendCompletedMigration, loadCompletedMigrations } from '../core/preferences.ts';
+import { migrations } from './migrations/index.ts';
 
 export async function runInit(args: string[]) {
   const isSupabase = args.includes('--supabase');
@@ -216,9 +218,10 @@ async function initPGLite(opts: {
 }) {
   const dbPath = opts.customPath || gbrainPath('brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
+  const existingConfig = loadConfig();
 
   const mergedConfig: GBrainConfig = {
-    ...(loadConfig() ?? { engine: 'pglite', database_path: dbPath }),
+    ...(existingConfig ?? { engine: 'pglite', database_path: dbPath }),
     engine: 'pglite',
     database_path: dbPath,
     ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
@@ -245,6 +248,7 @@ async function initPGLite(opts: {
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
     };
     saveConfig(config);
+    recordFreshInstallMigrationBaseline(existingConfig === null);
 
     const stats = await engine.getStats();
 
@@ -280,9 +284,10 @@ async function initPostgres(opts: {
   aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string };
 }) {
   const { databaseUrl } = opts;
+  const existingConfig = loadConfig();
 
   const mergedConfig: GBrainConfig = {
-    ...(loadConfig() ?? { engine: 'postgres', database_url: databaseUrl }),
+    ...(existingConfig ?? { engine: 'postgres', database_url: databaseUrl }),
     engine: 'postgres',
     database_url: databaseUrl,
     ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
@@ -352,6 +357,7 @@ async function initPostgres(opts: {
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
     };
     saveConfig(config);
+    recordFreshInstallMigrationBaseline(existingConfig === null);
     console.log('Config saved to ~/.gbrain/config.json');
 
     const stats = await engine.getStats();
@@ -375,6 +381,18 @@ async function initPostgres(opts: {
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
+  }
+}
+
+function recordFreshInstallMigrationBaseline(isFreshInstall: boolean): void {
+  if (!isFreshInstall) return;
+  if (loadCompletedMigrations().length > 0) return;
+  for (const migration of migrations) {
+    appendCompletedMigration({
+      version: migration.version,
+      status: 'complete',
+      fresh_install_baseline: true,
+    });
   }
 }
 

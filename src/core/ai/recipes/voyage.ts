@@ -16,13 +16,11 @@ export const voyage: Recipe = {
   },
   touchpoints: {
     embedding: {
-      // eva-brain's production path uses a 1024-dimensional schema. voyage-3-lite
-      // returns 512 dimensions and is intentionally excluded from the default
-      // supported list until per-model dimensions are exposed in provider config.
-      models: ['voyage-3.5', 'voyage-4-large', 'voyage-4', 'voyage-3-large', 'voyage-3'],
-      default_dims: 1024,
+      // Voyage 4/3.5/code models support output_dimension values including 2048.
+      models: ['voyage-4-large', 'voyage-4', 'voyage-4-lite', 'voyage-code-3', 'voyage-3.5', 'voyage-3.5-lite', 'voyage-3-large', 'voyage-3'],
+      default_dims: 2048,
       cost_per_1m_tokens_usd: 0.18,
-      price_last_verified: '2026-04-20',
+      price_last_verified: '2026-05-05',
     },
   },
   setup_hint: 'Get an API key at https://dash.voyageai.com/api-keys, then `export VOYAGE_API_KEY=...`',
