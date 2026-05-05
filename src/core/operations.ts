@@ -1396,7 +1396,7 @@ const submit_job: Operation = {
     // GBRAIN_ALLOW_SHELL_JOBS env flag — even if that flag is on, MCP callers
     // cannot submit protected-type jobs.
     const { isProtectedJobName } = await import('./minions/protected-names.ts');
-    if (ctx.remote && isProtectedJobName(name)) {
+    if (ctx.remote !== false && isProtectedJobName(name)) {
       throw new OperationError('permission_denied', `'${name}' jobs cannot be submitted over MCP (CLI-only for security)`);
     }
 
@@ -1405,7 +1405,7 @@ const submit_job: Operation = {
     // Trusted flag set only when this is a local (non-remote) submission. When
     // remote=true, the guard above has already thrown for protected names, so
     // passing undefined here is safe for any non-protected name that slips by.
-    const trusted = !ctx.remote && isProtectedJobName(name) ? { allowProtectedSubmit: true } : undefined;
+    const trusted = ctx.remote === false && isProtectedJobName(name) ? { allowProtectedSubmit: true } : undefined;
     return queue.add(name, (p.data as Record<string, unknown>) || {}, {
       queue: (p.queue as string) || 'default',
       priority: (p.priority as number) || 0,

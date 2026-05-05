@@ -7,7 +7,7 @@
 
 import { resolveProviderAuth, redactAuthResolution } from '../core/ai/auth.ts';
 import { listRecipes, getRecipe } from '../core/ai/recipes/index.ts';
-import { configureGateway, embedOne, isAvailable as gwIsAvailable } from '../core/ai/gateway.ts';
+import { configureGateway, embedOne, isAvailable as gwIsAvailable, chat as gwChat } from '../core/ai/gateway.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
 import { loadConfig } from '../core/config.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
@@ -15,12 +15,16 @@ import type { AIGatewayConfig, AuthSourceClass, Recipe } from '../core/ai/types.
 
 const SCHEMA_VERSION = 1;
 
+type TouchpointFilter = 'embedding' | 'expansion' | 'chat';
+
 interface ProviderOption {
   id: string;
-  touchpoint: 'embedding' | 'expansion';
+  touchpoint: TouchpointFilter;
   model: string;
   dims?: number;
   cost_per_1m_tokens_usd?: number;
+  cost_per_1m_input_usd?: number;
+  cost_per_1m_output_usd?: number;
   price_last_verified?: string;
   env_ready: boolean;
   auth_source: AuthSourceClass;
@@ -37,6 +41,8 @@ function configureFromEnv(): void {
     embedding_model: config?.embedding_model,
     embedding_dimensions: config?.embedding_dimensions,
     expansion_model: config?.expansion_model,
+    chat_model: config?.chat_model,
+    chat_fallback_chain: config?.chat_fallback_chain,
     base_urls: config?.provider_base_urls,
     provider_auth: config?.provider_auth,
     env: { ...process.env },
@@ -48,16 +54,21 @@ function currentGatewayEnv(): Record<string, string | undefined> {
   return gatewayConfig?.env ?? { ...process.env };
 }
 
-function configureGatewayForTestModel(modelArg: string): void {
+function configureGatewayForTestModel(modelArg: string, touchpoint: TouchpointFilter): void {
   const [providerId] = modelArg.split(':');
   const recipe = getRecipe(providerId);
   const embedding = recipe?.touchpoints.embedding;
   const recipeDims = embedding?.default_dims && embedding.default_dims > 0 ? embedding.default_dims : undefined;
-  const dims = recipeDims ?? gatewayConfig.embedding_dimensions ?? 1536;
   gatewayConfig = {
     ...gatewayConfig,
-    embedding_model: modelArg,
-    embedding_dimensions: dims,
+    ...(touchpoint === 'embedding'
+      ? {
+          embedding_model: modelArg,
+          embedding_dimensions: gatewayConfig.embedding_dimensions ?? recipeDims ?? 1536,
+        }
+      : {}),
+    ...(touchpoint === 'chat' ? { chat_model: modelArg } : {}),
+    ...(touchpoint === 'expansion' ? { expansion_model: modelArg } : {}),
     env: currentGatewayEnv(),
   };
   configureGateway(gatewayConfig);
@@ -99,14 +110,20 @@ function printHelp(): void {
   console.log(`gbrain providers — AI provider status and testing
 
 USAGE
-  gbrain providers list              List all known providers + status
-  gbrain providers test [--model ID] Smoke-test configured (or specified) providers
-  gbrain providers env <id>          Show env vars required/optional for a provider
-  gbrain providers explain [--json]  Emit a provider choice matrix (agent-friendly)
+  gbrain providers list                                   List all known providers + status
+  gbrain providers test [--touchpoint T] [--model ID]     Smoke-test configured (or specified) providers
+  gbrain providers env <id>                               Show env vars required/optional for a provider
+  gbrain providers explain [--json]                       Emit a provider choice matrix (agent-friendly)
+
+TOUCHPOINTS
+  --touchpoint embedding (default)  Probes embed_one("...")
+  --touchpoint chat                 Probes chat({messages: [{role:'user', content:'ping'}]})
 
 EXAMPLES
   gbrain providers list
   gbrain providers test --model openai:text-embedding-3-large
+  gbrain providers test --touchpoint chat --model anthropic:claude-haiku-4-5
+  gbrain providers test --touchpoint chat --model deepseek:deepseek-chat
   gbrain providers env ollama
   gbrain providers explain --json
 `);
@@ -115,11 +132,12 @@ EXAMPLES
 function runList(_args: string[]): void {
   const recipes = listRecipes();
   const rows: string[] = [];
-  rows.push('PROVIDER'.padEnd(14) + 'TIER'.padEnd(18) + 'EMBEDDING'.padEnd(12) + 'EXPANSION'.padEnd(12) + 'STATUS');
-  rows.push('-'.repeat(70));
+  rows.push('PROVIDER'.padEnd(14) + 'TIER'.padEnd(18) + 'EMBED'.padEnd(8) + 'EXPAND'.padEnd(8) + 'CHAT'.padEnd(8) + 'STATUS');
+  rows.push('-'.repeat(78));
   for (const r of recipes) {
     const hasEmbed = !!r.touchpoints.embedding && (r.touchpoints.embedding.models.length > 0);
     const hasExpand = !!r.touchpoints.expansion;
+    const hasChat = !!r.touchpoints.chat && r.touchpoints.chat.models.length > 0;
     const resolution = authResolution(r);
     const ready = resolution.isConfigured;
     const status = ready
@@ -128,8 +146,9 @@ function runList(_args: string[]): void {
     rows.push(
       r.id.padEnd(14) +
       r.tier.padEnd(18) +
-      (hasEmbed ? 'yes' : '—').padEnd(12) +
-      (hasExpand ? 'yes' : '—').padEnd(12) +
+      (hasEmbed ? 'yes' : '—').padEnd(8) +
+      (hasExpand ? 'yes' : '—').padEnd(8) +
+      (hasChat ? 'yes' : '—').padEnd(8) +
       status,
     );
   }
@@ -139,29 +158,49 @@ function runList(_args: string[]): void {
 async function runTest(args: string[]): Promise<void> {
   const modelIdx = args.indexOf('--model');
   const modelArg = modelIdx >= 0 ? args[modelIdx + 1] : undefined;
+  const tpIdx = args.indexOf('--touchpoint');
+  const tpArg = (tpIdx >= 0 ? args[tpIdx + 1] : 'embedding') as TouchpointFilter;
 
   if (modelIdx >= 0 && (!modelArg || modelArg.startsWith('-'))) {
     console.error('Missing value for --model. Expected provider:model.');
     process.exit(1);
   }
-
-  // If --model passed, override only the embedding model/dimensions for this test
-  // while preserving configured base URLs, expansion model, env, and provider_auth.
-  if (modelArg) {
-    configureGatewayForTestModel(modelArg);
+  if (tpIdx >= 0 && (!tpArg || String(tpArg).startsWith('-'))) {
+    console.error('Missing value for --touchpoint. Expected embedding or chat.');
+    process.exit(1);
   }
-
-  if (!gwIsAvailable('embedding')) {
-    console.error('Embedding provider not configured or not ready. Run `gbrain providers list` to see status.');
+  if (tpArg !== 'embedding' && tpArg !== 'chat') {
+    console.error(`--touchpoint must be 'embedding' or 'chat' (got: ${tpArg}).`);
     process.exit(1);
   }
 
-  console.log('Probing embedding provider...');
+  // If --model passed, override only the requested touchpoint for this test
+  // while preserving configured base URLs, other models, env, and provider_auth.
+  if (modelArg) {
+    configureGatewayForTestModel(modelArg, tpArg);
+  }
+
+  if (!gwIsAvailable(tpArg)) {
+    console.error(`${tpArg[0]?.toUpperCase()}${tpArg.slice(1)} provider not configured or not ready. Run \`gbrain providers list\` to see status.`);
+    process.exit(1);
+  }
+
+  console.log(`Probing ${tpArg} provider...`);
   const start = Date.now();
   try {
-    const v = await embedOne('gbrain smoke test');
-    const ms = Date.now() - start;
-    console.log(`  ✓ ${ms}ms, ${v.length} dims`);
+    if (tpArg === 'embedding') {
+      const v = await embedOne('gbrain smoke test');
+      const ms = Date.now() - start;
+      console.log(`  ✓ ${ms}ms, ${v.length} dims`);
+    } else {
+      const result = await gwChat({
+        messages: [{ role: 'user', content: 'Reply with just the word: pong' }],
+        maxTokens: 16,
+      });
+      const ms = Date.now() - start;
+      const preview = (result.text || '<empty>').replace(/\s+/g, ' ').slice(0, 80);
+      console.log(`  ✓ ${ms}ms · model=${result.model} · stop=${result.stopReason} · in=${result.usage.input_tokens}/out=${result.usage.output_tokens} · "${preview}"`);
+    }
     console.log('\nAll probes green.');
   } catch (e) {
     const ms = Date.now() - start;
@@ -233,6 +272,9 @@ async function runExplain(args: string[]): Promise<void> {
     GOOGLE_GENERATIVE_AI_API_KEY: !!process.env.GOOGLE_GENERATIVE_AI_API_KEY,
     ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
     VOYAGE_API_KEY: !!process.env.VOYAGE_API_KEY,
+    DEEPSEEK_API_KEY: !!process.env.DEEPSEEK_API_KEY,
+    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
+    TOGETHER_API_KEY: !!process.env.TOGETHER_API_KEY,
   };
 
   // Parallel probes for local providers (1s timeout each)
@@ -268,6 +310,22 @@ async function runExplain(args: string[]): Promise<void> {
         auth_source: authResolution(r).source,
         tier: r.tier,
         pros: prosFor(r, 'expansion'),
+        cons: consFor(r),
+      });
+    }
+    if (r.touchpoints.chat && r.touchpoints.chat.models.length > 0) {
+      const m = r.touchpoints.chat;
+      options.push({
+        id: `${r.id}:${m.models[0]}`,
+        touchpoint: 'chat',
+        model: m.models[0],
+        cost_per_1m_input_usd: m.cost_per_1m_input_usd,
+        cost_per_1m_output_usd: m.cost_per_1m_output_usd,
+        price_last_verified: m.price_last_verified,
+        env_ready: envReady(r),
+        auth_source: authResolution(r).source,
+        tier: r.tier,
+        pros: prosFor(r, 'chat'),
         cons: consFor(r),
       });
     }
@@ -313,6 +371,13 @@ async function runExplain(args: string[]): Promise<void> {
     console.log(`  ${o.env_ready ? '✓' : '✗'} ${o.id.padEnd(44)} ${cost.padEnd(10)} ${o.tier} ${o.auth_source}`);
   }
   console.log('');
+  console.log('Chat options:');
+  for (const o of options.filter(x => x.touchpoint === 'chat')) {
+    const input = o.cost_per_1m_input_usd !== undefined ? `$${o.cost_per_1m_input_usd}/1M in` : '—';
+    const output = o.cost_per_1m_output_usd !== undefined ? `$${o.cost_per_1m_output_usd}/1M out` : '—';
+    console.log(`  ${o.env_ready ? '✓' : '✗'} ${o.id.padEnd(44)} ${input.padEnd(14)} ${output.padEnd(14)} ${o.tier} ${o.auth_source}`);
+  }
+  console.log('');
   console.log(`Recommended: ${matrix.recommended}`);
   console.log(`  ${matrix.recommended_reason}`);
   console.log('');
@@ -320,7 +385,7 @@ async function runExplain(args: string[]): Promise<void> {
   console.log(`  gbrain init --embedding-model ${matrix.recommended.split(':')[0]}:${matrix.recommended.split(':').slice(1).join(':')}`);
 }
 
-function prosFor(r: Recipe, touchpoint: 'embedding' | 'expansion'): string[] {
+function prosFor(r: Recipe, touchpoint: TouchpointFilter): string[] {
   const out: string[] = [];
   if (r.id === 'openai') out.push('Default', 'High quality', 'Wide compatibility');
   else if (r.id === 'google') out.push('Smaller vectors', 'Matryoshka dim flex');
@@ -328,6 +393,10 @@ function prosFor(r: Recipe, touchpoint: 'embedding' | 'expansion'): string[] {
   else if (r.id === 'ollama') out.push('Local', 'Free', 'Private');
   else if (r.id === 'voyage') out.push('Best rerank pairing');
   else if (r.id === 'litellm') out.push('Universal coverage (Bedrock/Vertex/Azure/any)');
+  else if (r.id === 'deepseek') out.push('Low-cost chat');
+  else if (r.id === 'groq') out.push('Fast chat');
+  else if (r.id === 'together') out.push('Open-weight chat');
+  if (touchpoint === 'chat' && r.touchpoints.chat?.supports_subagent_loop) out.push('Subagent loop ready');
   return out;
 }
 

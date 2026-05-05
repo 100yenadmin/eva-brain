@@ -36,10 +36,12 @@ describe('waitForCompletion terminal states', () => {
     const claimed = await queue.claim('tok', 30000, 'default', ['t']);
     await queue.completeJob(claimed!.id, 'tok', { ok: true });
 
+    const pollMs = 10_000;
     const t0 = Date.now();
-    const res = await waitForCompletion(queue, j.id, { pollMs: 500 });
+    const res = await waitForCompletion(queue, j.id, { pollMs });
+    const elapsedMs = Date.now() - t0;
     expect(res.status).toBe('completed');
-    expect(Date.now() - t0).toBeLessThan(300); // no full poll cycle
+    expect(elapsedMs).toBeLessThan(pollMs / 2); // no full poll cycle
   });
 
   test('returns when job transitions to failed mid-wait', async () => {

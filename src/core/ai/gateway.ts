@@ -10,7 +10,7 @@
  *   - getEmbeddingDimensions()  — for schema setup
  *   - getEmbeddingModel()       — for schema metadata
  *
- * v0.15 stubs: chunk, transcribe, enrich, improve (throw NotMigratedYet).
+ * Future stubs: chunk, transcribe, enrich, improve (throw NotMigratedYet until migrated).
  *
  * DESIGN RULES:
  *   - Gateway reads config from a single configureGateway() call.
@@ -21,7 +21,7 @@
  *     rotation (via configureGateway()) invalidates stale entries.
  */
 
-import { embed as aiEmbed, embedMany, generateObject } from 'ai';
+import { embedMany, generateObject, generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -44,6 +44,7 @@ const VOYAGE_EMBED_TIMEOUT_MS = 30_000;
 const DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-large';
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
 const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
+const DEFAULT_CHAT_MODEL = 'anthropic:claude-sonnet-4-6-20250929';
 
 let _config: AIGatewayConfig | null = null;
 const _modelCache = new Map<string, any>();
@@ -54,6 +55,8 @@ export function configureGateway(config: AIGatewayConfig): void {
     embedding_model: config.embedding_model ?? DEFAULT_EMBEDDING_MODEL,
     embedding_dimensions: config.embedding_dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS,
     expansion_model: config.expansion_model ?? DEFAULT_EXPANSION_MODEL,
+    chat_model: config.chat_model ?? DEFAULT_CHAT_MODEL,
+    chat_fallback_chain: config.chat_fallback_chain,
     base_urls: config.base_urls,
     provider_auth: config.provider_auth,
     env: config.env,
@@ -90,6 +93,14 @@ export function getExpansionModel(): string {
   return requireConfig().expansion_model ?? DEFAULT_EXPANSION_MODEL;
 }
 
+export function getChatModel(): string {
+  return requireConfig().chat_model ?? DEFAULT_CHAT_MODEL;
+}
+
+export function getChatFallbackChain(): string[] {
+  return requireConfig().chat_fallback_chain ?? [];
+}
+
 /**
  * Check whether a touchpoint can be served given the current config.
  * Replaces scattered `!process.env.OPENAI_API_KEY` checks (Codex C3).
@@ -102,14 +113,16 @@ export function isAvailable(touchpoint: TouchpointKind): boolean {
         ? getEmbeddingModel()
         : touchpoint === 'expansion'
         ? getExpansionModel()
+        : touchpoint === 'chat'
+        ? getChatModel()
         : null;
     if (!modelStr) return false;
     const { recipe } = resolveRecipe(modelStr);
 
     // Recipe must actually support the requested touchpoint.
-    // Anthropic declares only expansion (no embedding model); requesting embedding
-    // from an anthropic-configured brain is unavailable regardless of auth.
-    const touchpointConfig = recipe.touchpoints[touchpoint as 'embedding' | 'expansion'];
+    // Anthropic declares only expansion + chat (no embedding model); requesting
+    // embedding from an anthropic-configured brain is unavailable regardless of auth.
+    const touchpointConfig = recipe.touchpoints[touchpoint as 'embedding' | 'expansion' | 'chat'];
     if (!touchpointConfig) return false;
     // OpenAI-compatible templates with empty model lists (e.g. LiteLLM)
     // mean "operator must supply a model", not "provider unavailable".
@@ -376,11 +389,225 @@ export async function expand(query: string): Promise<string[]> {
   }
 }
 
-// ---- v0.15 stubs ----
+// ---- Chat ----
+
+/**
+ * Provider-neutral message shape stored in subagent persistence.
+ * Vercel AI SDK's `generateText` accepts this directly via its `messages`
+ * parameter; tool-use blocks are normalized across providers.
+ */
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export type ChatBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
+  | { type: 'tool-result'; toolCallId: string; toolName: string; output: unknown; isError?: boolean };
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string | ChatBlock[];
+}
+
+export interface ChatToolDef {
+  name: string;
+  description: string;
+  /** JSON Schema for tool input. */
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ChatResult {
+  /** Final text content concatenated from text blocks. */
+  text: string;
+  /** Raw assistant response blocks (text + tool-call entries) for persistence. */
+  blocks: ChatBlock[];
+  /** Reason the model stopped. Provider-neutral mapping of stop_reason / finish_reason. */
+  stopReason: 'end' | 'tool_calls' | 'length' | 'refusal' | 'content_filter' | 'other';
+  /** Provider-neutral usage. cache_* are present only when the active provider returned them (Anthropic). */
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+  };
+  /** "provider:modelId" string of the model that actually answered. */
+  model: string;
+  /** Recipe id for the answering provider. */
+  providerId: string;
+  /** Raw provider metadata (Anthropic-specific cache fields, OpenAI finish_reason, etc.) for downstream callers that need it. */
+  providerMetadata?: Record<string, any>;
+}
+
+export interface ChatOpts {
+  /** "provider:modelId" — defaults to config.chat_model. */
+  model?: string;
+  /** System prompt. */
+  system?: string;
+  messages: ChatMessage[];
+  tools?: ChatToolDef[];
+  maxTokens?: number;
+  abortSignal?: AbortSignal;
+  /**
+   * Anthropic-specific: cache the system prompt + last tool def. Silently
+   * ignored on providers without `supports_prompt_cache`.
+   */
+  cacheSystem?: boolean;
+}
+
+async function resolveChatProvider(modelStr: string): Promise<{ model: any; recipe: Recipe; modelId: string }> {
+  const { parsed, recipe } = resolveRecipe(modelStr);
+  assertTouchpoint(recipe, 'chat', parsed.modelId);
+  const cfg = requireConfig();
+
+  const cacheKey = `chat:${recipe.id}:${parsed.modelId}:${cfg.base_urls?.[recipe.id] ?? ''}`;
+  const cached = _modelCache.get(cacheKey);
+  if (cached) return { model: cached, recipe, modelId: parsed.modelId };
+
+  const model = instantiateChat(recipe, parsed.modelId, cfg);
+  _modelCache.set(cacheKey, model);
+  return { model, recipe, modelId: parsed.modelId };
+}
+
+function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig): any {
+  const auth = resolveProviderAuth(recipe, cfg);
+  switch (recipe.implementation) {
+    case 'native-openai': {
+      const apiKey = requireAuth(auth, recipe, 'chat');
+      return createOpenAI({ apiKey }).languageModel(modelId);
+    }
+    case 'native-google': {
+      const apiKey = requireAuth(auth, recipe, 'chat');
+      return createGoogleGenerativeAI({ apiKey }).languageModel(modelId);
+    }
+    case 'native-anthropic': {
+      const apiKey = requireAuth(auth, recipe, 'chat');
+      return createAnthropic({ apiKey }).languageModel(modelId);
+    }
+    case 'openai-compatible': {
+      const baseUrl = cfg.base_urls?.[recipe.id] ?? recipe.base_url_default;
+      if (!baseUrl) throw new AIConfigError(`${recipe.name} requires a base URL.`, recipe.setup_hint);
+      const apiKey = auth.source === 'unauthenticated'
+        ? 'unauthenticated'
+        : requireAuth(auth, recipe, 'chat');
+      return createOpenAICompatible({
+        name: recipe.id,
+        baseURL: baseUrl,
+        apiKey,
+      }).languageModel(modelId);
+    }
+    default:
+      throw new AIConfigError(`Unknown implementation: ${(recipe as any).implementation}`);
+  }
+}
+
+/**
+ * Map AI SDK's `finish_reason` and provider-specific signals to a provider-
+ * neutral stop reason.
+ */
+function mapStopReason(
+  finishReason: string | undefined,
+  providerMetadata: Record<string, any> | undefined,
+): ChatResult['stopReason'] {
+  const anthropicStop = providerMetadata?.anthropic?.stopReason ?? providerMetadata?.anthropic?.stop_reason;
+  if (anthropicStop === 'refusal') return 'refusal';
+  if (finishReason === 'content-filter' || finishReason === 'content_filter') return 'content_filter';
+  if (finishReason === 'tool-calls' || finishReason === 'tool_calls') return 'tool_calls';
+  if (finishReason === 'length' || finishReason === 'max-tokens') return 'length';
+  if (finishReason === 'stop' || finishReason === 'end' || finishReason === 'end-turn') return 'end';
+  return 'other';
+}
+
+/**
+ * Run one chat completion turn. Provider-neutral wrapper over Vercel AI SDK's
+ * `generateText`. Tool-use blocks are normalized; cache_control markers are
+ * applied only on Anthropic when `cacheSystem: true`.
+ */
+export async function chat(opts: ChatOpts): Promise<ChatResult> {
+  const modelStr = opts.model ?? getChatModel();
+  const { model, recipe, modelId } = await resolveChatProvider(modelStr);
+
+  const supportsCache = recipe.touchpoints.chat?.supports_prompt_cache === true;
+  const useCache = !!opts.cacheSystem && supportsCache;
+
+  const tools = (opts.tools ?? []).reduce((acc, t) => {
+    acc[t.name] = {
+      description: t.description,
+      inputSchema: { jsonSchema: t.inputSchema } as any,
+    };
+    return acc;
+  }, {} as Record<string, any>);
+
+  const providerOptions: Record<string, any> = {};
+  if (useCache) {
+    providerOptions.anthropic = { cacheControl: { type: 'ephemeral' } };
+  }
+
+  try {
+    const result = await generateText({
+      model,
+      system: opts.system,
+      messages: opts.messages as any,
+      tools: opts.tools && opts.tools.length > 0 ? tools : undefined,
+      maxOutputTokens: opts.maxTokens ?? 4096,
+      abortSignal: opts.abortSignal,
+      providerOptions: Object.keys(providerOptions).length > 0 ? providerOptions : undefined,
+    });
+
+    const blocks: ChatBlock[] = [];
+    const rawContent: any[] = (result as any).content ?? [];
+    if (Array.isArray(rawContent) && rawContent.length > 0) {
+      for (const part of rawContent) {
+        if (part.type === 'text') blocks.push({ type: 'text', text: part.text });
+        else if (part.type === 'tool-call') {
+          blocks.push({
+            type: 'tool-call',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input ?? part.args,
+          });
+        }
+      }
+    } else {
+      if (typeof (result as any).text === 'string' && (result as any).text.length > 0) {
+        blocks.push({ type: 'text', text: (result as any).text });
+      }
+      for (const tc of (result as any).toolCalls ?? []) {
+        blocks.push({
+          type: 'tool-call',
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          input: tc.input ?? tc.args,
+        });
+      }
+    }
+
+    const usage = (result as any).usage ?? {};
+    const providerMetadata = (result as any).providerMetadata as Record<string, any> | undefined;
+    const anthropicCache = providerMetadata?.anthropic ?? {};
+
+    return {
+      text: blocks.filter(b => b.type === 'text').map(b => (b as { type: 'text'; text: string }).text).join(''),
+      blocks,
+      stopReason: mapStopReason((result as any).finishReason, providerMetadata),
+      usage: {
+        input_tokens: Number(usage.inputTokens ?? usage.promptTokens ?? 0),
+        output_tokens: Number(usage.outputTokens ?? usage.completionTokens ?? 0),
+        cache_read_tokens: Number(anthropicCache.cacheReadInputTokens ?? anthropicCache.cache_read_input_tokens ?? 0),
+        cache_creation_tokens: Number(anthropicCache.cacheCreationInputTokens ?? anthropicCache.cache_creation_input_tokens ?? 0),
+      },
+      model: `${recipe.id}:${modelId}`,
+      providerId: recipe.id,
+      providerMetadata,
+    };
+  } catch (err) {
+    throw normalizeAIError(err, `chat(${recipe.id}:${modelId})`);
+  }
+}
+
+// ---- Future touchpoint stubs ----
 
 class NotMigratedYet extends AIConfigError {
   constructor(touchpoint: string) {
-    super(`${touchpoint} has not been migrated to the gateway yet (v0.15).`);
+    super(`${touchpoint} has not been migrated to the gateway yet.`);
     this.name = 'NotMigratedYet';
   }
 }

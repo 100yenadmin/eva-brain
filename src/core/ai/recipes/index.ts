@@ -12,8 +12,21 @@ import { anthropic } from './anthropic.ts';
 import { ollama } from './ollama.ts';
 import { voyage } from './voyage.ts';
 import { litellmProxy } from './litellm-proxy.ts';
+import { deepseek } from './deepseek.ts';
+import { groq } from './groq.ts';
+import { together } from './together.ts';
 
-const ALL: Recipe[] = [openai, google, anthropic, ollama, voyage, litellmProxy];
+const ALL: Recipe[] = [
+  openai,
+  google,
+  anthropic,
+  ollama,
+  voyage,
+  litellmProxy,
+  deepseek,
+  groq,
+  together,
+];
 
 /** Map from `provider:id` key to recipe. */
 export const RECIPES: Map<string, Recipe> = new Map(ALL.map(r => [r.id, r]));

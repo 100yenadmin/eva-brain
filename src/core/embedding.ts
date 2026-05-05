@@ -19,20 +19,34 @@ export async function embed(text: string): Promise<Float32Array> {
 
 export interface EmbedBatchOptions {
   /**
-   * Optional callback fired after each 100-item sub-batch completes.
-   * CLI wrappers tick a reporter; Minion handlers can call
-   * job.updateProgress here instead of hooking the per-page callback.
+   * Optional callback fired after each sub-batch completes. CLI wrappers
+   * tick a reporter; Minion handlers can call job.updateProgress here.
    */
   onBatchComplete?: (done: number, total: number) => void;
 }
 
-/** Embed a batch of texts. */
+/**
+ * Embed a batch of texts via the gateway. Sub-batches of 100 so upstream
+ * progress callbacks fire incrementally on large imports. The gateway
+ * handles truncation, retries, and provider dispatch.
+ */
+const BATCH_SIZE = 100;
 export async function embedBatch(
   texts: string[],
   options: EmbedBatchOptions = {},
 ): Promise<Float32Array[]> {
-  const results = await gatewayEmbed(texts);
-  options.onBatchComplete?.(results.length, results.length);
+  if (!texts || texts.length === 0) return [];
+  // Fast path: small batch, no progress callback — single gateway call.
+  if (texts.length <= BATCH_SIZE && !options.onBatchComplete) {
+    return gatewayEmbed(texts);
+  }
+  const results: Float32Array[] = [];
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const slice = texts.slice(i, i + BATCH_SIZE);
+    const out = await gatewayEmbed(slice);
+    results.push(...out);
+    options.onBatchComplete?.(results.length, texts.length);
+  }
   return results;
 }
 

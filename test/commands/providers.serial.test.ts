@@ -3,6 +3,13 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:
 const configureGatewayMock = mock(() => {});
 const embedOneMock = mock(async () => new Array(1536).fill(0));
 const isAvailableMock = mock(() => true);
+const chatMock = mock(async () => ({
+  text: 'pong',
+  model: 'mock-chat',
+  provider: 'mock',
+  usage: { input_tokens: 1, output_tokens: 1 },
+  stopReason: 'stop',
+}));
 const probeOllamaMock = mock(async () => ({ reachable: false, models_endpoint_valid: false }));
 const probeLMStudioMock = mock(async () => ({ reachable: false, models_endpoint_valid: false }));
 const loadConfigMock = mock(() => ({
@@ -41,6 +48,7 @@ mock.module('../../src/core/ai/gateway.ts', () => ({
   configureGateway: configureGatewayMock,
   embedOne: embedOneMock,
   isAvailable: isAvailableMock,
+  chat: chatMock,
 }));
 
 mock.module('../../src/core/ai/probes.ts', () => ({
@@ -65,6 +73,7 @@ describe('providers command auth hardening', () => {
     configureGatewayMock.mockClear();
     embedOneMock.mockClear();
     isAvailableMock.mockClear();
+    chatMock.mockClear();
     probeOllamaMock.mockClear();
     probeLMStudioMock.mockClear();
     loadConfigMock.mockClear();
@@ -88,6 +97,25 @@ describe('providers command auth hardening', () => {
     expect(overrideCall).toMatchObject({
       embedding_model: 'openai:text-embedding-3-small',
       provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'openclaw-codex' } },
+    });
+  });
+
+  test('providers test --model preserves configured embedding dimensions', async () => {
+    loadConfigMock.mockReturnValueOnce({
+      embedding_model: 'voyage:voyage-4-large',
+      embedding_dimensions: 2048,
+      expansion_model: 'anthropic:claude-haiku-4-5-20251001',
+      provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'openclaw-codex' } },
+    });
+    const { runProviders } = await import('../../src/commands/providers.ts');
+    await runProviders('test', ['--model', 'voyage:voyage-4-large']);
+
+    expect(configureGatewayMock).toHaveBeenCalledTimes(2);
+    const overrideArgs = configureGatewayMock.mock.calls[1] as unknown[] | undefined;
+    const overrideCall = overrideArgs?.[0] as Record<string, unknown> | undefined;
+    expect(overrideCall).toMatchObject({
+      embedding_model: 'voyage:voyage-4-large',
+      embedding_dimensions: 2048,
     });
   });
 
