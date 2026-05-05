@@ -615,10 +615,16 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
         `orphans ${health.no_orphans_score}/15`,
         `dead-links ${health.no_dead_links_score}/10`,
       ];
+      const graphScoreNotApplicable =
+        (health.entity_page_count ?? 0) === 0 &&
+        health.link_density_score === 0 &&
+        health.timeline_coverage_score === 0;
       checks.push({
         name: 'brain_score',
-        status: health.brain_score >= 70 ? 'ok' : 'warn',
-        message: `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
+        status: health.brain_score >= 70 || graphScoreNotApplicable ? 'ok' : 'warn',
+        message: graphScoreNotApplicable
+          ? `Brain graph score not applicable yet (no entity/link/timeline graph exists; ${parts.join(', ')})`
+          : `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
       });
     } else {
       checks.push({ name: 'brain_score', status: 'ok', message: `Brain score 100/100` });

@@ -123,6 +123,13 @@ describe('Bug 11 — doctor renders brain_score breakdown', () => {
     expect(source).toContain('no_orphans_score');
     expect(source).toContain('no_dead_links_score');
   });
+
+  test('doctor treats graph-density score as informational before a graph exists', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    expect(source).toContain('graphScoreNotApplicable');
+    expect(source).toContain('Brain graph score not applicable yet');
+    expect(source).toContain('health.brain_score >= 70 || graphScoreNotApplicable');
+  });
 });
 
 describe('Bug 11 — BrainHealth type shape', () => {
