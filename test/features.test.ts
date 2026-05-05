@@ -76,6 +76,12 @@ describe('brain_score calculation', () => {
     // embed_coverage contributes more
     expect(score).toBeGreaterThan(score2);
   });
+
+  it('health command treats orphan score as informational before a graph exists', async () => {
+    const cliSource = await Bun.file('src/cli.ts').text();
+    expect(cliSource).toContain('graphScoreNotApplicable');
+    expect(cliSource).toContain('!graphScoreNotApplicable && h.orphan_pages > 0');
+  });
 });
 
 // CLI routing
