@@ -212,10 +212,14 @@ function formatResult(opName: string, result: unknown): string {
       // Health score weights: missing_embeddings is the heaviest (2 pts), other
       // graph quality issues are 1 pt each. link_coverage / timeline_coverage below
       // 50% on entity pages indicates the graph needs population.
+      const graphScoreNotApplicable =
+        (h.entity_page_count ?? 0) === 0 &&
+        h.link_density_score === 0 &&
+        h.timeline_coverage_score === 0;
       const score = Math.max(0, 10
         - (h.missing_embeddings > 0 ? 2 : 0)
         - (h.stale_pages > 0 ? 1 : 0)
-        - (h.orphan_pages > 0 ? 1 : 0)
+        - (!graphScoreNotApplicable && h.orphan_pages > 0 ? 1 : 0)
         - ((h.link_coverage ?? 1) < 0.5 ? 1 : 0)
         - ((h.timeline_coverage ?? 1) < 0.5 ? 1 : 0));
       const lines = [
