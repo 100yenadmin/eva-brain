@@ -45,6 +45,7 @@ describe('provider auth resolver', () => {
       provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'missing', openclawAuthPath: authPath } },
     }));
     expect(resolution.source).toBe('missing');
+    expect(resolution.credentialKey).toBe('OPENAI_API_KEY');
     expect(resolution.isConfigured).toBe(false);
     expect(resolution.missingReason).toContain('missing');
     expect(JSON.stringify(redactAuthResolution(resolution))).not.toContain('secret');
@@ -59,6 +60,22 @@ describe('provider auth resolver', () => {
     expect(resolution.source).toBe('openclaw-codex');
     expect(resolution.credentialKey).toBe('OPENAI_API_KEY');
     expect(resolution.value).toBe('oc-secret');
+  });
+
+  test('openclaw-openai preference defaults to the openclaw-openai profile', () => {
+    writeFileSync(authPath, JSON.stringify({
+      profiles: {
+        'openclaw-codex': { OPENAI_API_KEY: 'wrong-profile' },
+        'openclaw-openai': { OPENAI_API_KEY: 'right-profile' },
+      },
+    }));
+    const resolution = resolveProviderAuth(openai, config({
+      env: {},
+      provider_auth: { openai: { prefer: 'openclaw-openai', openclawAuthPath: authPath } },
+    }));
+    expect(resolution.source).toBe('openclaw-openai');
+    expect(resolution.value).toBe('right-profile');
+    expect(resolution.meta?.profile).toBe('openclaw-openai');
   });
 
   test('redaction omits token values', () => {

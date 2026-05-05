@@ -69,7 +69,7 @@ function resolveEnvAuth(recipe: Recipe, env: Record<string, string | undefined>)
 }
 
 function resolveOpenClawProfileAuth(recipe: Recipe, providerConfig: ProviderAuthConfig): AuthResolution {
-  const profile = providerConfig.profile ?? defaultProfileForRecipe(recipe);
+  const profile = providerConfig.profile ?? defaultProfileForConfig(recipe, providerConfig);
   const path = providerConfig.openclawAuthPath ?? defaultOpenClawAuthPath();
   const raw = readOpenClawAuthRecord(path, profile);
   if (!raw) {
@@ -96,9 +96,7 @@ function resolveOpenClawProfileAuth(recipe: Recipe, providerConfig: ProviderAuth
 }
 
 function missingResolution(recipe: Recipe, providerConfig: ProviderAuthConfig, reason?: string): AuthResolution {
-  const expected = providerConfig.prefer === 'openclaw-codex' || providerConfig.prefer === 'openclaw-openai'
-    ? providerConfig.profile ?? defaultProfileForRecipe(recipe)
-    : recipe.auth_env?.required?.[0];
+  const expected = recipe.auth_env?.required?.[0];
 
   return {
     source: 'missing',
@@ -107,20 +105,25 @@ function missingResolution(recipe: Recipe, providerConfig: ProviderAuthConfig, r
     missingReason: reason ?? defaultMissingReason(recipe, providerConfig),
     meta: {
       mode: providerConfig.prefer ?? 'env',
+      ...(providerConfig.prefer === 'openclaw-codex' || providerConfig.prefer === 'openclaw-openai'
+        ? { profile: providerConfig.profile ?? defaultProfileForConfig(recipe, providerConfig) }
+        : {}),
     },
   };
 }
 
 function defaultMissingReason(recipe: Recipe, providerConfig: ProviderAuthConfig): string {
   if (providerConfig.prefer === 'openclaw-codex' || providerConfig.prefer === 'openclaw-openai') {
-    return `OpenClaw profile "${providerConfig.profile ?? defaultProfileForRecipe(recipe)}" is not configured.`;
+    return `OpenClaw profile "${providerConfig.profile ?? defaultProfileForConfig(recipe, providerConfig)}" is not configured.`;
   }
   const required = recipe.auth_env?.required ?? [];
   if (required.length === 0) return 'No credentials required.';
   return `Missing ${required.join(', ')}.`;
 }
 
-function defaultProfileForRecipe(recipe: Recipe): string {
+function defaultProfileForConfig(recipe: Recipe, providerConfig: ProviderAuthConfig): string {
+  if (providerConfig.prefer === 'openclaw-openai') return OPENCLAW_OPENAI_PROFILE;
+  if (providerConfig.prefer === 'openclaw-codex') return OPENCLAW_CODEX_PROFILE;
   return recipe.id === 'openai' ? OPENCLAW_CODEX_PROFILE : OPENCLAW_OPENAI_PROFILE;
 }
 
