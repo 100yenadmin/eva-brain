@@ -40,8 +40,10 @@ export interface PageInput {
    * to 'markdown' when omitted so existing callers work unchanged. Set to
    * 'code' by importCodeFile; drives orphans filter, auto-link bypass, and
    * `query --lang` filtering.
-   */
+  */
   page_kind?: PageKind;
+  /** Target source for multi-source imports. Defaults to 'default'. */
+  source_id?: string;
 }
 
 export interface PageFilters {
@@ -70,7 +72,7 @@ export interface PageFilters {
 
 /** v0.26.5 — opts for getPage / softDeletePage / restorePage. */
 export interface GetPageOpts {
-  /** Filter to a specific source. When omitted, getPage returns the first slug match across sources (pre-existing semantics). */
+  /** Filter to a specific source. When omitted, page CRUD uses the default source. */
   sourceId?: string;
   /** Include soft-deleted pages. Default false. See PageFilters.includeDeleted. */
   includeDeleted?: boolean;

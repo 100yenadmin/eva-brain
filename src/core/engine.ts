@@ -136,7 +136,7 @@ export interface BrainEngine {
    * by `restore_page` flow, and by operator diagnostics.
    */
   getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
-  putPage(slug: string, page: PageInput): Promise<Page>;
+  putPage(slug: string, page: PageInput, opts?: { sourceId?: string }): Promise<Page>;
   /**
    * Hard-delete a page row. Cascades to content_chunks, page_links,
    * chunk_relations via existing FK ON DELETE CASCADE.
@@ -146,7 +146,7 @@ export interface BrainEngine {
    * as the underlying primitive used by `purgeDeletedPages` and by callers
    * that explicitly want hard-delete semantics (e.g. test setup teardown).
    */
-  deletePage(slug: string): Promise<void>;
+  deletePage(slug: string, opts?: { sourceId?: string }): Promise<void>;
   /**
    * v0.26.5 — set `deleted_at = now()` on a page. Returns the slug if a row
    * was soft-deleted, null if no row matched (already soft-deleted OR not found).
@@ -185,8 +185,8 @@ export interface BrainEngine {
   getEmbeddingsByChunkIds(ids: number[]): Promise<Map<number, Float32Array>>;
 
   // Chunks
-  upsertChunks(slug: string, chunks: ChunkInput[]): Promise<void>;
-  getChunks(slug: string): Promise<Chunk[]>;
+  upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void>;
+  getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]>;
   /**
    * Count chunks across the entire brain where embedded_at IS NULL.
    * Pre-flight short-circuit for `embed --stale` so a 100%-embedded brain
@@ -202,7 +202,7 @@ export interface BrainEngine {
    * Bounded by an internal LIMIT of 100000 to mirror listPages.
    */
   listStaleChunks(): Promise<StaleChunkRow[]>;
-  deleteChunks(slug: string): Promise<void>;
+  deleteChunks(slug: string, opts?: { sourceId?: string }): Promise<void>;
 
   // Links
   /**
@@ -283,9 +283,9 @@ export interface BrainEngine {
   findOrphanPages(): Promise<Array<{ slug: string; title: string; domain: string | null }>>;
 
   // Tags
-  addTag(slug: string, tag: string): Promise<void>;
-  removeTag(slug: string, tag: string): Promise<void>;
-  getTags(slug: string): Promise<string[]>;
+  addTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void>;
+  removeTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void>;
+  getTags(slug: string, opts?: { sourceId?: string }): Promise<string[]>;
 
   // Timeline
   /**
@@ -319,7 +319,7 @@ export interface BrainEngine {
   putDreamVerdict(filePath: string, contentHash: string, verdict: DreamVerdictInput): Promise<void>;
 
   // Versions
-  createVersion(slug: string): Promise<PageVersion>;
+  createVersion(slug: string, opts?: { sourceId?: string }): Promise<PageVersion>;
   getVersions(slug: string): Promise<PageVersion[]>;
   revertToVersion(slug: string, versionId: number): Promise<void>;
 

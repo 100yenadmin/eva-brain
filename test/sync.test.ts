@@ -359,6 +359,83 @@ describe('performSync dry-run never writes', () => {
     // Structural assertion: the contract includes `embedded: number`.
     expect(typeof result.embedded).toBe('number');
   });
+
+  test('full sync writes pages under the requested source, not default', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config)
+       VALUES ($1, $2, $3, '{}'::jsonb)`,
+      ['source-sync', 'source-sync', repoPath],
+    );
+
+    const result = await performSync(engine, {
+      repoPath,
+      noPull: true,
+      noEmbed: true,
+      sourceId: 'source-sync',
+    });
+
+    expect(result.status).toBe('first_sync');
+    expect(await engine.getPage('people/alice', { sourceId: 'source-sync' })).not.toBeNull();
+    expect(await engine.getPage('people/bob', { sourceId: 'source-sync' })).not.toBeNull();
+    expect(await engine.getPage('people/alice')).toBeNull();
+
+    const rows = await engine.executeRaw<{ source_id: string; n: number }>(
+      `SELECT source_id, COUNT(*)::int AS n
+         FROM pages
+        WHERE slug IN ('people/alice', 'people/bob')
+        GROUP BY source_id
+        ORDER BY source_id`,
+    );
+    expect(rows).toEqual([{ source_id: 'source-sync', n: 2 }]);
+  });
+
+  test('runImport threads sourceId into imported pages, chunks, tags, and versions', async () => {
+    const { runImport } = await import('../src/commands/import.ts');
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config)
+       VALUES ($1, $2, $3, '{}'::jsonb)`,
+      ['source-import', 'source-import', repoPath],
+    );
+    writeFileSync(join(repoPath, 'people/alice.md'), [
+      '---',
+      'type: person',
+      'title: Alice',
+      'tags: [original]',
+      '---',
+      '',
+      'Alice is a person.',
+    ].join('\n'));
+
+    const first = await runImport(engine, [repoPath, '--no-embed'], { sourceId: 'source-import' });
+    expect(first.imported).toBe(2);
+    expect(await engine.getPage('people/alice', { sourceId: 'source-import' })).not.toBeNull();
+    expect(await engine.getPage('people/alice')).toBeNull();
+    expect(await engine.getChunks('people/alice', { sourceId: 'source-import' })).toHaveLength(1);
+    expect(await engine.getTags('people/alice', { sourceId: 'source-import' })).toEqual(['original']);
+
+    writeFileSync(join(repoPath, 'people/alice.md'), [
+      '---',
+      'type: person',
+      'title: Alice Updated',
+      'tags: [updated]',
+      '---',
+      '',
+      'Alice is a person with updated notes.',
+    ].join('\n'));
+
+    const second = await runImport(engine, [repoPath, '--no-embed'], { sourceId: 'source-import' });
+    expect(second.imported).toBe(1);
+    expect(await engine.getTags('people/alice', { sourceId: 'source-import' })).toEqual(['updated']);
+    const versions = await engine.executeRaw<{ n: number }>(
+      `SELECT COUNT(*)::int AS n
+         FROM page_versions pv
+         JOIN pages p ON p.id = pv.page_id
+        WHERE p.slug = 'people/alice'
+          AND p.source_id = 'source-import'`,
+    );
+    expect(versions[0].n).toBe(1);
+  });
 });
 
 describe('sync regression — #132 nested transaction deadlock', () => {
