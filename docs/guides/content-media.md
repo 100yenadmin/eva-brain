@@ -3,6 +3,16 @@
 ## Goal
 YouTube videos, social media, PDFs, and documents become searchable brain pages with the agent's own analysis and full cross-references to every entity mentioned.
 
+## Current Core Import Path
+For media extractors that already produce structured output, use the normalized evidence importer first:
+
+```bash
+gbrain import-media --slug media/evidence/example --extraction example.extraction.json --no-embed
+gbrain ingest-media ./screenshot.png --extract screenshot.extraction.json --no-embed
+```
+
+The extractor JSON is normalized from `gbrain.media-extraction.v1` into `gbrain.media-evidence.v1`, stored in `raw_data`, and indexed as searchable page chunks. See [Media Evidence Import](media-evidence.md).
+
 ## What the User Gets
 Without this: media links are bookmarks that decay -- you remember watching a video but can't find what was said, who said it, or why it mattered. With this: every piece of media is a permanent brain page with the agent's analysis layered on top, every mentioned entity gets a back-link, and the full content is searchable forever.
 

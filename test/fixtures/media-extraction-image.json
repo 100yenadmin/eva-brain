@@ -1,0 +1,27 @@
+{
+  "kind": "image",
+  "sourceRef": "screenshots/stripe-error-login.png",
+  "title": "Stripe login error screenshot",
+  "caption": "Login form showing a Stripe API key error banner",
+  "ocrText": "Stripe API key invalid. Please update your environment variables.",
+  "tags": ["stripe", "error", "login"],
+  "matchReasons": [
+    { "kind": "ocr", "detail": "Detected API key error text", "confidence": 0.97 }
+  ],
+  "segments": [
+    {
+      "id": "image-root",
+      "kind": "asset",
+      "caption": "Dashboard screenshot with error banner",
+      "ocrText": "Stripe API key invalid. Please update your environment variables.",
+      "locator": { "bbox": [0.1, 0.2, 0.8, 0.35] },
+      "entities": [
+        { "text": "Stripe", "type": "product", "confidence": 0.99 }
+      ],
+      "tags": ["dashboard"],
+      "matchReasons": [
+        { "kind": "caption", "detail": "Screenshot contains dashboard UI", "confidence": 0.82 }
+      ]
+    }
+  ]
+}

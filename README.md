@@ -439,6 +439,7 @@ GBrain ships integration recipes that your agent sets up for you. Each recipe te
 | [X-to-Brain](recipes/x-to-brain.md) | — | Twitter timeline + mentions + deletions |
 | [Calendar-to-Brain](recipes/calendar-to-brain.md) | credential-gateway | Google Calendar to searchable daily pages |
 | [Meeting Sync](recipes/meeting-sync.md) | — | Circleback transcripts to brain pages with attendees |
+| [Media Evidence](docs/guides/media-evidence.md) | extractor JSON | OCR/captions/transcripts into searchable media pages |
 
 **Data research recipes** extract structured data from email into tracked brain pages. Built-in recipes for investor updates (MRR, ARR, runway, headcount), expense tracking, and company metrics. Create your own with `gbrain research init`.
 
@@ -683,6 +684,10 @@ SEARCH
 IMPORT
   gbrain import <dir> [--no-embed] [--workers N]
                                         Import markdown (idempotent)
+  gbrain import-media --slug <s> --extraction <json>
+                                        Import normalized media evidence
+  gbrain ingest-media <file> --extract <json>
+                                        Import local media with precomputed evidence
   gbrain sync [--repo <path>] [--workers N]
                                         Git-to-brain incremental sync
                                         (>100-file diffs auto-parallelize 4 workers on Postgres)
