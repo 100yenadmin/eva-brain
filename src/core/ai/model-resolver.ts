@@ -2,7 +2,7 @@
  * Parse and validate `provider:model` strings against the recipe registry.
  */
 
-import type { ParsedModelId, Recipe, TouchpointKind } from './types.ts';
+import type { ParsedModelId, Recipe, TouchpointKind, ChatTouchpoint, EmbeddingTouchpoint, ExpansionTouchpoint } from './types.ts';
 import { getRecipe, RECIPES } from './recipes/index.ts';
 import { AIConfigError } from './errors.ts';
 
@@ -32,7 +32,11 @@ export function parseModelId(id: string): ParsedModelId {
   return { providerId, modelId };
 }
 
-/** Resolve a `provider:model` string to a Recipe. Throws AIConfigError if unknown. */
+/**
+ * Resolve a `provider:model` string to a Recipe + canonical modelId.
+ * Honors `recipe.aliases` (Codex F-OV-5) so users can pass undated forms.
+ * Throws AIConfigError if unknown provider.
+ */
 export function resolveRecipe(modelId: string): { parsed: ParsedModelId; recipe: Recipe } {
   const parsed = parseModelId(modelId);
   const recipe = getRecipe(parsed.providerId);
@@ -42,26 +46,43 @@ export function resolveRecipe(modelId: string): { parsed: ParsedModelId; recipe:
       `Known providers: ${[...knownProviderIds()].join(', ')}. Add a new recipe at src/core/ai/recipes/.`,
     );
   }
+  // Apply alias if the modelId matches an alias key. Canonical wins.
+  const canonical = recipe.aliases?.[parsed.modelId];
+  if (canonical) {
+    return { parsed: { providerId: parsed.providerId, modelId: canonical }, recipe };
+  }
   return { parsed, recipe };
+}
+
+type KnownTouchpointKey = 'embedding' | 'expansion' | 'chat';
+
+function getTouchpoint(recipe: Recipe, touchpoint: TouchpointKind): EmbeddingTouchpoint | ExpansionTouchpoint | ChatTouchpoint | undefined {
+  if (touchpoint === 'embedding' || touchpoint === 'expansion' || touchpoint === 'chat') {
+    return recipe.touchpoints[touchpoint as KnownTouchpointKey];
+  }
+  return undefined;
 }
 
 /** Assert the resolved recipe actually offers the requested touchpoint. */
 export function assertTouchpoint(recipe: Recipe, touchpoint: TouchpointKind, modelId: string): void {
-  if (!recipe.touchpoints[touchpoint as 'embedding' | 'expansion']) {
+  const tp = getTouchpoint(recipe, touchpoint);
+  if (!tp) {
     throw new AIConfigError(
       `Provider "${recipe.id}" does not support touchpoint "${touchpoint}".`,
       touchpoint === 'embedding' && recipe.id === 'anthropic'
         ? 'Anthropic has no embedding model. Use openai or google for embeddings.'
-        : undefined,
+        : touchpoint === 'chat' && (recipe.id === 'voyage' || recipe.id === 'ollama')
+          ? `${recipe.name} is configured here only for embeddings. Use openai/anthropic/google/deepseek/groq/together for chat.`
+          : undefined,
     );
   }
-  const supportedModels = recipe.touchpoints[touchpoint as 'embedding' | 'expansion']?.models ?? [];
+  const supportedModels = tp.models ?? [];
   if (supportedModels.length > 0 && !supportedModels.includes(modelId)) {
     // Non-fatal: providers like ollama/litellm accept arbitrary model ids. We only warn for native providers.
     if (recipe.tier === 'native') {
       throw new AIConfigError(
         `Model "${modelId}" is not listed for ${recipe.name} ${touchpoint}.`,
-        `Known models: ${supportedModels.join(', ')}. Use one of these or add it to the recipe.`,
+        `Known models: ${supportedModels.join(', ')}. Use one of these or add it to the recipe (or add an alias).`,
       );
     }
   }

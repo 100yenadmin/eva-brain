@@ -26,6 +26,7 @@ import { operations, OperationError } from '../core/operations.ts';
 import type { OperationContext, AuthInfo } from '../core/operations.ts';
 import { GBrainOAuthProvider } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
+import { summarizeMcpParams } from '../mcp/dispatch.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
 import { VERSION } from '../version.ts';
@@ -43,53 +44,35 @@ interface ServeHttpOptions {
    * issuer claim in tokens MUST match the discovery URL clients hit.
    */
   publicUrl?: string;
-}
-
-function summarizeMcpParams(params: unknown): Record<string, unknown> | null {
-  if (params == null) return null;
-
-  let approxBytes: number | undefined;
-  try {
-    approxBytes = JSON.stringify(params).length;
-  } catch {
-    approxBytes = undefined;
-  }
-
-  if (Array.isArray(params)) {
-    return {
-      redacted: true,
-      kind: 'array',
-      length: params.length,
-      ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
-    };
-  }
-
-  if (typeof params === 'object') {
-    const keys = Object.keys(params as Record<string, unknown>).sort();
-    return {
-      redacted: true,
-      kind: 'object',
-      keys,
-      field_count: keys.length,
-      ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
-    };
-  }
-
-  return {
-    redacted: true,
-    kind: typeof params,
-    ...(approxBytes !== undefined ? { approx_bytes: approxBytes } : {}),
-  };
+  /**
+   * When true, write raw request payloads to mcp_request_log + the admin SSE
+   * feed. Default false: payloads are summarized via dispatch.summarizeMcpParams
+   * (declared keys only, no values, no attacker-controlled key names).
+   *
+   * Operators running gbrain on their own laptop and debugging agent behavior
+   * can flip this on with `--log-full-params`. The flag prints a loud warning
+   * at startup so the privacy posture change is visible.
+   */
+  logFullParams?: boolean;
 }
 
 export async function runServeHttp(engine: BrainEngine, options: ServeHttpOptions) {
-  const { port, tokenTtl, enableDcr, publicUrl } = options;
+  const { port, tokenTtl, enableDcr, publicUrl, logFullParams } = options;
   const config = loadConfig() || { engine: 'pglite' as const };
+
+  if (logFullParams) {
+    console.error(
+      '[serve-http] WARNING: --log-full-params writes raw request payloads to mcp_request_log + SSE feed. Disable for shared dashboards or production.',
+    );
+  }
 
   // Get raw SQL connection for OAuth provider
   const sql = db.getConnection() as SqlQuery;
 
-  // Initialize OAuth provider
+  // Initialize OAuth provider. F12 cleanup: DCR-disable now flips a
+  // constructor option instead of monkey-patching `_clientsStore` after
+  // construction. Same outcome (no /register endpoint when --enable-dcr
+  // is not passed); cleaner shape for tests and future maintainers.
   const oauthProvider = new GBrainOAuthProvider({
     sql,
     tokenTtl,
@@ -191,6 +174,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // (RFC 8414 §3.3). Honor --public-url for production deployments behind
   // reverse proxies / tunnels; default to localhost for dev.
   const issuerUrl = new URL(publicUrl || `http://localhost:${port}`);
+
+  // F9: cookie `secure` flag honors both the request's TLS state (req.secure
+  // is set when express trust-proxy lands an X-Forwarded-Proto: https) AND
+  // the operator's declared issuer protocol (so a Cloudflare-tunnel deploy
+  // where the connection inside the tunnel looks like http but the public
+  // URL is https still tags cookies Secure). Without this, an attacker on
+  // the network path could MITM the admin cookie over plaintext.
   const adminCookie = (req: Request, maxAge: number) => ({
     httpOnly: true,
     sameSite: 'strict' as const,
@@ -205,6 +195,11 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     scopesSupported: ['read', 'write', 'admin'],
     resourceName: 'GBrain MCP Server',
   };
+
+  // F12: DCR disable lives on the provider's constructor option above. The
+  // SDK's mcpAuthRouter reads provider.clientsStore once and only wires up
+  // /register when the store exposes registerClient — so passing dcrDisabled
+  // to the constructor is sufficient. No monkey-patching here.
 
   const authRouter = mcpAuthRouter(authRouterOptions);
 
@@ -303,8 +298,10 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     for (const [nonce, expiresAt] of magicLinkNonces) {
       if (expiresAt < now) magicLinkNonces.delete(nonce);
     }
-    // Cap unconsumed nonces too. Map iteration order is insertion order, so
-    // dropping from the front gives us a simple bounded FIFO/LRU store.
+    // F10: bound the live-nonce store too. An attacker with the bootstrap
+    // token (or a misbehaving agent) could mint nonces faster than they
+    // expire. Map iteration order is insertion order, so dropping from the
+    // front gives a simple FIFO eviction matching the consumedNonces pattern.
     if (magicLinkNonces.size > NONCE_LRU_CAP) {
       const drop = magicLinkNonces.size - NONCE_LRU_CAP;
       const it = magicLinkNonces.keys();
@@ -688,9 +685,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         };
       }
 
-      const safeParams = summarizeMcpParams(params);
-      const logParams = safeParams ? JSON.stringify(safeParams) : null;
-
       const ctx: OperationContext = {
         engine,
         config,
@@ -700,15 +694,31 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
           error: (msg: string) => console.error(`[ERROR] ${msg}`),
         },
         dryRun: !!(params?.dry_run),
+        // F7: HTTP MCP is the untrusted/agent-facing transport. Stdio MCP at
+        // src/mcp/dispatch.ts:61 sets this; the inlined HTTP context-builder
+        // forgot it for several releases, which let HTTP MCP callers with a
+        // read+write token submit `shell` jobs and execute arbitrary commands
+        // on the host (RCE). The fail-closed contract in operations.ts is the
+        // belt; this is the suspenders.
         remote: true,
         auth: authInfo,
       };
+
+      // F8: redact request payload by default (declared keys only via the
+      // op's `params` allow-list; values + attacker-controlled key names
+      // never written to mcp_request_log or the SSE feed). --log-full-params
+      // bypasses this for operators debugging on their own laptop, with the
+      // startup warning printed earlier.
+      const safeParamsSummary = summarizeMcpParams(name, params);
+      const logParams = logFullParams
+        ? (params ? JSON.stringify(params) : null)
+        : (safeParamsSummary ? JSON.stringify(safeParamsSummary) : null);
+      const broadcastParams = logFullParams ? (params || {}) : safeParamsSummary;
 
       try {
         const result = await op.handler(ctx, (params || {}) as Record<string, unknown>);
         const latency = Date.now() - startTime;
 
-        // Log request + broadcast to SSE
         try {
           await sql`INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params)
                     VALUES (${authInfo.clientId}, ${agentName}, ${name}, ${latency}, ${'success'}, ${logParams})`;
@@ -717,7 +727,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         broadcastEvent({
           agent: agentName,
           operation: name,
-          params: safeParams,
+          params: broadcastParams,
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
           status: 'success',
@@ -727,6 +737,12 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (e) {
         const latency = Date.now() - startTime;
+        // F15: unify error envelope. Both OperationError and unexpected
+        // exceptions go through src/core/errors.ts so clients see a single
+        // shape ({class, code, message, hint}). Pre-fix, OperationError
+        // serialized via the OperationError instance method and other exceptions used a hand-rolled
+        // {error, message} envelope — a client couldn't pattern-match
+        // reliably across the two.
         const errorPayload = e instanceof OperationError
           ? buildError({
               class: 'OperationError',
@@ -736,7 +752,6 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
               docs_url: e.docs,
             })
           : serializeError(e);
-
         const errMsg = errorPayload.message;
         try {
           await sql`INSERT INTO mcp_request_log (token_name, agent_name, operation, latency_ms, status, params, error_message)
@@ -746,7 +761,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
         broadcastEvent({
           agent: agentName,
           operation: name,
-          params: safeParams,
+          params: broadcastParams,
           scopes: authInfo.scopes.join(','),
           latency_ms: latency,
           status: 'error',
@@ -758,8 +773,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       }
     });
 
+    // F14: wrap transport setup + handleRequest in try/catch. Without this,
+    // an SDK-level throw (e.g., schema parse failure on a malformed request)
+    // propagates to express's default error handler, which renders an HTML
+    // error page — clients expecting JSON-RPC envelopes break. On
+    // !res.headersSent we emit a minimal JSON 500 so the client at least
+    // gets parseable JSON back.
     try {
-      // Use StreamableHTTPServerTransport for stateless request handling.
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined as any });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);

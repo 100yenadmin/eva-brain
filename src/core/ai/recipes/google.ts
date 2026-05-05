@@ -22,6 +22,16 @@ export const google: Recipe = {
       cost_per_1m_tokens_usd: 0.10,
       price_last_verified: '2026-04-20',
     },
+    chat: {
+      models: ['gemini-2.0-flash-exp', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+      supports_tools: true,
+      supports_subagent_loop: true,
+      supports_prompt_cache: false,
+      max_context_tokens: 1000000, // Gemini 1.5 Pro
+      cost_per_1m_input_usd: 0.30,
+      cost_per_1m_output_usd: 1.20,
+      price_last_verified: '2026-04-20',
+    },
   },
   setup_hint: 'Get an API key at https://aistudio.google.com/apikey, then `export GOOGLE_GENERATIVE_AI_API_KEY=...`',
 };

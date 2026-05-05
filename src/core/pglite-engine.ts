@@ -223,6 +223,7 @@ export class PGLiteEngine implements BrainEngine {
    *   - `content_chunks.symbol_name` column (indexed by `idx_chunks_symbol_name`) — v0.19
    *   - `content_chunks.language` column (indexed by `idx_chunks_language`) — v0.19
    *   - `pages.deleted_at` column (indexed by `pages_deleted_at_purge_idx`) — v0.26.5
+   *   - `subagent_messages.provider_id` column (indexed by `idx_subagent_messages_provider`) — v0.27
    *
    * **Maintenance contract:** when a future migration adds a column-with-index
    * or new-table-with-FK referenced by PGLITE_SCHEMA_SQL, extend this method
@@ -250,7 +251,11 @@ export class PGLiteEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='content_chunks' AND column_name='symbol_name') AS symbol_name_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='content_chunks' AND column_name='language') AS language_exists
+                WHERE table_schema='public' AND table_name='content_chunks' AND column_name='language') AS language_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='subagent_messages') AS subagent_messages_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='subagent_messages' AND column_name='provider_id') AS subagent_messages_provider_id_exists
     `);
     const probe = rows[0] as {
       pages_exists: boolean;
@@ -262,6 +267,8 @@ export class PGLiteEngine implements BrainEngine {
       chunks_exists: boolean;
       symbol_name_exists: boolean;
       language_exists: boolean;
+      subagent_messages_exists: boolean;
+      subagent_messages_provider_id_exists: boolean;
     };
 
     const needsPagesBootstrap = probe.pages_exists && !probe.source_id_exists;
@@ -270,11 +277,19 @@ export class PGLiteEngine implements BrainEngine {
     const needsChunksBootstrap = probe.chunks_exists
       && (!probe.symbol_name_exists || !probe.language_exists);
     const needsPagesDeletedAt = probe.pages_exists && !probe.deleted_at_exists;
+    const needsSubagentProviderBootstrap = probe.subagent_messages_exists
+      && !probe.subagent_messages_provider_id_exists;
 
     // Fresh installs (no tables yet) and modern brains both no-op.
-    if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap && !needsPagesDeletedAt) return;
+    if (
+      !needsPagesBootstrap
+      && !needsLinksBootstrap
+      && !needsChunksBootstrap
+      && !needsPagesDeletedAt
+      && !needsSubagentProviderBootstrap
+    ) return;
 
-    console.log('  Pre-v0.21 brain detected, applying forward-reference bootstrap');
+    console.log('  Older PGLite brain detected, applying forward-reference bootstrap');
 
     if (needsPagesBootstrap) {
       // Mirror schema-embedded.ts shape for `sources` so the subsequent
@@ -328,6 +343,16 @@ export class PGLiteEngine implements BrainEngine {
       // not to crash. v34 runs later via runMigrations and is idempotent.
       await this.db.exec(`
         ALTER TABLE pages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+      `);
+    }
+
+    if (needsSubagentProviderBootstrap) {
+      // v36 adds the provider-neutral subagent persistence columns. The
+      // schema blob indexes subagent_messages.provider_id before migrations
+      // run, so existing v34/v35 PGLite brains need this single forward column
+      // in place before PGLITE_SCHEMA_SQL can replay.
+      await this.db.exec(`
+        ALTER TABLE subagent_messages ADD COLUMN IF NOT EXISTS provider_id TEXT;
       `);
     }
   }

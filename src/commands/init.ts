@@ -30,11 +30,13 @@ export async function runInit(args: string[]) {
   const modelShortIdx = args.indexOf('--model');
   const embDimsIdx = args.indexOf('--embedding-dimensions');
   const expModelIdx = args.indexOf('--expansion-model');
+  const chatModelIdx = args.indexOf('--chat-model');
   const aiOpts = await resolveAIOptions(
     embModelIdx !== -1 ? args[embModelIdx + 1] : null,
     modelShortIdx !== -1 ? args[modelShortIdx + 1] : null,
     embDimsIdx !== -1 ? parseInt(args[embDimsIdx + 1], 10) : null,
     expModelIdx !== -1 ? args[expModelIdx + 1] : null,
+    chatModelIdx !== -1 ? args[chatModelIdx + 1] : null,
   );
 
   // Schema-only path: apply initSchema against the already-configured engine
@@ -94,8 +96,9 @@ async function resolveAIOptions(
   shorthand: string | null,
   dimsArg: number | null,
   expansion: string | null,
-): Promise<{ embedding_model?: string; embedding_dimensions?: number; expansion_model?: string }> {
-  const out: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string } = {};
+  chat: string | null,
+): Promise<{ embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string }> {
+  const out: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string } = {};
 
   if (verbose) {
     const [providerId, ...modelParts] = verbose.split(':');
@@ -152,6 +155,7 @@ async function resolveAIOptions(
   }
 
   if (expansion) out.expansion_model = expansion;
+  if (chat) out.chat_model = chat;
 
   return out;
 }
@@ -167,6 +171,8 @@ function configureGatewayFromConfig(config: GBrainConfig): void {
     embedding_model: config.embedding_model,
     embedding_dimensions: config.embedding_dimensions,
     expansion_model: config.expansion_model,
+    chat_model: config.chat_model,
+    chat_fallback_chain: config.chat_fallback_chain,
     base_urls: config.provider_base_urls,
     provider_auth: config.provider_auth,
     env: { ...process.env },
@@ -206,7 +212,7 @@ async function initPGLite(opts: {
   jsonOutput: boolean;
   apiKey: string | null;
   customPath: string | null;
-  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string };
+  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string };
 }) {
   const dbPath = opts.customPath || gbrainPath('brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
@@ -218,13 +224,15 @@ async function initPGLite(opts: {
     ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
     ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
     ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+    ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
   };
 
   // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (mergedConfig.embedding_model) {
+  if (mergedConfig.embedding_model || mergedConfig.chat_model) {
     configureGatewayFromConfig(mergedConfig);
     console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
     if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
+    if (mergedConfig.chat_model) console.log(`  Chat: ${mergedConfig.chat_model}`);
   }
 
   const engine = await createEngine({ engine: 'pglite' });
@@ -269,7 +277,7 @@ async function initPostgres(opts: {
   databaseUrl: string;
   jsonOutput: boolean;
   apiKey: string | null;
-  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string };
+  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string };
 }) {
   const { databaseUrl } = opts;
 
@@ -280,13 +288,15 @@ async function initPostgres(opts: {
     ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
     ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
     ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+    ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
   };
 
   // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (mergedConfig.embedding_model) {
+  if (mergedConfig.embedding_model || mergedConfig.chat_model) {
     configureGatewayFromConfig(mergedConfig);
     console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
     if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
+    if (mergedConfig.chat_model) console.log(`  Chat: ${mergedConfig.chat_model}`);
   }
 
   // Detect Supabase direct connection URLs and warn about IPv6

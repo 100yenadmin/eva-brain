@@ -639,6 +639,8 @@ async function connectEngine(): Promise<BrainEngine> {
     embedding_model: config.embedding_model,
     embedding_dimensions: config.embedding_dimensions,
     expansion_model: config.expansion_model,
+    chat_model: config.chat_model,
+    chat_fallback_chain: config.chat_fallback_chain,
     base_urls: config.provider_base_urls,
     provider_auth: config.provider_auth,
     env: { ...process.env },
