@@ -12,6 +12,26 @@ plugin for skills plus MCP. A host adapter should live as its own package or
 documented host-side module so GBrain stays usable from OpenClaw, Codex, Claude
 Code, Hermes, MCP clients, and standalone CLI installs.
 
+```mermaid
+flowchart LR
+  Human["Human / agent asks a question"]
+  Host["Host runtime\nOpenClaw, Codex, Claude Code, Hermes"]
+  Adapter["Host adapter\nnative tools + routes"]
+  Core["GBrain core\nCLI, engine, MCP, schemas"]
+  Brain["Brain database\npages, chunks, raw_data"]
+  Provider["Optional provider call\nembedding, extraction, enrichment"]
+
+  Human --> Host
+  Host --> Adapter
+  Adapter --> Core
+  Core --> Brain
+  Adapter --> Provider
+  Provider --> Adapter
+```
+
+The adapter is intentionally the only box that knows host-specific runtime
+details. GBrain core remains a portable brain engine.
+
 ## When To Use Each Layer
 
 Use the root bundle plugin when the host can consume skills and an MCP server:
@@ -136,6 +156,7 @@ Controlled error:
 ```json
 {
   "ok": false,
+  "protocolVersion": "gbrain.media-extraction.v1",
   "error": {
     "code": "extraction_busy",
     "message": "GBrain extraction is busy. Retry shortly."
@@ -151,8 +172,8 @@ Minimum route requirements:
 - return controlled errors, not raw stack traces;
 - avoid logging request bodies that may contain private content;
 - avoid logging tokens or provider credentials;
-- serialize output as `gbrain.media-extraction.v1` so `gbrain import-media`
-  or equivalent import paths can ingest it.
+- serialize output as `gbrain.media-extraction.v1` so the host can pass it to
+  the normalized media-evidence import path when that feature is available.
 
 Text-backed media extraction is the safe MVP. Image/video binary understanding
 should be explicit host capability, not assumed by this contract.
@@ -160,25 +181,33 @@ should be explicit host capability, not assumed by this contract.
 ## Auth Boundary
 
 GBrain core owns provider calls and provider readiness. The host owns its
-runtime auth state.
+runtime auth state, including any OAuth session or local profile that proves the
+user is already signed in.
 
-Adapters should pass credential source configuration into GBrain, not token
-contents through tool payloads. Prefer this shape:
+Adapters should pass credential source metadata into GBrain or into their own
+route handlers, not token contents through tool payloads. A host-side adapter
+config can look like this:
 
 ```json
 {
-  "provider_auth": {
-    "openai": {
-      "prefer": "openclaw-codex",
-      "profile": "openclaw-codex"
-    }
+  "credentialSource": {
+    "provider": "openai",
+    "source": "openclaw-codex",
+    "profile": "openclaw-codex"
   }
 }
 ```
 
-If a host must read a local auth profile, the path should be explicit and the
-adapter should report only source class, profile name, and readiness. It should
-not echo secret values in tools, route responses, or logs.
+If a GBrain build includes a core provider-auth resolver, the adapter may map
+that host config into the resolver's supported config shape. If a host must read
+a local auth profile itself, the path should be explicit and the adapter should
+report only source class, profile name, and readiness. It should not echo secret
+values in tools, route responses, or logs.
+
+Why the OAuth/profile boundary matters for humans: users should be able to use
+the model access they already authenticated inside their agent host without
+pasting another model API key into every extension. The adapter boundary gives
+that convenience without making GBrain core depend on a single host.
 
 ## Rate Limits And Timeouts
 
