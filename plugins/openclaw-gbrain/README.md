@@ -14,7 +14,18 @@ logged-in OpenClaw/Codex runtime instead of asking users for a model API key.
 
 ## Install
 
-From an Eva Brain checkout:
+From a fresh Eva Brain checkout:
+
+```bash
+git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain
+cd ~/eva-brain
+curl -fsSL https://bun.sh/install | bash
+export PATH="$HOME/.bun/bin:$PATH"
+bun install && bun link
+gbrain --version
+```
+
+Then install the OpenClaw plugin from the same checkout:
 
 ```bash
 openclaw plugins install --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
@@ -23,7 +34,7 @@ openclaw gateway restart
 openclaw plugins inspect gbrain --runtime --json
 ```
 
-This first bridge intentionally shells out to the reviewed local `gbrain` and
+This bridge intentionally shells out to the reviewed local `gbrain` and
 `openclaw` CLIs. OpenClaw's install scanner therefore requires the explicit
 unsafe-install override. The plugin does not accept arbitrary command strings;
 the command paths are configurable and arguments are built internally.
@@ -76,7 +87,9 @@ only after the local OpenClaw/Codex runtime is proven to tolerate the extra load
 
 ```bash
 gbrain --version
+gbrain health
 openclaw infer model run --gateway --model openai-codex/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
+openclaw gbrain status
 ```
 
 Then call `gbrain ingest-media --extract openclaw` with

@@ -174,6 +174,22 @@ describe('loadCompletedMigrations', () => {
     expect(loadCompletedMigrations()).toEqual([]);
   });
 
+  test('honors GBRAIN_HOME for migration ledger isolation', () => {
+    const gbrainHome = mkdtempSync(join(tmpdir(), 'gbrain-prefs-gbrain-home-'));
+    const previous = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = gbrainHome;
+    try {
+      appendCompletedMigration({ version: '9.9.9', status: 'complete' });
+      expect(existsSync(join(gbrainHome, '.gbrain', 'migrations', 'completed.jsonl'))).toBe(true);
+      expect(existsSync(join(tmp, '.gbrain', 'migrations', 'completed.jsonl'))).toBe(false);
+      expect(loadCompletedMigrations().map(entry => entry.version)).toEqual(['9.9.9']);
+    } finally {
+      if (previous === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = previous;
+      rmSync(gbrainHome, { recursive: true, force: true });
+    }
+  });
+
   test('parses valid JSONL lines', () => {
     appendCompletedMigration({ version: '0.10.0', status: 'complete' });
     appendCompletedMigration({ version: '0.11.0', status: 'partial' });

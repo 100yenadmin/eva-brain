@@ -10,7 +10,7 @@ GBrain is those patterns, generalized. 34 skills. Install in 30 minutes. Your ag
 
 **New in v0.25.0 — BrainBench-Real (session capture, contributor opt-in):** with `GBRAIN_CONTRIBUTOR_MODE=1` set in your shell, every real `query` + `search` call through MCP, CLI, or the subagent tool-bridge gets captured (PII-scrubbed) into an `eval_candidates` table. Snapshot with `gbrain eval export`, replay against your code change with `gbrain eval replay`. Three numbers come back: mean Jaccard@k between captured and current retrieved slugs, top-1 stability, and latency Δ. **Off by default** for production users — no surprise data accumulation. Walkthrough: [docs/eval-bench.md](docs/eval-bench.md). NDJSON wire format: [docs/eval-capture.md](docs/eval-capture.md).
 
-> **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). You just answer questions about API keys.
+> **~30 minutes to a fully working brain.** Database ready in 2 seconds (PGLite, no server). For Eva/OpenClaw installs, Voyage powers embeddings and OpenClaw's logged-in Codex runtime powers extraction.
 
 > **LLMs:** fetch [`llms.txt`](llms.txt) for the documentation map, or [`llms-full.txt`](llms-full.txt) for the same map with core docs inlined in one fetch. **Agents:** start with [`AGENTS.md`](AGENTS.md) (or [`CLAUDE.md`](CLAUDE.md) if you're Claude Code).
 
@@ -27,31 +27,31 @@ Paste this into your agent:
 
 ```
 Retrieve and follow the instructions at:
-https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+https://raw.githubusercontent.com/electricsheephq/eva-brain/master/INSTALL_FOR_AGENTS.md
 ```
 
-That's it. The agent clones the repo, installs GBrain, sets up the brain, loads 34 skills, and configures recurring jobs. You answer a few questions about API keys. ~30 minutes.
+That's it. The agent clones Eva Brain, installs GBrain, sets up a Voyage 4 Large 2048d brain when `VOYAGE_API_KEY` is available, installs the OpenClaw plugin, and verifies the local doctor score. ~30 minutes.
 
-For provider choice, embedding dimensions, Voyage 1024d migration, and the current OpenClaw Codex OAuth dependency boundary, read [`docs/guides/provider-install-matrix.md`](docs/guides/provider-install-matrix.md).
+For provider choice, embedding dimensions, Voyage 4 Large 2048d setup, and the OpenClaw Codex OAuth extraction boundary, read [`docs/guides/provider-install-matrix.md`](docs/guides/provider-install-matrix.md).
 
 If your agent doesn't auto-read `AGENTS.md`, point it at that file first:
-`https://raw.githubusercontent.com/garrytan/gbrain/master/AGENTS.md` is the non-Claude
+`https://raw.githubusercontent.com/electricsheephq/eva-brain/master/AGENTS.md` is the non-Claude
 agent operating protocol (install, read order, trust boundary, common tasks). For
 the full doc map, use `llms.txt` at the same URL root.
 
 ### Standalone CLI (no agent)
 
 ```bash
-git clone https://github.com/garrytan/gbrain.git && cd gbrain && bun install && bun link
-gbrain init --pglite --model voyage   # fresh local brain with Voyage 1024d embeddings
-gbrain providers test --model voyage:voyage-3.5
+git clone https://github.com/electricsheephq/eva-brain.git && cd eva-brain && bun install && bun link
+gbrain providers test --model voyage:voyage-4-large
+gbrain init --pglite --embedding-model voyage:voyage-4-large --embedding-dimensions 2048
 gbrain import ~/notes/                # index your markdown
 gbrain query "what themes show up across my notes?"
 ```
 
 If you already have a populated brain, the safest production path for provider/dimension changes is a fresh init plus explicit migration/backup. Preserve the old brain first with `gbrain migrate --to supabase|pglite` or a file backup/export, then re-init against an empty target.
 
-**Do NOT use `bun install -g github:garrytan/gbrain`.** Bun blocks the top-level
+**Do NOT use `bun install -g github:electricsheephq/eva-brain`.** Bun blocks the top-level
 postinstall hook on global installs, so schema migrations never run and the CLI
 aborts with `Aborted()` the first time it opens PGLite. Use `git clone + bun install
 && bun link` as shown above. See [#218](https://github.com/garrytan/gbrain/issues/218).

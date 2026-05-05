@@ -2,6 +2,10 @@
   "name": "gbrain",
   "version": "0.27.0",
   "description": "Postgres-native personal knowledge brain with hybrid RAG search",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/electricsheephq/eva-brain.git"
+  },
   "type": "module",
   "main": "src/core/index.ts",
   "bin": {
@@ -54,13 +58,16 @@
     "check:exports-count": "scripts/check-exports-count.sh",
     "check:admin-build": "scripts/check-admin-build.sh",
     "check:test-isolation": "scripts/check-test-isolation.sh",
-    "postinstall": "command -v gbrain >/dev/null 2>&1 && gbrain apply-migrations --yes --non-interactive || echo '[gbrain] postinstall skipped. If installed via bun install -g github:...: run `gbrain doctor` and `gbrain apply-migrations --yes` manually. See https://github.com/garrytan/gbrain/issues/218' 1>&2",
+    "postinstall": "echo '[gbrain] dependencies installed. Run `bun link`, then `gbrain init --pglite` or follow INSTALL_FOR_AGENTS.md.' 1>&2",
     "prepublish:clawhub": "bun run build:all",
     "publish:clawhub": "clawhub package publish . --family bundle-plugin"
   },
   "openclaw": {
     "compat": {
       "pluginApi": ">=2026.4.0"
+    },
+    "build": {
+      "openclawVersion": ">=2026.5.3"
     }
   },
   "dependencies": {

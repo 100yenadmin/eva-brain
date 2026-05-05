@@ -1,25 +1,25 @@
 {
   "name": "gbrain",
-  "version": "0.25.1",
-  "description": "Personal knowledge brain with Postgres + pgvector hybrid search",
+  "version": "0.27.0",
+  "description": "Eva Brain/GBrain skills and personal knowledge brain with provider-neutral hybrid search",
   "family": "bundle-plugin",
   "configSchema": {
     "database_url": {
       "type": "string",
-      "required": true,
-      "description": "PostgreSQL connection URL (Supabase recommended)",
+      "required": false,
+      "description": "Optional PostgreSQL connection URL. Omit for local PGLite.",
       "uiHints": { "sensitive": true }
     },
-    "openai_api_key": {
+    "voyage_api_key": {
       "type": "string",
       "required": false,
-      "description": "OpenAI API key for embeddings (uses OPENAI_API_KEY env var if not set)",
+      "description": "Optional Voyage API key for Voyage 4 Large embeddings (uses VOYAGE_API_KEY env var if not set)",
       "uiHints": { "sensitive": true }
     }
   },
   "mcpServers": {
     "gbrain": {
-      "command": "./bin/gbrain",
+      "command": "gbrain",
       "args": ["serve"]
     }
   },
