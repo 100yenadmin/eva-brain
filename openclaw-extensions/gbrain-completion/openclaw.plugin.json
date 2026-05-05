@@ -1,0 +1,7 @@
+{
+  "id": "gbrain-completion",
+  "name": "GBrain Completion Bridge",
+  "version": "0.1.0",
+  "main": "./dist/index.js",
+  "kind": "automation"
+}
