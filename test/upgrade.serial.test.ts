@@ -109,9 +109,14 @@ describe('detectInstallMethod heuristic (source analysis)', () => {
     expect(source).toContain("execFileSync('bun', ['install']");
   });
 
-  test('bun global upgrade passes cwd to bun update', () => {
-    expect(source).toContain('const bunGlobalRoot = resolveBunGlobalRoot()');
-    expect(source).toContain("execFileSync('bun', ['update', 'gbrain'], { cwd: bunGlobalRoot");
+  test('bun package upgrade defers to the source updater', () => {
+    const caseStart = source.indexOf("case 'bun':");
+    const caseEnd = source.indexOf("case 'binary':", caseStart);
+    const bunCase = source.slice(caseStart, caseEnd);
+    expect(bunCase).toContain('source updater');
+    expect(bunCase).toContain('printSourceUpdaterCommands()');
+    expect(bunCase).not.toContain('resolveBunGlobalRoot');
+    expect(bunCase).not.toContain("execFileSync('bun'");
   });
 
   test('classifyBunInstall checks repository.url AND src/cli.ts marker', () => {
