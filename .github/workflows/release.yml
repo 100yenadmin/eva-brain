@@ -68,7 +68,12 @@ jobs:
             *) echo "Release tags must use eva-v*, got: $RELEASE_TAG" >&2; exit 1 ;;
           esac
           cd artifacts
-          find . -type f -name 'gbrain-*' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          find . -type f -name 'gbrain-*' -print0 \
+            | sort -z \
+            | while IFS= read -r -d '' file; do
+                hash="$(sha256sum "$file" | awk '{print $1}')"
+                printf '%s  %s\n' "$hash" "$(basename "$file")"
+              done > SHA256SUMS
           cat SHA256SUMS
       - name: Create release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2

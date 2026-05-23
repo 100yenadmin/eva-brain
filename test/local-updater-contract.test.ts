@@ -96,7 +96,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(workflow).toContain('SHA256SUMS');
     expect(workflow).toContain('timeout-minutes: 20');
     expect(workflow).toContain('bun run build:openclaw');
+    expect(workflow).toContain('basename "$file"');
     expect(workflow).not.toContain('- run: bun test');
+    expect(workflow).not.toContain('xargs -0 sha256sum > SHA256SUMS');
     expect(workflow).toMatch(/tag_name:\s+\$\{\{\s*env\.RELEASE_TAG\s*\}\}/);
     expect(workflow).toContain('Release tags must use eva-v*');
   });
