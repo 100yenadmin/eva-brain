@@ -32,7 +32,9 @@ export function sanitizeErrorForLog(value: unknown): string {
 export function safePublicModelLabel(model: unknown): string {
   if (typeof model !== 'string') return '<configured-model>';
   const trimmed = model.trim();
-  return /^[a-z0-9._-]+:[A-Za-z0-9._:@/-]+$/.test(trimmed)
+  const sanitized = sanitizeLogText(trimmed);
+  if (sanitized !== trimmed) return sanitized;
+  return /^[a-z0-9._-]+:[A-Za-z0-9._:@/-]+$/.test(trimmed) || /^[A-Za-z0-9._@/-]+$/.test(trimmed)
     ? trimmed
     : '<configured-model>';
 }
