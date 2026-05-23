@@ -68,9 +68,10 @@ test -x "$HOME/.bun/bin/gbrain" || bun link
 node plugins/gbrain-codex/scripts/rehearsal.mjs
 ```
 
-The rehearsal script creates a temp `GBRAIN_HOME`, initializes PGLite, connects
-to the plugin over stdio MCP, checks `tools/list`, and exercises `put_page`,
-`get_page`, `search`, `query`, `sync_brain`, and the `whoami` fail-closed path.
+The rehearsal script creates a temp `GBRAIN_HOME`, initializes PGLite with
+deferred embeddings so no provider API key is required, connects to the plugin
+over stdio MCP, checks `tools/list`, and exercises `put_page`, `get_page`,
+`search`, `query`, `sync_brain`, and the `whoami` fail-closed path.
 
 ## Safety Boundary
 

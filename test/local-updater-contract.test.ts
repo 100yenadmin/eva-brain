@@ -73,6 +73,12 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(mcp.mcpServers['gbrain-codex'].args).toContain('./scripts/launch-gbrain-serve.mjs');
   });
 
+  test('Codex plugin rehearsal is provider-key independent', () => {
+    const rehearsal = readFileSync(join(root, 'plugins/gbrain-codex/scripts/rehearsal.mjs'), 'utf8');
+    expect(rehearsal).toContain("'--no-embedding'");
+    expect(rehearsal).toMatch(/function ensureTempBrain[\s\S]*rehearsalInitArgs\(\)/);
+  });
+
   test('Codex installer creates a local plugin shell linked to current repo skills', () => {
     const home = tempHome();
     const result = Bun.spawnSync({
