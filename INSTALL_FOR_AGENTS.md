@@ -25,9 +25,9 @@ cd ~/eva-brain
 scripts/update-local-install.sh
 ```
 
-That script is idempotent: it updates the checkout, runs `bun install`, links
-the `gbrain` CLI, applies safe PGLite migrations, and refreshes optional host
-plugins when those hosts are present.
+That script is idempotent: it installs the latest `eva-v*` GitHub release tag,
+runs `bun install`, links the `gbrain` CLI, applies safe PGLite migrations, and
+refreshes optional host plugins when those hosts are present.
 
 To require host plugin setup instead of auto-detecting it, pass
 `--with-openclaw` and/or `--with-codex-plugin`.
@@ -38,6 +38,12 @@ Full Eva/OpenClaw/Codex/support-KB install:
 git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain
 cd ~/eva-brain
 scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --stop-stale-serve
+```
+
+Development installs must opt into the moving branch explicitly:
+
+```bash
+scripts/update-local-install.sh --ref master
 ```
 
 What that command does:
@@ -362,10 +368,24 @@ actually works) is the most important.
 
 ## Upgrade
 
+Stable release upgrade:
+
 ```bash
 cd ~/eva-brain
 scripts/update-local-install.sh
 gbrain post-upgrade                   # show migration notes for the version range
+```
+
+Install or roll back to an exact release:
+
+```bash
+scripts/update-local-install.sh --ref eva-v0.40.2.0
+```
+
+Development branch upgrade:
+
+```bash
+scripts/update-local-install.sh --ref master
 ```
 
 Then read `~/eva-brain/skills/migrations/v<NEW_VERSION>.md` (and any intermediate

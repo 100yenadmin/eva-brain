@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_URL="${EVA_BRAIN_REPO_URL:-https://github.com/electricsheephq/eva-brain.git}"
 INSTALL_DIR="${EVA_BRAIN_DIR:-$HOME/eva-brain}"
-REF="${EVA_BRAIN_REF:-master}"
+REF="${EVA_BRAIN_REF:-stable}"
 GBRAIN_ROOT="${GBRAIN_HOME:-$HOME}"
 if [ "${GBRAIN_ROOT%/.gbrain}" != "$GBRAIN_ROOT" ]; then
   GBRAIN_ROOT="$(dirname "$GBRAIN_ROOT")"
@@ -30,7 +30,7 @@ and optionally refreshes host plugins.
 Options:
   --dir <path>                 Checkout/install directory (default: ~/eva-brain)
   --repo <url>                 Git repo URL (default: electricsheephq/eva-brain)
-  --ref <branch-or-tag>        Git ref to checkout/pull (default: master)
+  --ref <branch-or-tag>        Git ref to checkout/pull (default: stable, latest eva-v* tag)
   --with-openclaw              Install/enable the OpenClaw native plugin
   --without-openclaw           Skip OpenClaw plugin install
   --with-codex-plugin          Install/update the Codex Desktop local plugin entry
@@ -46,12 +46,13 @@ Options:
 Environment:
   VOYAGE_API_KEY               Used by gbrain provider probes and embeddings
   EVA_BRAIN_DIR                Same as --dir
-  EVA_BRAIN_REF                Same as --ref
+  EVA_BRAIN_REF                Same as --ref. Use master only for development.
   GBRAIN_HOME                  Parent for .gbrain runtime data. If it points
                                directly at a .gbrain dir, the updater normalizes it.
 
 Examples:
   scripts/update-local-install.sh
+  scripts/update-local-install.sh --ref master
   scripts/update-local-install.sh --with-openclaw --with-codex-plugin
   scripts/update-local-install.sh --with-support-kb --stop-stale-serve
 USAGE
@@ -77,6 +78,27 @@ run() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+latest_stable_tag() {
+  git ls-remote --tags --refs --sort='version:refname' "$REPO_URL" 'eva-v*' |
+    awk '{print $2}' |
+    sed 's#refs/tags/##' |
+    tail -n 1
+}
+
+resolve_ref() {
+  if [ "$REF" != "stable" ]; then
+    return
+  fi
+  need_cmd git
+  local tag
+  tag="$(latest_stable_tag)"
+  if [ -z "$tag" ]; then
+    die "No Eva Brain release tags found in $REPO_URL. Create an eva-v* GitHub release, pass --ref <eva-v...>, or pass --ref master for a development install."
+  fi
+  log "Resolved stable to $tag"
+  REF="$tag"
 }
 
 parse_args() {
@@ -238,6 +260,7 @@ install_support_kb() {
 
 main() {
   parse_args "$@"
+  resolve_ref
   checkout_repo
   if [ -d "$INSTALL_DIR" ]; then
     cd "$INSTALL_DIR"
