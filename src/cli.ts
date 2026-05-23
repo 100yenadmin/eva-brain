@@ -536,12 +536,36 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
   // 'default'. Wrapped in try/catch so a doctor / single-source brain that
   // never set up sources still returns 'default' silently.
   let sourceId: string | undefined;
+  let sourceIds: string[] | undefined;
   try {
-    const { resolveSourceId } = await import('./core/source-resolver.ts');
+    const { resolveSourceWithTier } = await import('./core/source-resolver.ts');
     // params.source is set when a CLI flag was parsed for the op (rare; most
     // CLI ops don't take --source). Falls through to env/dotfile/path-match.
     const explicit = (params.source as string | undefined) ?? null;
-    sourceId = await resolveSourceId(engine, explicit);
+    const resolved = await resolveSourceWithTier(engine, explicit);
+    sourceId = resolved.source_id;
+    if (resolved.tier === 'seed_default') {
+      const rows = await engine.executeRaw<{ id: string; config: unknown; archived?: boolean }>(
+        `SELECT id, config, archived FROM sources ORDER BY (id = 'default') DESC, id`,
+      );
+      sourceIds = rows
+        .filter((row) => row.archived !== true)
+        .filter((row) => {
+          let cfg: Record<string, unknown> = {};
+          if (typeof row.config === 'string') {
+            try {
+              cfg = JSON.parse(row.config || '{}') as Record<string, unknown>;
+            } catch {
+              cfg = {};
+            }
+          } else if (row.config && typeof row.config === 'object') {
+            cfg = row.config as Record<string, unknown>;
+          }
+          return cfg.federated === true;
+        })
+        .map((row) => row.id);
+      if (sourceIds.length === 0) sourceIds = undefined;
+    }
   } catch {
     // Source resolution failed (e.g. sources table doesn't exist on a fresh
     // pre-init brain). Leave sourceId unset; engine read methods fall through
@@ -557,6 +581,7 @@ async function makeContext(engine: BrainEngine, params: Record<string, unknown>)
     // confinement (e.g., cwd-locked file_upload).
     remote: false,
     cliOpts: getCliOptions(),
+    ...(sourceIds !== undefined ? { sourceIds } : {}),
     // v0.34 D4: sourceId is REQUIRED at the type level. Fall back to 'default'
     // when resolveSourceId returned undefined (fresh pre-init brain, no sources
     // table). Matches dispatch.ts's auto-fill so the contract holds across
