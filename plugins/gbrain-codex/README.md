@@ -55,6 +55,10 @@ cd ~/eva-brain
 scripts/update-local-install.sh --with-codex-plugin
 ```
 
+By default the updater installs the newest `eva-v*` GitHub release tag. For
+development against moving `master`, pass `--ref master`. To pin or roll back,
+pass an exact release tag such as `--ref eva-v0.40.2.0`.
+
 Add `--with-openclaw --with-support-kb` when this Codex install should share the
 same machine with OpenClaw and the OpenClaw support knowledge base.
 

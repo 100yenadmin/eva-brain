@@ -2,7 +2,13 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['eva-v*']
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Eva release tag to publish, for example eva-v0.40.2.0'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,8 +25,19 @@ jobs:
             target: bun-linux-x64
             artifact: gbrain-linux-x64
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Validate Eva release tag
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            eva-v*) ;;
+            *) echo "Release tags must use eva-v*, got: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: latest
@@ -35,14 +52,28 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            eva-v*) ;;
+            *) echo "Release tags must use eva-v*, got: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          cd artifacts
+          find . -type f -name 'gbrain-*' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
       - name: Create release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             artifacts/gbrain-darwin-arm64/gbrain-darwin-arm64
             artifacts/gbrain-linux-x64/gbrain-linux-x64
+            artifacts/SHA256SUMS
           generate_release_notes: true

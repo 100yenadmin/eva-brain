@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,11 +26,45 @@ function tempHome(): string {
   return dir;
 }
 
+function runGit(cwd: string, args: string[]): void {
+  const result = Bun.spawnSync({
+    cmd: ['git', ...args],
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(' ')} failed\n${result.stdout}\n${result.stderr}`);
+  }
+}
+
+function makeRepoWithEvaTags(home: string, tags: string[]): string {
+  const repo = join(home, 'remote-src');
+  mkdirSync(repo, { recursive: true });
+  runGit(repo, ['init']);
+  runGit(repo, ['config', 'user.email', 'agent@example.invalid']);
+  runGit(repo, ['config', 'user.name', 'Agent']);
+  writeFileSync(join(repo, 'README.md'), '# tagged repo\n');
+  runGit(repo, ['add', 'README.md']);
+  runGit(repo, ['commit', '-m', 'initial']);
+  for (const tag of tags) {
+    writeFileSync(join(repo, 'README.md'), `# tagged repo\n${tag}\n`);
+    runGit(repo, ['add', 'README.md']);
+    runGit(repo, ['commit', '-m', `release ${tag}`]);
+    runGit(repo, ['tag', tag]);
+  }
+  return repo;
+}
+
 describe('public local updater and Codex plugin packaging', () => {
   test('update script is public-host phrased and syntax-valid', () => {
     const script = readFileSync(join(root, 'scripts/update-local-install.sh'), 'utf8');
 
     expect(script).toMatch(/Usage:\s+scripts\/update-local-install\.sh\s+\[options\]/);
+    expect(script).toMatch(/REF="\$\{EVA_BRAIN_REF:-stable\}"/);
+    expect(script).toMatch(/latest_stable_tag\(\)/);
+    expect(script).toMatch(/git\s+ls-remote\s+--tags\s+--refs\s+--sort='version:refname'\s+"\$REPO_URL"\s+'eva-v\*'/);
+    expect(script).toMatch(/No Eva Brain release tags found/);
     expect(script).toMatch(/--with-openclaw\b/);
     expect(script).toMatch(/--with-codex-plugin\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
@@ -49,6 +83,33 @@ describe('public local updater and Codex plugin packaging', () => {
       cwd: root,
     });
     expect(result.exitCode).toBe(0);
+  });
+
+  test('release workflow publishes only eva-v tags with binaries and checksums', () => {
+    const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
+
+    expect(workflow).toMatch(/tags:\s+\['eva-v\*'\]/);
+    expect(workflow).toMatch(/workflow_dispatch:/);
+    expect(workflow).toContain('tag_name:');
+    expect(workflow).toContain('gbrain-darwin-arm64');
+    expect(workflow).toContain('gbrain-linux-x64');
+    expect(workflow).toContain('SHA256SUMS');
+    expect(workflow).toMatch(/tag_name:\s+\$\{\{\s*env\.RELEASE_TAG\s*\}\}/);
+    expect(workflow).toContain('Release tags must use eva-v*');
+  });
+
+  test('workflows use Node 24-ready checkout pin', () => {
+    const files = [
+      '.github/workflows/test.yml',
+      '.github/workflows/e2e.yml',
+      '.github/workflows/heavy-tests.yml',
+      '.github/workflows/release.yml',
+    ];
+    for (const file of files) {
+      const workflow = readFileSync(join(root, file), 'utf8');
+      expect(workflow).toContain('actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd');
+      expect(workflow).not.toContain('actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5');
+    }
   });
 
   test('Codex plugin metadata stays repo-owned and version-aligned', () => {
@@ -227,7 +288,69 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(existsSync(join(home, '.agents/plugins/marketplace.json'))).toBe(false);
   });
 
-  test('local updater dry-run works for a missing first-install directory', () => {
+  test('local updater stable dry-run resolves the newest eva-v release tag', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, ['eva-v0.40.1.0', 'eva-v0.40.2.0']);
+    const installDir = join(home, 'eva-brain');
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--dry-run',
+        '--repo',
+        repo,
+        '--dir',
+        installDir,
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+      ],
+      cwd: root,
+      env: { ...process.env, HOME: home, GBRAIN_HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(stderr).toContain('Resolved stable to eva-v0.40.2.0');
+    expect(stdout).toContain(`git clone --branch eva-v0.40.2.0 ${repo} ${installDir}`);
+    expect(stdout).not.toContain('--branch master');
+    expect(existsSync(installDir)).toBe(false);
+  });
+
+  test('local updater fails closed when stable has no eva-v release tags', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--dry-run',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+      ],
+      cwd: root,
+      env: { ...process.env, HOME: home, GBRAIN_HOME: home },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(stderr).toContain('No Eva Brain release tags found');
+    expect(stderr).toContain('pass --ref master for a development install');
+  });
+
+  test('local updater dry-run still allows explicit master development installs', () => {
     const home = tempHome();
     const installDir = join(home, 'eva-brain');
     const result = Bun.spawnSync({
@@ -235,6 +358,8 @@ describe('public local updater and Codex plugin packaging', () => {
         'bash',
         'scripts/update-local-install.sh',
         '--dry-run',
+        '--ref',
+        'master',
         '--dir',
         installDir,
         '--without-openclaw',
