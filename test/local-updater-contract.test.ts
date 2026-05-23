@@ -102,6 +102,19 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(entry.source.path).toBe('./plugins/gbrain-codex');
     expect(entry.policy.installation).toBe('AVAILABLE');
     expect(entry.policy.authentication).toBe('ON_INSTALL');
+
+    const rehearsal = Bun.spawnSync({
+      cmd: ['node', join(pluginDir, 'scripts/rehearsal.mjs')],
+      cwd: root,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...process.env,
+        DASHSCOPE_API_KEY: 'invalid-key-for-provider-independent-rehearsal',
+      },
+    });
+    expect(rehearsal.exitCode).toBe(0);
+    expect(JSON.parse(rehearsal.stdout.toString()).ok).toBe(true);
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {

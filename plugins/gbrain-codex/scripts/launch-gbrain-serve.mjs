@@ -1,11 +1,19 @@
 import { spawn } from 'node:child_process';
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = resolve(dirname(SCRIPT_PATH), '..');
+
+function sameEntrypointPath(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return resolve(left) === resolve(right);
+  }
+}
 
 function isExecutable(path) {
   try {
@@ -140,7 +148,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+if (process.argv[1] && sameEntrypointPath(process.argv[1], SCRIPT_PATH)) {
   main().catch(err => {
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
