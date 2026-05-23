@@ -1280,12 +1280,22 @@ export function splitByTokenBudget(
  * @internal exported for tests; not part of the public gateway API.
  */
 export function isTokenLimitError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return (
-    /max.*allowed.*tokens.*batch/i.test(msg) ||
-    /batch.*too.*many.*tokens/i.test(msg) ||
-    /token.*limit.*exceeded/i.test(msg)
+    wordsInOrder(msg, ['max', 'allowed', 'tokens', 'batch']) ||
+    wordsInOrder(msg, ['batch', 'too', 'many', 'tokens']) ||
+    wordsInOrder(msg, ['token', 'limit', 'exceeded'])
   );
+}
+
+function wordsInOrder(text: string, words: string[]): boolean {
+  let offset = 0;
+  for (const word of words) {
+    const next = text.indexOf(word, offset);
+    if (next < 0) return false;
+    offset = next + word.length;
+  }
+  return true;
 }
 
 /**

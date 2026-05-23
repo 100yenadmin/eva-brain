@@ -80,15 +80,29 @@ export function classifyFailure(err) {
     if (r === 'semantic_fail' || r === 'judge_fail') return 'semantic';
   }
 
+  const hasExactHost = (text, host) => {
+    const scrubbed = String(text).replace(/[<>()"'`,]/g, ' ');
+    for (const raw of scrubbed.split(/\s+/)) {
+      if (!raw) continue;
+      try {
+        const candidate = raw.includes('://') ? raw : `https://${raw}`;
+        if (new URL(candidate).hostname === host) return true;
+      } catch {
+        // Ignore non-URL tokens.
+      }
+    }
+    return false;
+  };
+
   // Last-resort message inspection. Only match strings that are clearly
   // upstream — anything ambiguous falls through to 'unknown' → caller
   // treats as plumbing.
   const msg = (err.message || String(err) || '').toLowerCase();
   if (
-    msg.includes('api.openai.com') &&
+    hasExactHost(msg, 'api.openai.com') &&
     (msg.includes('429') || msg.includes('500') || msg.includes('503'))
   ) return 'upstream';
-  if (msg.includes('api.anthropic.com') && msg.includes('rate_limit')) return 'upstream';
+  if (hasExactHost(msg, 'api.anthropic.com') && msg.includes('rate_limit')) return 'upstream';
   if (msg.includes('econnreset') || msg.includes('econnrefused')) {
     // ECONNRESET to api.openai.com is upstream; to localhost is plumbing.
     if (msg.includes('openai') || msg.includes('anthropic')) return 'upstream';

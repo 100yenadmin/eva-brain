@@ -16,6 +16,7 @@ import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult } from './core/mcp-client.ts';
 import { maybePromptForUpgrade } from './core/thin-client-upgrade-prompt.ts';
 import { VERSION } from './version.ts';
+import { sanitizeLogText } from './core/log-safety.ts';
 
 // Build CLI name -> operation lookup
 const cliOps = new Map<string, Operation>();
@@ -1562,7 +1563,7 @@ async function connectEngine(opts?: { probeOnly?: boolean }): Promise<BrainEngin
     // Non-fatal: if probe or initSchema fails, surface a hint and continue
     // with the connected engine. Subsequent operations will surface the
     // real schema error in context.
-    console.warn(`  Schema probe/migrate failed: ${(err as Error).message}`);
+    console.warn(`  Schema probe/migrate failed: ${sanitizeLogText((err as Error).message)}`);
     console.warn('  Try: gbrain init --migrate-only');
   }
 
@@ -1773,6 +1774,6 @@ Run gbrain <command> --help for command-specific help.
 }
 
 main().catch(e => {
-  console.error(e.message || e);
+  console.error(sanitizeLogText(e instanceof Error ? e.message : e));
   process.exit(1);
 });

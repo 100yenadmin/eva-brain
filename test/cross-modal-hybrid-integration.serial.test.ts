@@ -94,7 +94,7 @@ describe('hybridSearch cross-modal routing (Phase 1 integration)', () => {
     // Must have called the multimodal endpoint at least once.
     expect(fetchUrlsSeen.some(u => u.includes('multimodalembeddings'))).toBe(true);
     // Must NOT have called OpenAI embeddings.
-    expect(fetchUrlsSeen.some(u => u.includes('api.openai.com') && u.includes('embeddings'))).toBe(false);
+    expect(fetchUrlsSeen.some(u => isHostUrl(u, 'api.openai.com') && u.includes('embeddings'))).toBe(false);
   });
 
   test('explicit crossModal: "image" threads inputType=query in Voyage body (D22-2)', async () => {
@@ -218,3 +218,11 @@ describe('hybridSearch cross-modal routing (Phase 1 integration)', () => {
     // Did NOT throw; fell back successfully.
   });
 });
+
+function isHostUrl(raw: string, host: string): boolean {
+  try {
+    return new URL(raw).hostname === host;
+  } catch {
+    return false;
+  }
+}

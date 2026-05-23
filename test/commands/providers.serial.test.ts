@@ -69,6 +69,12 @@ mock.module('../../src/core/ai/auth.ts', () => ({
   redactAuthResolution: (resolution: any) => ({ ...resolution, value: undefined, secret: undefined }),
 }));
 
+let providersImportSeq = 0;
+async function importProvidersForTest() {
+  providersImportSeq++;
+  return import(`../../src/commands/providers.ts?providers-serial=${providersImportSeq}`);
+}
+
 describe('providers command auth hardening', () => {
   const logSpy = spyOn(console, 'log').mockImplementation(() => {});
   const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -94,7 +100,7 @@ describe('providers command auth hardening', () => {
   });
 
   test('providers test --model preserves provider_auth while overriding only model', async () => {
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('test', ['--model', 'openai:text-embedding-3-small']);
 
     expect(configureGatewayMock).toHaveBeenCalledTimes(2);
@@ -113,7 +119,7 @@ describe('providers command auth hardening', () => {
       expansion_model: 'anthropic:claude-haiku-4-5-20251001',
       provider_auth: { openai: { prefer: 'openclaw-codex', profile: 'openclaw-codex' } },
     });
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('test', ['--model', 'voyage:voyage-4-large']);
 
     expect(configureGatewayMock).toHaveBeenCalledTimes(2);
@@ -138,7 +144,7 @@ describe('providers command auth hardening', () => {
       provider_base_urls: { ollama: 'http://config-ollama.test/v1' },
     } as any);
 
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('list', []);
 
     const initialArgs = configureGatewayMock.mock.calls[0] as unknown[] | undefined;
@@ -151,7 +157,7 @@ describe('providers command auth hardening', () => {
   });
 
   test('providers explain recommends openai when auth comes from openclaw profile', async () => {
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('explain', []);
 
     const output = logSpy.mock.calls
@@ -167,7 +173,7 @@ describe('providers command auth hardening', () => {
     loadGbrainEnvMock.mockReturnValueOnce({
       VOYAGE_API_KEY: 'from-gbrain-env',
     });
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('explain', []);
 
     const output = logSpy.mock.calls
@@ -184,7 +190,7 @@ describe('providers command auth hardening', () => {
       VOYAGE_API_KEY: 'from-gbrain-env',
       OLLAMA_BASE_URL: 'http://example.test:11434/v1',
     });
-    const { runProviders } = await import('../../src/commands/providers.ts');
+    const { runProviders } = await importProvidersForTest();
     await runProviders('explain', ['--json']);
 
     const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
@@ -203,7 +209,7 @@ describe('providers command auth hardening', () => {
       throw new Error(`exit:${code}`);
     });
     try {
-      const { runProviders } = await import('../../src/commands/providers.ts');
+      const { runProviders } = await importProvidersForTest();
       await expect(runProviders('test', ['--model'])).rejects.toThrow('exit:1');
       expect(errorSpy.mock.calls.map(call => String(call[0])).join('\n')).toContain('Missing value for --model');
       expect(configureGatewayMock).toHaveBeenCalledTimes(1);
@@ -217,7 +223,7 @@ describe('providers command auth hardening', () => {
       throw new Error(`exit:${code}`);
     });
     try {
-      const { runProviders } = await import('../../src/commands/providers.ts');
+      const { runProviders } = await importProvidersForTest();
 
       isAvailableMock.mockReturnValueOnce(false);
       await expect(runProviders('test', ['--model', 'openai'])).rejects.toThrow('exit:1');

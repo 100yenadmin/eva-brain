@@ -24,6 +24,14 @@ let engine: PGLiteEngine;
 let fetchHandler: ((url: string, init: RequestInit) => Promise<Response>) | null = null;
 const origFetch = globalThis.fetch;
 
+function isHostUrl(url: string, host: string): boolean {
+  try {
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
+}
+
 beforeAll(async () => {
   engine = new PGLiteEngine();
   await engine.connect({});
@@ -111,7 +119,7 @@ describe('hybridSearch unified routing (Phase 3)', () => {
           data: [{ embedding: Array.from({ length: 1024 }, () => 0.1), index: 0 }],
         }), { status: 200 });
       }
-      if (url.includes('api.openai.com') && url.includes('embeddings')) {
+      if (isHostUrl(url, 'api.openai.com') && url.includes('embeddings')) {
         openaiCalled++;
       }
       return new Response(JSON.stringify({

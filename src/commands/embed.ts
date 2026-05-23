@@ -242,7 +242,7 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
     // D.2: surface dim-mismatch failures with the paste-ready recipe
     // instead of the raw Postgres error message.
     if (e instanceof EmbeddingDimMismatchError) {
-      console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
+      console.error('\nEmbedding dimension mismatch. Run `gbrain doctor` for the repair recipe, or see docs/embedding-migrations.md.\n');
     } else {
       console.error(sanitizeLogText(e instanceof Error ? e.message : String(e)));
     }

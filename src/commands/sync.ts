@@ -23,7 +23,7 @@ import type { SyncManifest } from '../core/sync.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { loadConfig } from '../core/config.ts';
-import { safePublicModelLabel, sanitizeJsonForLog, sanitizeLogText } from '../core/log-safety.ts';
+import { safePublicModelLabel, sanitizeJsonForLog } from '../core/log-safety.ts';
 import {
   autoConcurrency,
   shouldRunParallel,
@@ -1056,7 +1056,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     } catch (e: unknown) {
       const { EmbeddingDimMismatchError } = await import('./embed.ts');
       if (e instanceof EmbeddingDimMismatchError) {
-        console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
+        console.error('\nEmbedding dimension mismatch. Run `gbrain doctor` for the repair recipe, or see docs/embedding-migrations.md.\n');
         console.error(`Tip: pass --no-embed to sync without embedding, then`);
         console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
       }
@@ -1204,7 +1204,7 @@ async function performFullSync(
     } catch (e: unknown) {
       const { EmbeddingDimMismatchError } = await import('./embed.ts');
       if (e instanceof EmbeddingDimMismatchError) {
-        console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
+        console.error('\nEmbedding dimension mismatch. Run `gbrain doctor` for the repair recipe, or see docs/embedding-migrations.md.\n');
         console.error(`Tip: pass --no-embed to sync without embedding, then`);
         console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
       }

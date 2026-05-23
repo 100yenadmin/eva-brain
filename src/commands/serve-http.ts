@@ -12,7 +12,6 @@
 
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { randomBytes, createHash, timingSafeEqual } from 'crypto';
@@ -388,10 +387,22 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   const app = express();
   app.set('trust proxy', 'loopback'); // Caddy/Tailscale reverse proxy on localhost
 
-  // ---------------------------------------------------------------------------
-  // Cookie parsing — required for /admin auth (express 5 has no built-in)
-  // ---------------------------------------------------------------------------
-  app.use(cookieParser());
+  function readCookie(req: Request, name: string): string | undefined {
+    const header = req.headers.cookie;
+    if (!header) return undefined;
+    const prefix = `${name}=`;
+    for (const rawPart of header.split(';')) {
+      const part = rawPart.trim();
+      if (!part.startsWith(prefix)) continue;
+      const value = part.slice(prefix.length);
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+    return undefined;
+  }
 
   // ---------------------------------------------------------------------------
   // CORS
@@ -425,6 +436,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     standardHeaders: true,
     legacyHeaders: false,
     message: 'Too many magic-link attempts. Wait a minute before trying again.',
+  });
+
+  const adminStaticRateLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
   });
 
   app.post('/token', ccRateLimiter, express.urlencoded({ extended: false }), async (req, res, next) => {
@@ -737,7 +755,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
 
   // Admin auth middleware
   function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-    const sessionId = (req.cookies as Record<string, string>)?.gbrain_admin;
+    const sessionId = readCookie(req, 'gbrain_admin');
     if (!sessionId || !adminSessions.has(sessionId)) {
       res.status(401).json({ error: 'Admin authentication required' });
       return;
@@ -1198,8 +1216,8 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   const adminDistPath = path.join(process.cwd(), 'admin', 'dist');
   const useDevPath = fs.existsSync(adminDistPath);
   if (useDevPath) {
-    app.use('/admin', express.static(adminDistPath));
-    app.get('/admin/{*path}', (req: Request, res: Response, next: NextFunction) => {
+    app.use('/admin', adminStaticRateLimiter, express.static(adminDistPath));
+    app.get('/admin/{*path}', adminStaticRateLimiter, (req: Request, res: Response, next: NextFunction) => {
       if (req.path.startsWith('/admin/api/') || req.path === '/admin/events' || req.path === '/admin/login') {
         return next();
       }
@@ -1218,7 +1236,7 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
       cache.set(asset.path, buf);
       return buf;
     }
-    app.get('/admin/{*path}', (req: Request, res: Response, next: NextFunction) => {
+    app.get('/admin/{*path}', adminStaticRateLimiter, (req: Request, res: Response, next: NextFunction) => {
       if (req.path.startsWith('/admin/api/') || req.path === '/admin/events' || req.path === '/admin/login') {
         return next();
       }

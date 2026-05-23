@@ -109,25 +109,45 @@ export function walkMarkdownFiles(dir: string): { path: string; relPath: string 
 export function extractMarkdownLinks(content: string): { name: string; relTarget: string }[] {
   const results: { name: string; relTarget: string }[] = [];
 
-  const mdPattern = /\[([^\]]+)\]\(([^)]+\.md)\)/g;
-  let match;
-  while ((match = mdPattern.exec(content)) !== null) {
-    const target = match[2];
-    if (target.includes('://')) continue;
-    results.push({ name: match[1], relTarget: target });
+  let pos = 0;
+  while (pos < content.length) {
+    const open = content.indexOf('[', pos);
+    if (open < 0) break;
+    if (content[open + 1] === '[') {
+      pos = open + 2;
+      continue;
+    }
+    const labelEnd = content.indexOf('](', open + 1);
+    if (labelEnd < 0) break;
+    const targetEnd = content.indexOf(')', labelEnd + 2);
+    if (targetEnd < 0) break;
+    const name = content.slice(open + 1, labelEnd);
+    const target = content.slice(labelEnd + 2, targetEnd);
+    if (target.includes('.md') && !target.includes('://')) {
+      results.push({ name, relTarget: target });
+    }
+    pos = targetEnd + 1;
   }
 
-  const wikiPattern = /\[\[([^|\]]+?)(?:\|[^\]]*?)?\]\]/g;
-  while ((match = wikiPattern.exec(content)) !== null) {
-    const rawPath = match[1].trim();
-    if (rawPath.includes('://')) continue;
-    const hashIdx = rawPath.indexOf('#');
-    const pagePath = hashIdx >= 0 ? rawPath.slice(0, hashIdx) : rawPath;
-    if (!pagePath) continue;
-    const relTarget = pagePath.endsWith('.md') ? pagePath : pagePath + '.md';
-    const pipeIdx = match[0].indexOf('|');
-    const displayName = pipeIdx >= 0 ? match[0].slice(pipeIdx + 1, -2).trim() : rawPath;
-    results.push({ name: displayName, relTarget });
+  pos = 0;
+  while (pos < content.length) {
+    const open = content.indexOf('[[', pos);
+    if (open < 0) break;
+    const close = content.indexOf(']]', open + 2);
+    if (close < 0) break;
+    const body = content.slice(open + 2, close);
+    const pipeIdx = body.indexOf('|');
+    const rawPath = (pipeIdx >= 0 ? body.slice(0, pipeIdx) : body).trim();
+    if (!rawPath.includes('://')) {
+      const hashIdx = rawPath.indexOf('#');
+      const pagePath = hashIdx >= 0 ? rawPath.slice(0, hashIdx) : rawPath;
+      if (pagePath) {
+        const relTarget = pagePath.endsWith('.md') ? pagePath : pagePath + '.md';
+        const displayName = pipeIdx >= 0 ? body.slice(pipeIdx + 1).trim() : rawPath;
+        results.push({ name: displayName, relTarget });
+      }
+    }
+    pos = close + 2;
   }
 
   return results;
@@ -273,28 +293,77 @@ export async function extractLinksFromFile(
 export function extractTimelineFromContent(content: string, slug: string): ExtractedTimelineEntry[] {
   const entries: ExtractedTimelineEntry[] = [];
 
-  // Format 1: Bullet — - **YYYY-MM-DD** | Source — Summary
-  const bulletPattern = /^-\s+\*\*(\d{4}-\d{2}-\d{2})\*\*\s*\|\s*(.+?)\s*[—–-]\s*(.+)$/gm;
-  let match;
-  while ((match = bulletPattern.exec(content)) !== null) {
-    entries.push({ slug, date: match[1], source: match[2].trim(), summary: match[3].trim() });
-  }
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trimStart();
 
-  // Format 2: Header — ### YYYY-MM-DD — Title
-  const headerPattern = /^###\s+(\d{4}-\d{2}-\d{2})\s*[—–-]\s*(.+)$/gm;
-  while ((match = headerPattern.exec(content)) !== null) {
-    const afterIdx = match.index + match[0].length;
-    const nextHeader = content.indexOf('\n### ', afterIdx);
-    const nextSection = content.indexOf('\n## ', afterIdx);
-    const endIdx = Math.min(
-      nextHeader >= 0 ? nextHeader : content.length,
-      nextSection >= 0 ? nextSection : content.length,
-    );
-    const detail = content.slice(afterIdx, endIdx).trim();
-    entries.push({ slug, date: match[1], source: 'markdown', summary: match[2].trim(), detail: detail || undefined });
+    // Format 1: Bullet — - **YYYY-MM-DD** | Source — Summary
+    if (trimmed.startsWith('- **')) {
+      const date = trimmed.slice(4, 14);
+      let rest = trimmed.slice(14);
+      if (isIsoDate(date) && rest.startsWith('**')) {
+        rest = rest.slice(2).trimStart();
+        if (rest.startsWith('|')) rest = rest.slice(1).trimStart();
+        const sep = findTimelineSeparator(rest);
+        if (sep) {
+          entries.push({
+            slug,
+            date,
+            source: rest.slice(0, sep.index).trim(),
+            summary: rest.slice(sep.index + sep.length).trim(),
+          });
+        }
+      }
+    }
+
+    // Format 2: Header — ### YYYY-MM-DD — Title
+    if (trimmed.startsWith('### ')) {
+      const afterMarker = trimmed.slice(4).trimStart();
+      const date = afterMarker.slice(0, 10);
+      if (!isIsoDate(date)) continue;
+      let title = afterMarker.slice(10).trimStart();
+      if (title[0] === '—' || title[0] === '–' || title[0] === '-') {
+        title = title.slice(1).trimStart();
+      }
+      const detailLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j];
+        if (next.startsWith('### ') || next.startsWith('## ')) break;
+        detailLines.push(next);
+      }
+      const detail = detailLines.join('\n').trim();
+      entries.push({ slug, date, source: 'markdown', summary: title.trim(), detail: detail || undefined });
+    }
   }
 
   return entries;
+}
+
+function isIsoDate(value: string): boolean {
+  return value.length === 10 &&
+    value[4] === '-' &&
+    value[7] === '-' &&
+    isDigits(value.slice(0, 4)) &&
+    isDigits(value.slice(5, 7)) &&
+    isDigits(value.slice(8, 10));
+}
+
+function isDigits(value: string): boolean {
+  if (value.length === 0) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 48 || code > 57) return false;
+  }
+  return true;
+}
+
+function findTimelineSeparator(value: string): { index: number; length: number } | null {
+  for (const sep of ['—', '–']) {
+    const idx = value.indexOf(sep);
+    if (idx >= 0) return { index: idx, length: sep.length };
+  }
+  const dash = value.indexOf(' - ');
+  return dash >= 0 ? { index: dash, length: 3 } : null;
 }
 
 // --- Main command ---

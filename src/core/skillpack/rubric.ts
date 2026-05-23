@@ -220,7 +220,7 @@ const DIMENSIONS: Array<
         };
       }
       const content = readFileSync(path, 'utf-8');
-      const versionEntryRe = new RegExp(`##\\s+\\[?${input.manifest.version.replace(/\./g, '\\.')}\\]?`);
+      const versionEntryRe = new RegExp(`##\\s+\\[?${escapeRegex(input.manifest.version)}\\]?`);
       if (!versionEntryRe.test(content)) {
         return {
           passed: false,
@@ -395,6 +395,10 @@ function listGlobMatches(packRoot: string, globs: string[]): string[] {
     }
   }
   return [...matches];
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 
 function countGlobMatches(packRoot: string, globs: string[]): number {

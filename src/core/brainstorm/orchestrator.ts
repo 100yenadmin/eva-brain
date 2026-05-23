@@ -1020,18 +1020,24 @@ export function buildBrainstormFrontmatter(result: BrainstormResult, opts: { slu
   const date = new Date().toISOString().slice(0, 10);
   const judgeFailed = result.judge_failed ? '\njudge_failed: true' : '';
   const unscored = result.judge_failed ? '\nunscored: true' : '';
+  const titleQuestion = yamlDoubleQuoted(result.question.slice(0, 100));
+  const question = yamlDoubleQuoted(result.question.slice(0, 200));
   return `---
-title: "${result.profile_label === 'lsd' ? 'LSD' : 'Brainstorm'}: ${result.question.replace(/"/g, '\\"').slice(0, 100)}"
+title: "${result.profile_label === 'lsd' ? 'LSD' : 'Brainstorm'}: ${titleQuestion}"
 mode: ${result.profile_label}
 generated_at: ${new Date().toISOString()}
 date: ${date}
-question: "${result.question.replace(/"/g, '\\"').slice(0, 200)}"
-close_slugs: [${result.close_set.map((c) => `"${c.slug}"`).join(', ')}]
-far_slugs: [${result.far_set.map((f) => `"${f.slug}"`).join(', ')}]
+question: "${question}"
+close_slugs: [${result.close_set.map((c) => `"${yamlDoubleQuoted(c.slug)}"`).join(', ')}]
+far_slugs: [${result.far_set.map((f) => `"${yamlDoubleQuoted(f.slug)}"`).join(', ')}]
 short_of_target: ${result.short_of_target}
 calibration_cold_start: ${result.active_bias_tags === null}${judgeFailed}${unscored}
 cost_usd: ${result.cost.actual_usd.toFixed(4)}
 ---
 
 `;
+}
+
+function yamlDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

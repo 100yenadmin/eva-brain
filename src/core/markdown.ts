@@ -241,9 +241,8 @@ function collectValidationErrors(
   //    parse error is caught separately by check 6 (YAML_PARSE) below.
   for (let i = firstNonEmpty + 1; i < closeLine; i++) {
     const line = lines[i];
-    const m = line.match(/^\s*[A-Za-z_][\w-]*\s*:\s*(.*)$/);
-    if (!m) continue;
-    const value = m[1];
+    const value = frontmatterValueFromLine(line);
+    if (value === null) continue;
     let count = 0;
     for (let j = 0; j < value.length; j++) {
       if (value[j] === '"' && (j === 0 || value[j - 1] !== '\\')) count++;
@@ -289,6 +288,33 @@ function collectValidationErrors(
       });
     }
   }
+}
+
+function frontmatterValueFromLine(line: string): string | null {
+  const trimmed = line.trimStart();
+  const colon = trimmed.indexOf(':');
+  if (colon <= 0) return null;
+  const key = trimmed.slice(0, colon).trimEnd();
+  if (!isFrontmatterKey(key)) return null;
+  return trimmed.slice(colon + 1).trimStart();
+}
+
+function isFrontmatterKey(key: string): boolean {
+  if (key.length === 0) return false;
+  const first = key.charCodeAt(0);
+  const firstOk = (first >= 65 && first <= 90) || (first >= 97 && first <= 122) || first === 95;
+  if (!firstOk) return false;
+  for (let i = 1; i < key.length; i++) {
+    const code = key.charCodeAt(i);
+    const ok =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 95 ||
+      code === 45;
+    if (!ok) return false;
+  }
+  return true;
 }
 
 /**
