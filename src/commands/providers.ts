@@ -249,15 +249,14 @@ async function runTest(args: string[]): Promise<void> {
   } catch (e) {
     const ms = Date.now() - start;
     if (e instanceof AIConfigError) {
-      console.error(`  ✗ config error (${ms}ms): ${sanitizeLogText(e.message)}`);
-      if (e.fix) console.error(`    Fix: ${sanitizeLogText(e.fix)}`);
+      console.error(`  ✗ config error (${ms}ms). Run \`gbrain providers explain\` and check the selected provider credentials.`);
       process.exit(2);
     } else if (e instanceof AITransientError) {
-      console.error(`  ✗ transient error (${ms}ms): ${sanitizeLogText(e.message)}`);
+      console.error(`  ✗ transient provider error (${ms}ms).`);
       console.error(`    Retry after a moment.`);
       process.exit(3);
     } else {
-      console.error(`  ✗ unknown error (${ms}ms): ${sanitizeLogText(e instanceof Error ? e.message : e)}`);
+      console.error(`  ✗ unknown provider error (${ms}ms).`);
       process.exit(4);
     }
   }
