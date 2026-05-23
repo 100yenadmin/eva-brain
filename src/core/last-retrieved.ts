@@ -87,6 +87,12 @@ export async function awaitPendingLastRetrievedWrites(): Promise<void> {
  */
 export function bumpLastRetrievedAt(engine: BrainEngine, pageIds: number[]): void {
   if (pageIds.length === 0) return;
+  if (engine.kind === 'pglite') {
+    // PGLite is a single-process local store. This signal is best-effort
+    // telemetry for stale-page ranking, so never let it compete with the
+    // user-facing CLI process for the embedded DB lifecycle.
+    return;
+  }
   // Fire-and-forget on purpose. We deliberately do NOT return the promise.
   const write = (async () => {
     try {
