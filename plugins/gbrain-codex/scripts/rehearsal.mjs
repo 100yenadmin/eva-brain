@@ -32,8 +32,12 @@ function runAndCapture(command, args, env) {
   return result.stdout.trim();
 }
 
+export function rehearsalInitArgs() {
+  return ['init', '--pglite', '--non-interactive', '--json', '--no-embedding'];
+}
+
 function ensureTempBrain(command, env) {
-  runAndCapture(command, ['init', '--pglite', '--non-interactive', '--json'], env);
+  runAndCapture(command, rehearsalInitArgs(), env);
 }
 
 function expectedToolNames(command, env) {
