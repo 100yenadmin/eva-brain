@@ -41,7 +41,7 @@ describe('media evidence CLI smoke', () => {
       cpSync(join(repoRoot, 'test/fixtures/media-extraction-image.json'), extractionPath);
       writeFileSync(contentPath, `---\ntype: media\ntitle: Custom Receipt Page\ncustom_flag: preserved\n---\n\nCurated custom receipt narrative.\n`);
 
-      let result = await runCli(['init', '--pglite'], env);
+      let result = await runCli(['init', '--pglite', '--no-embedding'], env);
       expect(result.code).toBe(0);
 
       result = await runCli([
@@ -127,7 +127,7 @@ describe('media evidence CLI smoke', () => {
     try {
       writeFileSync(mediaPath, 'fake-image-binary');
 
-      let result = await runCli(['init', '--pglite'], env);
+      let result = await runCli(['init', '--pglite', '--no-embedding'], env);
       expect(result.code).toBe(0);
 
       result = await runCli([

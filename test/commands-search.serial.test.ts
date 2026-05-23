@@ -108,7 +108,7 @@ describe('CLI dispatcher routes reserved search subcommands', () => {
       GBRAIN_DATABASE_URL: '',
     };
     try {
-      const init = Bun.spawn(['bun', 'run', 'src/cli.ts', 'init', '--pglite', '--json'], {
+      const init = Bun.spawn(['bun', 'run', 'src/cli.ts', 'init', '--pglite', '--json', '--no-embedding'], {
         cwd: repoRoot,
         env,
         stdout: 'pipe',
