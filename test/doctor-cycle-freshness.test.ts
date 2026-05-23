@@ -79,12 +79,13 @@ describe('doctor checkCycleFreshness', () => {
     expect(result.message).toMatch(/gbrain dream --source/);
   });
 
-  test('source with NO last_full_cycle_at (never cycled) returns fail', async () => {
+  test('source with NO last_full_cycle_at (never cycled) returns warn', async () => {
     await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
     await seed('virgin');
     const result = await checkCycleFreshness(engine, { nowMs: NOW });
-    expect(result.status).toBe('fail');
+    expect(result.status).toBe('warn');
     expect(result.message).toMatch(/never completed a full cycle/);
+    expect(result.message).toMatch(/gbrain dream --source virgin/);
   });
 
   test('mixed sources: highest severity wins (fail > warn > ok)', async () => {

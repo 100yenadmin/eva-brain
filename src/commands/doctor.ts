@@ -1755,8 +1755,10 @@ export async function checkCycleFreshness(
         : `'${source.id}'`;
       const raw = source.config?.last_full_cycle_at;
       if (typeof raw !== 'string') {
-        issues.push(`Source ${display} has never completed a full cycle`);
-        hasFailures = true;
+        issues.push(
+          `Source ${display} has never completed a full cycle - run \`gbrain dream --source ${source.id}\` or start \`gbrain autopilot\` when you want enrichment`,
+        );
+        hasWarnings = true;
         continue;
       }
       const last = new Date(raw).getTime();
