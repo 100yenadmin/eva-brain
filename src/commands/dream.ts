@@ -30,6 +30,7 @@ import {
   type CyclePhase,
   type CycleReport,
 } from '../core/cycle.ts';
+import { assertValidSourceId } from '../core/source-id.ts';
 import { existsSync } from 'fs';
 
 interface DreamArgs {
@@ -53,6 +54,8 @@ interface DreamArgs {
    * Never auto-applied for --input (codex finding #3).
    */
   bypassDreamGuard: boolean;
+  /** Run against a registered source's local_path and freshness row. */
+  sourceId: string | null;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -70,6 +73,25 @@ function parseArgs(args: string[]): DreamArgs {
 
   const dirIdx = args.indexOf('--dir');
   const dir = dirIdx !== -1 ? args[dirIdx + 1] : null;
+
+  const sourceIdx = args.indexOf('--source');
+  const sourceId = sourceIdx !== -1 ? args[sourceIdx + 1] ?? null : null;
+  if (sourceIdx !== -1 && !sourceId) {
+    console.error('--source requires a source id');
+    process.exit(2);
+  }
+  if (sourceId) {
+    try {
+      assertValidSourceId(sourceId);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exit(2);
+    }
+  }
+  if (dir && sourceId) {
+    console.error('--dir cannot be combined with --source; registered sources already define their local_path.');
+    process.exit(2);
+  }
 
   const inputIdx = args.indexOf('--input');
   const inputFile = inputIdx !== -1 ? args[inputIdx + 1] ?? null : null;
@@ -121,6 +143,7 @@ function parseArgs(args: string[]): DreamArgs {
     from,
     to,
     bypassDreamGuard: args.includes('--unsafe-bypass-dream-guard'),
+    sourceId,
   };
 }
 
@@ -138,6 +161,7 @@ function parseArgs(args: string[]): DreamArgs {
 async function resolveBrainDir(
   engine: BrainEngine | null,
   explicit: string | null,
+  sourceId: string | null = null,
 ): Promise<string> {
   if (explicit) {
     if (!existsSync(explicit)) {
@@ -145,6 +169,28 @@ async function resolveBrainDir(
       process.exit(1);
     }
     return explicit;
+  }
+
+  if (sourceId) {
+    if (!engine) {
+      console.error(`--source ${sourceId} requires a configured database so gbrain can resolve the source path.`);
+      process.exit(1);
+    }
+    const sources = await engine.listAllSources();
+    const source = sources.find(s => s.id === sourceId);
+    if (!source) {
+      console.error(`Source "${sourceId}" not found. Run: gbrain sources list`);
+      process.exit(4);
+    }
+    if (!source.local_path) {
+      console.error(`Source "${sourceId}" has no local_path. Run: gbrain sources add ${sourceId} --path <path>`);
+      process.exit(4);
+    }
+    if (!existsSync(source.local_path)) {
+      console.error(`Source "${sourceId}" path does not exist: ${source.local_path}`);
+      process.exit(1);
+    }
+    return source.local_path;
   }
 
   if (engine) {
@@ -179,6 +225,8 @@ Options:
   --phase <name>      Run a single phase: ${ALL_PHASES.join(' | ')}
   --pull              git pull the brain repo before syncing (default: no pull)
   --dir <path>        Brain directory (default: configured brain)
+  --source <id>       Registered source id. Uses that source's local_path and
+                      updates its last_full_cycle_at on successful cycles.
 
   --input <file>      Synthesize a specific transcript file (implies
                       --phase synthesize). Bypasses corpus-dir scan.
@@ -272,7 +320,7 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     return;
   }
 
-  const brainDir = await resolveBrainDir(engine, opts.dir);
+  const brainDir = await resolveBrainDir(engine, opts.dir, opts.sourceId);
   const phases: CyclePhase[] | undefined = opts.phase ? [opts.phase] : undefined;
 
   const report = await runCycle(engine, {
@@ -285,6 +333,7 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     synthFrom: opts.from ?? undefined,
     synthTo: opts.to ?? undefined,
     synthBypassDreamGuard: opts.bypassDreamGuard,
+    sourceId: opts.sourceId ?? undefined,
   });
 
   if (opts.json) {

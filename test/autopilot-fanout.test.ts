@@ -90,6 +90,16 @@ describe('selectSourcesForDispatch', () => {
     expect(result.skippedCap).toEqual([]);
   });
 
+  test('cycle_freshness=false sources are not dispatched', () => {
+    const result = selectSourcesForDispatch(
+      [src('support-kb', null, { cycle_freshness: false }), src('normal')],
+      10,
+      NOW,
+    );
+    expect(result.dispatch.map(s => s.id)).toEqual(['normal']);
+    expect(result.skippedFresh.map(s => s.id)).toEqual(['support-kb']);
+  });
+
   test('never-cycled (NULL) sorts before timestamped', () => {
     const result = selectSourcesForDispatch(
       [fresh('b', 90), src('a'), fresh('c', 120)],
