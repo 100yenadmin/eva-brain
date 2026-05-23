@@ -132,7 +132,7 @@ describe('runReindexCode — nudge integration (dry-run path reaches nudge)', ()
     }
     expect(stderrBuf).toContain('[reindex-code]');
     expect(stderrBuf).toContain('voyage:voyage-code-3');
-    expect(stderrBuf).toContain('text-embedding-3-large'); // current model echoed
+    expect(stderrBuf).toContain('<configured-model>'); // bare current model label is intentionally redacted
     expect(stdoutBuf).toBe(''); // nudge MUST NOT pollute stdout
     resetGateway();
   });
