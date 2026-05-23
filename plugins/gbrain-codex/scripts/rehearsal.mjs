@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,14 @@ import { resolveGbrainExecutable } from './launch-gbrain-serve.mjs';
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = resolve(dirname(SCRIPT_PATH), '..');
 const REPO_ROOT = resolve(PLUGIN_ROOT, '..', '..');
+
+function sameEntrypointPath(left, right) {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return resolve(left) === resolve(right);
+  }
+}
 
 function textContent(result) {
   const first = Array.isArray(result?.content) ? result.content[0] : null;
@@ -178,7 +186,7 @@ export async function runRehearsal({ env = process.env } = {}) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+if (process.argv[1] && sameEntrypointPath(process.argv[1], SCRIPT_PATH)) {
   runRehearsal().then(result => {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   }).catch(err => {
