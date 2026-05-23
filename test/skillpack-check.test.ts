@@ -10,8 +10,9 @@
  *   - --help → prints usage, exits 0.
  *
  * Subprocess invocation against temp $HOME so each test sees clean fixture
- * state. DATABASE_URL / GBRAIN_DATABASE_URL stripped so the report runs
- * filesystem-only (the checks we care about live there).
+ * state. GBRAIN_HOME is pinned to the same temp dir and DATABASE_URL /
+ * GBRAIN_DATABASE_URL are stripped so the report runs filesystem-only
+ * (the checks we care about live there).
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
@@ -26,7 +27,7 @@ let tmp: string;
 let origHome: string | undefined;
 
 function run(args: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const env = { ...process.env, HOME: tmp } as Record<string, string | undefined>;
+  const env = { ...process.env, HOME: tmp, GBRAIN_HOME: tmp } as Record<string, string | undefined>;
   delete env.DATABASE_URL;
   delete env.GBRAIN_DATABASE_URL;
   try {

@@ -23,7 +23,7 @@ import type { SyncManifest } from '../core/sync.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { loadConfig } from '../core/config.ts';
-import { safePublicModelLabel, sanitizeJsonForLog } from '../core/log-safety.ts';
+import { safePublicModelLabel, sanitizeJsonForLog, sanitizeLogText } from '../core/log-safety.ts';
 import {
   autoConcurrency,
   shouldRunParallel,
@@ -593,6 +593,8 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       detachedWorkingTreeManifest.renamed.length > 0);
 
   if (lastCommit === headCommit && !versionMismatch && !versionNeverSet && !hasDetachedWorkingTreeChanges) {
+    await writeSyncAnchor(engine, opts.sourceId, 'last_commit', headCommit);
+    await engine.setConfig('sync.last_run', new Date().toISOString());
     return {
       status: 'up_to_date',
       fromCommit: lastCommit,
@@ -1011,7 +1013,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     const factsSourceId = opts.sourceId ?? 'default';
     for (const slug of pagesAffected) {
       try {
-        const page = await engine.getPage(slug);
+        const page = await engine.getPage(slug, { sourceId: factsSourceId });
         if (!page) continue;
         await runFactsBackstop(
           {
@@ -1054,7 +1056,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     } catch (e: unknown) {
       const { EmbeddingDimMismatchError } = await import('./embed.ts');
       if (e instanceof EmbeddingDimMismatchError) {
-        console.error('\n' + e.recipeMessage + '\n');
+        console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
         console.error(`Tip: pass --no-embed to sync without embedding, then`);
         console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
       }
@@ -1202,7 +1204,7 @@ async function performFullSync(
     } catch (e: unknown) {
       const { EmbeddingDimMismatchError } = await import('./embed.ts');
       if (e instanceof EmbeddingDimMismatchError) {
-        console.error('\n' + e.recipeMessage + '\n');
+        console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
         console.error(`Tip: pass --no-embed to sync without embedding, then`);
         console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
       }

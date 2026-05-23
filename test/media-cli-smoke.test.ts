@@ -6,9 +6,16 @@ import { tmpdir } from 'os';
 const repoRoot = new URL('..', import.meta.url).pathname;
 
 async function runCli(args: string[], env: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number }> {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) childEnv[key] = value;
+  }
+  delete childEnv.DATABASE_URL;
+  delete childEnv.GBRAIN_DATABASE_URL;
+  delete childEnv.GBRAIN_REMOTE_URL;
   const proc = Bun.spawn([process.execPath, 'run', 'src/cli.ts', ...args], {
     cwd: repoRoot,
-    env: { ...process.env, ...env },
+    env: { ...childEnv, ...env },
     stdout: 'pipe',
     stderr: 'pipe',
   });

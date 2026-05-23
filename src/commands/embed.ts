@@ -6,6 +6,7 @@ import { createProgress, type ProgressReporter } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { assertEmbeddingEnabled } from '../core/embedding-dim-check.ts';
 import { loadConfig } from '../core/config.ts';
+import { sanitizeLogText } from '../core/log-safety.ts';
 
 export interface EmbedOpts {
   /** Embed ALL pages (every chunk). */
@@ -241,9 +242,9 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
     // D.2: surface dim-mismatch failures with the paste-ready recipe
     // instead of the raw Postgres error message.
     if (e instanceof EmbeddingDimMismatchError) {
-      console.error('\n' + e.recipeMessage + '\n');
+      console.error('\n' + sanitizeLogText(e.recipeMessage) + '\n');
     } else {
-      console.error(e instanceof Error ? e.message : String(e));
+      console.error(sanitizeLogText(e instanceof Error ? e.message : String(e)));
     }
     process.exit(1);
   }

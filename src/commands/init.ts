@@ -34,6 +34,7 @@ export async function runInit(args: string[]) {
   // Re-run guard (A8): if thin-client config is already present, refuse to
   // create a local engine without --force. Catches the scripted-setup-loop
   // friction (running setup-gbrain repeatedly on a thin-client machine).
+  const existingFileBeforeInit = loadConfigFileOnly();
   const existing = loadConfig();
   if (isThinClient(existing) && !isForce && !isMigrateOnly) {
     const url = existing!.remote_mcp!.mcp_url;
@@ -98,7 +99,13 @@ export async function runInit(args: string[]) {
       }
     }
 
-    return initPGLite({ jsonOutput, apiKey, customPath, aiOpts });
+    return initPGLite({
+      jsonOutput,
+      apiKey,
+      customPath,
+      aiOpts,
+      seedHistoricalMigrations: !existingFileBeforeInit,
+    });
   }
 
   // Supabase/Postgres mode
@@ -118,7 +125,13 @@ export async function runInit(args: string[]) {
     databaseUrl = await supabaseWizard();
   }
 
-  return initPostgres({ databaseUrl, jsonOutput, apiKey, aiOpts });
+  return initPostgres({
+    databaseUrl,
+    jsonOutput,
+    apiKey,
+    aiOpts,
+    seedHistoricalMigrations: !existingFileBeforeInit,
+  });
 }
 
 interface ResolveAIOptionsArgs {
@@ -797,6 +810,7 @@ async function initPGLite(opts: {
   apiKey: string | null;
   customPath: string | null;
   aiOpts?: ResolvedAIOptions;
+  seedHistoricalMigrations?: boolean;
 }) {
   const dbPath = opts.customPath || gbrainPath('brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
@@ -951,6 +965,9 @@ async function initPGLite(opts: {
       ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
     };
     saveConfig(config);
+    if (opts.seedHistoricalMigrations) {
+      await markHistoricalOrchestratorMigrationsCompleteForFreshInstall();
+    }
 
     // T6 (D7): post-init subagent-Anthropic caveat. Fires for both auto-pick
     // and picker paths so users see the implication of running on a chat
@@ -999,6 +1016,7 @@ async function initPostgres(opts: {
   jsonOutput: boolean;
   apiKey: string | null;
   aiOpts?: ResolvedAIOptions;
+  seedHistoricalMigrations?: boolean;
 }) {
   const { databaseUrl } = opts;
 
@@ -1177,6 +1195,9 @@ async function initPostgres(opts: {
       ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
     };
     saveConfig(config);
+    if (opts.seedHistoricalMigrations) {
+      await markHistoricalOrchestratorMigrationsCompleteForFreshInstall();
+    }
     console.log('Config saved to ~/.gbrain/config.json');
 
     // T6 (D7): post-init subagent-Anthropic caveat.
@@ -1212,6 +1233,31 @@ async function initPostgres(opts: {
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * A true fresh install already contains every historical bundled skill,
+ * resolver, and orchestrator asset. The apply-migrations registry exists for
+ * upgraded installs and partial/wedged host work; without this seed, a brand
+ * new `gbrain init` looks unhealthy because every old orchestrator appears
+ * "pending" in an empty completed.jsonl ledger.
+ */
+async function markHistoricalOrchestratorMigrationsCompleteForFreshInstall(): Promise<void> {
+  try {
+    const { loadCompletedMigrations, appendCompletedMigration } = await import('../core/preferences.ts');
+    if (loadCompletedMigrations().length > 0) return;
+    const { migrations } = await import('./migrations/index.ts');
+    for (const migration of migrations) {
+      appendCompletedMigration({
+        version: migration.version,
+        status: 'complete',
+        fresh_install_current_bundle: true,
+      });
+    }
+  } catch {
+    // Best-effort only. A ledger write problem must not make init fail after
+    // the database and config have already been created successfully.
   }
 }
 
