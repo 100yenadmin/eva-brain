@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -79,6 +80,84 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(rehearsal).toMatch(/function ensureTempBrain[\s\S]*rehearsalInitArgs\(\)/);
   });
 
+  test('Codex launcher reaps gbrain serve when stdio transport closes', async () => {
+    const launcherModulePath = '../plugins/gbrain-codex/scripts/launch-gbrain-serve.mjs';
+    const { bindChildLifecycle } = await import(launcherModulePath) as {
+      bindChildLifecycle: (
+        child: EventEmitter & { exitCode: number | null; signalCode: string | null; killed: boolean; kill: (signal: string) => boolean },
+        opts: { parentProcess: EventEmitter; stdin: EventEmitter; forceKillAfterMs: number },
+      ) => () => void;
+    };
+    const parentProcess = new EventEmitter();
+    const stdin = new EventEmitter();
+    const child = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: string | null;
+      killed: boolean;
+      kills: string[];
+      kill: (signal: string) => boolean;
+    };
+    child.exitCode = null;
+    child.signalCode = null;
+    child.killed = false;
+    child.kills = [];
+    child.kill = (signal: string) => {
+      child.kills.push(signal);
+      child.killed = true;
+      return true;
+    };
+
+    const cleanup = bindChildLifecycle(child, {
+      parentProcess,
+      stdin,
+      forceKillAfterMs: 5,
+    });
+    stdin.emit('close');
+    cleanup();
+
+    expect(child.kills).toEqual(['SIGTERM']);
+    expect(parentProcess.listenerCount('SIGTERM')).toBe(0);
+  });
+
+  test('Codex launcher escalates to SIGKILL when gbrain serve ignores SIGTERM', async () => {
+    const launcherModulePath = '../plugins/gbrain-codex/scripts/launch-gbrain-serve.mjs';
+    const { bindChildLifecycle } = await import(launcherModulePath) as {
+      bindChildLifecycle: (
+        child: EventEmitter & { exitCode: number | null; signalCode: string | null; killed: boolean; kill: (signal: string) => boolean },
+        opts: { parentProcess: EventEmitter; stdin: EventEmitter; forceKillAfterMs: number },
+      ) => () => void;
+    };
+    const parentProcess = new EventEmitter();
+    const stdin = new EventEmitter();
+    const child = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: string | null;
+      killed: boolean;
+      kills: string[];
+      kill: (signal: string) => boolean;
+    };
+    child.exitCode = null;
+    child.signalCode = null;
+    child.killed = false;
+    child.kills = [];
+    child.kill = (signal: string) => {
+      child.kills.push(signal);
+      child.killed = true;
+      return true;
+    };
+
+    const cleanup = bindChildLifecycle(child, {
+      parentProcess,
+      stdin,
+      forceKillAfterMs: 5,
+    });
+    stdin.emit('close');
+    await new Promise(resolve => setTimeout(resolve, 15));
+    cleanup();
+
+    expect(child.kills).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
   test('Codex installer creates a local plugin shell linked to current repo skills', () => {
     const home = tempHome();
     const result = Bun.spawnSync({
@@ -115,7 +194,7 @@ describe('public local updater and Codex plugin packaging', () => {
     });
     expect(rehearsal.exitCode).toBe(0);
     expect(JSON.parse(rehearsal.stdout.toString()).ok).toBe(true);
-  });
+  }, 15000);
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
     const home = tempHome();

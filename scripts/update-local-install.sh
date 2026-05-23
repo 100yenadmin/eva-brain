@@ -233,6 +233,7 @@ install_support_kb() {
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
   run "$HOME/.bun/bin/gbrain" embed --stale --source openclaw-support-kb
+  run "$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off
 }
 
 main() {

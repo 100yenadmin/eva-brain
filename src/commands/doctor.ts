@@ -1748,11 +1748,16 @@ export async function checkCycleFreshness(
     const issues: string[] = [];
     let hasWarnings = false;
     let hasFailures = false;
+    let skippedCycleOptional = 0;
 
     for (const source of sources) {
       const display = source.name && source.name !== source.id
         ? `'${source.id}' (${source.name})`
         : `'${source.id}'`;
+      if (source.config?.cycle_freshness === false) {
+        skippedCycleOptional++;
+        continue;
+      }
       const raw = source.config?.last_full_cycle_at;
       if (typeof raw !== 'string') {
         issues.push(
@@ -1800,7 +1805,9 @@ export async function checkCycleFreshness(
     return {
       name: 'cycle_freshness',
       status: 'ok',
-      message: `All ${sources.length} federated source(s) cycled recently`,
+      message: skippedCycleOptional > 0
+        ? `All cycle-required source(s) cycled recently (${skippedCycleOptional} retrieval-only source(s) skipped)`
+        : `All ${sources.length} federated source(s) cycled recently`,
     };
   } catch (e) {
     return {

@@ -97,6 +97,13 @@ describe("checkResolvable — real skills directory", () => {
     expect(orphans.length).toBe(0);
   });
 
+  test("skillpack-harvest routing fixtures are covered by deterministic triggers", () => {
+    const harvestRoutingIssues = report.issues.filter(
+      i => i.skill === "skillpack-harvest" && i.type.startsWith("routing_"),
+    );
+    expect(harvestRoutingIssues).toEqual([]);
+  });
+
   test("action strings are specific (contain file paths)", () => {
     for (const issue of report.issues) {
       expect(issue.action.length).toBeGreaterThan(10);
@@ -288,4 +295,3 @@ function afterEachCleanup(fn: () => void) {
   const { afterEach } = require("bun:test");
   afterEach(fn);
 }
-

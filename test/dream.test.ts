@@ -76,6 +76,31 @@ describe('runDream — brainDir resolution', () => {
     if (report) expect(report.brain_dir).toBe(repo);
   });
 
+  test('--source resolves the registered source local_path and updates cycle freshness', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config, archived, created_at)
+       VALUES ('kb', 'KB', $1, '{}'::jsonb, false, NOW())
+       ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path, config = EXCLUDED.config`,
+      [repo],
+    );
+    const report = await runDream(engine, ['--source', 'kb', '--phase', 'lint', '--json']);
+    expect(report).toBeTruthy();
+    if (report) expect(report.brain_dir).toBe(repo);
+
+    const sources = await engine.listAllSources();
+    expect(typeof sources.find(s => s.id === 'kb')?.config.last_full_cycle_at).toBe('string');
+  });
+
+  test('--source cannot be combined with --dir', async () => {
+    const spy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    await expect(runDream(engine, ['--source', 'kb', '--dir', repo, '--json'])).rejects.toThrow('EXIT');
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('--dir cannot be combined with --source'));
+    expect(spy).toHaveBeenCalledWith(2);
+    spy.mockRestore();
+    errSpy.mockRestore();
+  });
+
   test('no --dir + engine=null exits 1', async () => {
     const spy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('EXIT'); });
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});

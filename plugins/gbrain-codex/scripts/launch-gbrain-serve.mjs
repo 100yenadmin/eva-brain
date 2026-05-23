@@ -64,6 +64,80 @@ export function buildServeArgs(extraArgs = []) {
   return ['serve', ...extraArgs];
 }
 
+export function bindChildLifecycle(
+  child,
+  {
+    parentProcess = process,
+    stdin = process.stdin,
+    forceKillAfterMs = 2000,
+  } = {},
+) {
+  let forceTimer = null;
+  let cleaned = false;
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+  const childStillRunning = () =>
+    child.exitCode === null && child.signalCode === null;
+
+  const clearForceTimer = () => {
+    if (forceTimer) {
+      clearTimeout(forceTimer);
+      forceTimer = null;
+    }
+  };
+
+  const terminateChild = (signal = 'SIGTERM') => {
+    if (!childStillRunning()) return;
+    try {
+      child.kill(signal);
+    } catch {
+      return;
+    }
+    clearForceTimer();
+    forceTimer = setTimeout(() => {
+      if (childStillRunning()) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Best effort. The parent will exit when the child does.
+        }
+      }
+    }, forceKillAfterMs);
+    if (typeof forceTimer.unref === 'function') forceTimer.unref();
+  };
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    clearForceTimer();
+    for (const signal of signals) {
+      parentProcess.off?.(signal, signalHandlers.get(signal));
+      parentProcess.removeListener?.(signal, signalHandlers.get(signal));
+    }
+    parentProcess.off?.('exit', onParentExit);
+    parentProcess.removeListener?.('exit', onParentExit);
+    stdin?.off?.('close', onInputClosed);
+    stdin?.removeListener?.('close', onInputClosed);
+    stdin?.off?.('end', onInputClosed);
+    stdin?.removeListener?.('end', onInputClosed);
+  };
+
+  const onInputClosed = () => terminateChild('SIGTERM');
+  const onParentExit = () => terminateChild('SIGTERM');
+  const signalHandlers = new Map(
+    signals.map(signal => [signal, () => terminateChild(signal)]),
+  );
+
+  for (const [signal, handler] of signalHandlers) parentProcess.once?.(signal, handler);
+  parentProcess.once?.('exit', onParentExit);
+  stdin?.once?.('close', onInputClosed);
+  stdin?.once?.('end', onInputClosed);
+  child.once?.('exit', cleanup);
+  child.once?.('close', cleanup);
+
+  return cleanup;
+}
+
 function gbrainConfigPath(home) {
   return home ? join(home, '.gbrain', 'config.json') : '';
 }
@@ -136,6 +210,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     },
     stdio: 'inherit',
   });
+  bindChildLifecycle(child);
 
   child.on('error', err => {
     process.stderr.write(`[gbrain-codex] failed to launch gbrain: ${err.message}\n`);

@@ -491,6 +491,32 @@ async function runFederate(engine: BrainEngine, args: string[], value: boolean):
   console.log(`Source "${id}" is now ${value ? 'federated (appears in cross-source default search)' : 'isolated (only searched when explicitly named)'}.`);
 }
 
+async function runCycleFreshness(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  const mode = args[1];
+  if (!id || (mode !== 'on' && mode !== 'off')) {
+    console.error('Usage: gbrain sources cycle-freshness <id> <on|off>');
+    process.exit(2);
+  }
+  validateSourceId(id);
+  const src = await fetchSource(engine, id);
+  if (!src) {
+    console.error(`Source "${id}" not found.`);
+    process.exit(4);
+  }
+  const config = parseConfig(src.config);
+  if (mode === 'off') {
+    config.cycle_freshness = false;
+  } else {
+    delete config.cycle_freshness;
+  }
+  await engine.executeRaw(
+    `UPDATE sources SET config = $1::jsonb WHERE id = $2`,
+    [JSON.stringify(config), id],
+  );
+  console.log(`Source "${id}" cycle freshness is now ${mode === 'off' ? 'disabled (retrieval-only)' : 'enabled'}.`);
+}
+
 // ── `sources current` (v0.37.7.0) ──────────────────────────
 //
 // Verify which source the CLI would target before running a
@@ -552,6 +578,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'detach':     runDetach(); return;
     case 'federate':   return runFederate(engine, rest, true);
     case 'unfederate': return runFederate(engine, rest, false);
+    case 'cycle-freshness': return runCycleFreshness(engine, rest);
     case 'archive':    return runArchive(engine, rest);
     case 'restore':    return runRestore(engine, rest);
     case 'purge':      return runPurge(engine, rest);
@@ -598,6 +625,8 @@ Subcommands:
                                     targeting the brain you think you are.
   federate <id>                     Make source appear in cross-source default search.
   unfederate <id>                   Isolate source from default search.
+  cycle-freshness <id> <on|off>     Toggle doctor/autopilot full-cycle freshness
+                                    for retrieval-only sources.
 
 Source id: [a-z0-9-]{1,32}. Immutable citation key.
 

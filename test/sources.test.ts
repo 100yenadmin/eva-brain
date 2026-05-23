@@ -158,6 +158,48 @@ describe('sources add', () => {
   });
 });
 
+describe('sources cycle-freshness', () => {
+  test('sets cycle_freshness=false for retrieval-only sources', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [{
+        id: 'support-kb',
+        name: 'support-kb',
+        local_path: '/tmp/support-kb',
+        last_commit: null,
+        last_sync_at: null,
+        config: '{"federated":true}',
+        created_at: new Date(),
+      }],
+    });
+    await runSources(engine, ['cycle-freshness', 'support-kb', 'off']);
+    const update = calls.find(c => c.sql.includes('UPDATE sources SET config'));
+    expect(update).toBeDefined();
+    expect(JSON.parse(String(update!.params[0]))).toEqual({
+      federated: true,
+      cycle_freshness: false,
+    });
+    expect(update!.params[1]).toBe('support-kb');
+  });
+
+  test('removes cycle_freshness override when re-enabled', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [{
+        id: 'support-kb',
+        name: 'support-kb',
+        local_path: '/tmp/support-kb',
+        last_commit: null,
+        last_sync_at: null,
+        config: '{"cycle_freshness":false,"federated":true}',
+        created_at: new Date(),
+      }],
+    });
+    await runSources(engine, ['cycle-freshness', 'support-kb', 'on']);
+    const update = calls.find(c => c.sql.includes('UPDATE sources SET config'));
+    expect(update).toBeDefined();
+    expect(JSON.parse(String(update!.params[0]))).toEqual({ federated: true });
+  });
+});
+
 // ── list ────────────────────────────────────────────────────
 
 describe('sources list', () => {
