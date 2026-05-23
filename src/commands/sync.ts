@@ -15,12 +15,15 @@ import {
   formatCodeBreakdown,
 } from '../core/sync.ts';
 import { estimateTokens, CHUNKER_VERSION } from '../core/chunkers/code.ts';
-import { EMBEDDING_MODEL, estimateEmbeddingCostUsd } from '../core/embedding.ts';
+import { getEmbeddingModelName } from '../core/embedding.ts';
+import { getEmbeddingModel } from '../core/ai/gateway.ts';
+import { resolveRecipe, assertTouchpoint } from '../core/ai/model-resolver.ts';
 import { errorFor, serializeError } from '../core/errors.ts';
 import type { SyncManifest } from '../core/sync.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { loadConfig } from '../core/config.ts';
+import { safePublicModelLabel, sanitizeJsonForLog } from '../core/log-safety.ts';
 import {
   autoConcurrency,
   shouldRunParallel,
@@ -30,6 +33,8 @@ import { tryAcquireDbLock, SYNC_LOCK_ID } from '../core/db-lock.ts';
 import { loadStorageConfig } from '../core/storage-config.ts';
 import { getDefaultSourcePath } from '../core/source-resolver.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
+
+const DEFAULT_EMBEDDING_MODEL = 'voyage:voyage-4-large';
 
 export interface SyncResult {
   status: 'up_to_date' | 'synced' | 'first_sync' | 'dry_run' | 'blocked_by_failures';
@@ -105,6 +110,33 @@ function estimateSyncAllCost(sources: Array<{ local_path: string | null; config:
   }
 
   return { totalTokens, totalFiles, activeSources, perSource };
+}
+
+function currentEmbeddingModelForPreview(): string {
+  try {
+    return getEmbeddingModel();
+  } catch {
+    return DEFAULT_EMBEDDING_MODEL;
+  }
+}
+
+function estimateEmbeddingPreviewCost(tokens: number): { costUsd: number | null; model: string } {
+  const configuredModel = currentEmbeddingModelForPreview();
+  try {
+    const { parsed, recipe } = resolveRecipe(configuredModel);
+    assertTouchpoint(recipe, 'embedding', parsed.modelId);
+    const costPerMillion = recipe.touchpoints.embedding?.cost_per_1m_tokens_usd;
+    return {
+      model: `${recipe.id}:${parsed.modelId}`,
+      costUsd: costPerMillion === undefined ? null : (tokens / 1_000_000) * costPerMillion,
+    };
+  } catch {
+    return { model: configuredModel || getEmbeddingModelName(), costUsd: null };
+  }
+}
+
+function formatEmbeddingCost(costUsd: number | null): string {
+  return costUsd === null ? 'unknown cost' : `est. $${costUsd.toFixed(2)}`;
 }
 
 /** Interactive [y/N] prompt. Resolves false on non-y answers or EOF. */
@@ -1315,14 +1347,15 @@ See also:
     // the cost and will run `embed --stale` later).
     if (!noEmbed) {
       const preview = estimateSyncAllCost(sources);
-      const costUsd = estimateEmbeddingCostUsd(preview.totalTokens);
+      const { costUsd, model } = estimateEmbeddingPreviewCost(preview.totalTokens);
+      const safeModel = safePublicModelLabel(model);
       const previewMsg =
         `sync --all preview: ${preview.totalFiles} files across ${preview.activeSources} source(s), ` +
-        `~${preview.totalTokens.toLocaleString()} tokens, est. $${costUsd.toFixed(2)} on ${EMBEDDING_MODEL}.`;
+        `~${preview.totalTokens.toLocaleString()} tokens, ${formatEmbeddingCost(costUsd)} on ${safeModel}.`;
 
       if (dryRun) {
         if (jsonOut) {
-          console.log(JSON.stringify({ status: 'dry_run', preview, costUsd, model: EMBEDDING_MODEL }));
+          console.log(JSON.stringify(sanitizeJsonForLog({ status: 'dry_run', preview, costUsd, model: safeModel })));
         } else {
           console.log(previewMsg);
           console.log('--dry-run: exit without syncing.');
@@ -1340,7 +1373,7 @@ See also:
             message: previewMsg,
             hint: 'Pass --yes to proceed, or --dry-run to see the preview and exit 0.',
           }));
-          console.log(JSON.stringify({ error: envelope, preview, costUsd, model: EMBEDDING_MODEL }));
+          console.log(JSON.stringify(sanitizeJsonForLog({ error: envelope, preview, costUsd, model: safeModel })));
           process.exit(2);
         }
         // Interactive TTY path: prompt [y/N].
