@@ -388,6 +388,59 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(existsSync(installDir)).toBe(false);
   });
 
+  test('local updater archives dirty Support KB checkouts before reinstalling', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeRepoWithEvaTags(tempHome(), []);
+    const kbDir = join(home, '.gbrain/sources/openclaw-support-kb');
+    mkdirSync(kbDir, { recursive: true });
+    runGit(kbDir, ['init']);
+    runGit(kbDir, ['config', 'user.email', 'agent@example.invalid']);
+    runGit(kbDir, ['config', 'user.name', 'Agent']);
+    writeFileSync(join(kbDir, 'kb-manifest.json'), '{}\n');
+    runGit(kbDir, ['add', 'kb-manifest.json']);
+    runGit(kbDir, ['commit', '-m', 'initial kb']);
+    writeFileSync(join(kbDir, 'kb-manifest.json'), '{"dirty":true}\n');
+    writeFileSync(join(kbDir, 'local-only.md'), '# local only\n');
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--dry-run',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_DIR: kbDir,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(stderr).toContain('Support KB checkout has local changes; archiving it');
+    expect(stdout).toContain(`mv ${kbDir}`);
+    expect(stdout).toContain(`git clone ${kbRepo} ${kbDir}`);
+    expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
+  });
+
   test('Codex installer rejects missing option values instead of falling back to cwd', () => {
     for (const flag of ['--home', '--repo-dir']) {
       const result = Bun.spawnSync({
