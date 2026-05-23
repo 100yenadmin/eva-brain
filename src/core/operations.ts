@@ -283,6 +283,13 @@ export interface OperationContext {
    */
   auth?: AuthInfo;
   /**
+   * Local CLI-only read federation. When the source resolver falls all the way
+   * through to the seeded `default` source, read operations should search the
+   * federated source set instead of an often-empty default source. Remote
+   * callers use `auth.allowedSources`; writes still use scalar `sourceId`.
+   */
+  sourceIds?: string[];
+  /**
    * True when the caller is remote/untrusted (MCP over stdio/HTTP, or any agent-facing entry point).
    * False for local CLI invocations by the owner of the machine.
    *
@@ -418,6 +425,7 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   // value of `[]` MUST NOT widen scope to "all sources" by being interpreted
   // as "no filter."
   if (allowed && allowed.length > 0) return { sourceIds: allowed };
+  if (ctx.sourceIds && ctx.sourceIds.length > 0) return { sourceIds: ctx.sourceIds };
   if (ctx.sourceId) return { sourceId: ctx.sourceId };
   return {};
 }
