@@ -138,7 +138,7 @@ describe('Bug 9 — sync.ts CLI flag wiring', () => {
     expect(source).toContain("args.includes('--retry-failed')");
     expect(source).toContain('skipFailed');
     expect(source).toContain('retryFailed');
-    expect(source).toContain('acknowledgeExistingSyncFailuresForSkip');
+    expect(source).toContain('acknowledgeSyncFailures');
   });
 
   test('runSync acks pre-existing unacked failures up-front when --skip-failed is set', async () => {

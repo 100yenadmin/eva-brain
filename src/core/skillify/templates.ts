@@ -28,10 +28,18 @@ export interface ScaffoldVars {
   mutating: boolean;
 }
 
+function doubleQuoted(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function singleQuotedJs(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 export function skillMdTemplate(v: ScaffoldVars): string {
   const triggerLines =
     v.triggers.length > 0
-      ? v.triggers.map(t => `  - "${t.replace(/"/g, '\\"')}"`).join('\n')
+      ? v.triggers.map(t => `  - "${doubleQuoted(t)}"`).join('\n')
       : '  - "TBD-trigger — replace with phrases users actually type"';
   const writesToLines =
     v.writesTo.length > 0 ? v.writesTo.map(d => `  - ${d}`).join('\n') : '';
@@ -57,6 +65,18 @@ export function skillMdTemplate(v: ScaffoldVars): string {
   lines.push(`# ${v.name}`);
   lines.push('');
   lines.push(`${v.description}`);
+  lines.push('');
+  // v0.36.x scaffold pre-insert (A3 + F10 from /plan-eng-review). New
+  // skills inherit the canonical brain-first Convention callout by
+  // default; authors of pure-infra skills can delete this line and add
+  // `brain_first: exempt` to frontmatter instead. Both are zero-friction
+  // one-line operations. The skillify-check item 12 (brain-first
+  // compliance, required) catches the no-callout / no-exempt case at
+  // audit time if the author removes this without opting out.
+  lines.push(
+    '> **Convention:** see [conventions/brain-first.md](../conventions/brain-first.md) ' +
+    'for the lookup chain (search → query → get_page → external).',
+  );
   lines.push('');
   lines.push('## The rule');
   lines.push('');
@@ -108,6 +128,7 @@ export function skillMdTemplate(v: ScaffoldVars): string {
 }
 
 export function scriptTemplate(v: ScaffoldVars): string {
+  const nameForString = singleQuotedJs(v.name);
   // The SKILLIFY_STUB_MARKER in a comment is what check-resolvable
   // --strict looks for. Remove the marker (not the whole file) when
   // the script is implemented.
@@ -121,7 +142,7 @@ export function scriptTemplate(v: ScaffoldVars): string {
 export function run(input: unknown): unknown {
   // TODO: implement. This stub is detected by \`gbrain check-resolvable
   // --strict\` and will fail CI until replaced.
-  throw new Error('${v.name} scaffold not yet implemented');
+  throw new Error('${nameForString} scaffold not yet implemented');
 }
 
 if (import.meta.main) {
@@ -132,6 +153,7 @@ if (import.meta.main) {
 }
 
 export function testTemplate(v: ScaffoldVars): string {
+  const nameForString = singleQuotedJs(v.name);
   return `/**
  * Tests for skills/${v.name}/scripts/${v.name}.mjs
  *
@@ -143,7 +165,7 @@ export function testTemplate(v: ScaffoldVars): string {
 import { describe, expect, it } from 'bun:test';
 import { run } from '../skills/${v.name}/scripts/${v.name}.mjs';
 
-describe('${v.name}', () => {
+describe('${nameForString}', () => {
   it('is scaffolded — replace this test with a real regression case', () => {
     expect(() => run(null)).toThrow();
   });
@@ -159,7 +181,7 @@ describe('${v.name}', () => {
 export function resolverRow(v: ScaffoldVars): string {
   const trigger =
     v.triggers.length > 0 ? v.triggers[0] : `TBD-trigger for ${v.name}`;
-  return `| "${trigger.replace(/"/g, '\\"')}" | \`skills/${v.name}/SKILL.md\` |`;
+  return `| "${doubleQuoted(trigger)}" | \`skills/${v.name}/SKILL.md\` |`;
 }
 
 export function routingEvalTemplate(v: ScaffoldVars): string {

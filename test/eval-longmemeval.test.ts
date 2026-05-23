@@ -666,3 +666,216 @@ describe('runEvalLongMemEval --resume-from (v0.35.1.0)', () => {
     }
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// 12. v0.40.1.0 (Track D / T1 + T2): question field on every row + --by-type
+// summary emission with resume-replace semantics + --by-type-floor exit gate
+// ---------------------------------------------------------------------------
+
+describe('runEvalLongMemEval --by-type (v0.40.1.0 Track D / T1+T2)', () => {
+  test('per-row JSONL includes the question text (T1, per D9)', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-test-'));
+    const outPath = join(tmp, 'hypothesis.jsonl');
+    try {
+      const { client } = makeStubClient('canned');
+      await runEvalLongMemEval(
+        [FIXTURE_PATH, '--keyword-only', '--limit', '3', '--output', outPath],
+        { client },
+      );
+      const lines = readFileSync(outPath, 'utf8').split('\n').filter(l => l.length > 0);
+      expect(lines.length).toBe(3);
+      for (const line of lines) {
+        const row = JSON.parse(line);
+        expect(typeof row.question).toBe('string');
+        expect(row.question.length).toBeGreaterThan(0);
+        expect(typeof row.question_id).toBe('string');
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('--by-type emits a final by_type_summary line; absent when flag not set', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-test-'));
+    const withFlag = join(tmp, 'with-by-type.jsonl');
+    const withoutFlag = join(tmp, 'without-by-type.jsonl');
+    try {
+      const { client } = makeStubClient('canned');
+      await runEvalLongMemEval(
+        [FIXTURE_PATH, '--keyword-only', '--limit', '3', '--output', withFlag, '--by-type'],
+        { client },
+      );
+      await runEvalLongMemEval(
+        [FIXTURE_PATH, '--keyword-only', '--limit', '3', '--output', withoutFlag],
+        { client },
+      );
+
+      // With flag: last line is the summary.
+      const withLines = readFileSync(withFlag, 'utf8').split('\n').filter(l => l.length > 0);
+      const lastWith = JSON.parse(withLines[withLines.length - 1]);
+      expect(lastWith.kind).toBe('by_type_summary');
+      expect(lastWith.schema_version).toBe(1);
+      expect(typeof lastWith.recall_by_type).toBe('object');
+      expect(typeof lastWith.aggregate.hit).toBe('number');
+      expect(typeof lastWith.aggregate.total).toBe('number');
+      // Per-question rows must NOT have kind:by_type_summary.
+      for (let i = 0; i < withLines.length - 1; i++) {
+        const row = JSON.parse(withLines[i]);
+        expect(row.kind).toBeUndefined();
+      }
+
+      // Without flag: no summary anywhere.
+      const withoutLines = readFileSync(withoutFlag, 'utf8').split('\n').filter(l => l.length > 0);
+      for (const line of withoutLines) {
+        const row = JSON.parse(line);
+        expect(row.kind).toBeUndefined();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('resume-replace: prior by_type_summary at the tail is REPLACED, not appended', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-test-'));
+    const outPath = join(tmp, 'resume.jsonl');
+    try {
+      const { client } = makeStubClient('canned');
+      // First run: --limit 3 produces 3 rows + 1 summary = 4 lines.
+      await runEvalLongMemEval(
+        [FIXTURE_PATH, '--keyword-only', '--limit', '3', '--output', outPath, '--by-type'],
+        { client },
+      );
+      const firstLines = readFileSync(outPath, 'utf8').split('\n').filter(l => l.length > 0);
+      const firstSummaryCount = firstLines.filter(l => {
+        try { return JSON.parse(l).kind === 'by_type_summary'; } catch { return false; }
+      }).length;
+      expect(firstSummaryCount).toBe(1);
+      expect(firstLines.length).toBe(4);
+
+      // Re-run with --limit 5 + --resume-from same path: 2 NEW questions get
+      // processed, by-type fires again, prior summary must be replaced (not
+      // duplicated). Exercises the full resume-replace code path.
+      await runEvalLongMemEval(
+        [FIXTURE_PATH, '--keyword-only', '--limit', '5', '--output', outPath,
+         '--resume-from', outPath, '--by-type'],
+        { client },
+      );
+      const secondLines = readFileSync(outPath, 'utf8').split('\n').filter(l => l.length > 0);
+      const secondSummaryCount = secondLines.filter(l => {
+        try { return JSON.parse(l).kind === 'by_type_summary'; } catch { return false; }
+      }).length;
+      expect(secondSummaryCount).toBe(1);
+      // 5 rows + 1 summary = 6 lines (original summary was stripped, new one
+      // appended).
+      expect(secondLines.length).toBe(6);
+      const last = JSON.parse(secondLines[secondLines.length - 1]);
+      expect(last.kind).toBe('by_type_summary');
+      // Summary aggregates across ALL 5 rows (not just the 2 newly processed).
+      // The fixture has ground truth on every row, so total == 5.
+      expect(last.aggregate.total).toBe(5);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('buildByTypeSummary (pure function)', () => {
+  test('populated buckets produce sorted keys + rate math', async () => {
+    const { buildByTypeSummary } = await import('../src/commands/eval-longmemeval.ts');
+    const summary = buildByTypeSummary({
+      'multi-session': { hit: 10, total: 10 },
+      'single-session-user': { hit: 18, total: 19 },
+    });
+    expect(summary.kind).toBe('by_type_summary');
+    expect(summary.schema_version).toBe(1);
+    // Sorted alphabetically.
+    expect(Object.keys(summary.recall_by_type)).toEqual(['multi-session', 'single-session-user']);
+    expect(summary.recall_by_type['multi-session'].rate).toBeCloseTo(1.0, 5);
+    expect(summary.recall_by_type['single-session-user'].rate).toBeCloseTo(18 / 19, 5);
+    expect(summary.aggregate.hit).toBe(28);
+    expect(summary.aggregate.total).toBe(29);
+    expect(summary.aggregate.rate).toBeCloseTo(28 / 29, 5);
+  });
+
+  test('empty bucket map produces rate:null aggregate, not NaN', async () => {
+    const { buildByTypeSummary } = await import('../src/commands/eval-longmemeval.ts');
+    const summary = buildByTypeSummary({});
+    expect(summary.recall_by_type).toEqual({});
+    expect(summary.aggregate.hit).toBe(0);
+    expect(summary.aggregate.total).toBe(0);
+    expect(summary.aggregate.rate).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Codex CDX-3 — resume + --by-type-floor must enforce the floor even on
+// a no-op resume (where all questions already done). Pre-CDX-3 the early
+// return bypassed the floor gate entirely.
+// ---------------------------------------------------------------------------
+
+describe('codex CDX-3 — resume + --by-type-floor enforcement on no-op resume', () => {
+  test('all-done resume still runs --by-type emission AND --by-type-floor gate', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'lme-resume-'));
+    const outPath = join(tmp, 'all-done.jsonl');
+    try {
+      // Pre-seed the output file with all-failed rows (recall_hit: false).
+      // This represents a prior run that completed every question but with
+      // very poor recall — the floor gate should fire even though no
+      // questions are processed THIS run.
+      const fixture = readFileSync(FIXTURE_PATH, 'utf8')
+        .split('\n').filter(l => l.length > 0).map(l => JSON.parse(l)).slice(0, 5);
+      const { writeFileSync } = await import('fs');
+      writeFileSync(
+        outPath,
+        fixture.map(q => JSON.stringify({
+          question_id: q.question_id,
+          question: q.question,
+          question_type: q.question_type,
+          hypothesis: 'done',
+          recall_hit: false, // every prior question missed
+        })).join('\n') + '\n',
+        'utf8',
+      );
+
+      const { client } = makeStubClient('should-not-be-called');
+      // Wrap to catch process.exit thrown from inside.
+      const exitCapture: { code: number | null } = { code: null };
+      const originalExit = process.exit;
+      // @ts-ignore — runtime override for test
+      process.exit = ((code: number) => {
+        exitCapture.code = code;
+        throw new Error('__exit__');
+      }) as any;
+      try {
+        await runEvalLongMemEval(
+          [FIXTURE_PATH, '--keyword-only', '--limit', '5',
+           '--output', outPath, '--resume-from', outPath,
+           '--by-type', '--by-type-floor', '0.5'],
+          { client },
+        );
+      } catch (e) {
+        // Expected: --by-type-floor breach → exit(1) → our test throw
+        if (!String(e).includes('__exit__')) throw e;
+      } finally {
+        // @ts-ignore — runtime restore
+        process.exit = originalExit;
+      }
+
+      // CDX-3: floor gate fired despite no-op resume → exit code 1.
+      expect(exitCapture.code).toBe(1);
+
+      // AND a by_type_summary was emitted at the file tail (CDX-3 also says
+      // resume must run summary emission even on no-op).
+      const lines = readFileSync(outPath, 'utf8').split('\n').filter(l => l.length > 0);
+      const summaries = lines.filter(l => {
+        try { return JSON.parse(l).kind === 'by_type_summary'; } catch { return false; }
+      });
+      expect(summaries.length).toBe(1);
+      const summary = JSON.parse(summaries[0]);
+      // All rows had recall_hit: false → aggregate.rate is 0 → below 0.5 floor.
+      expect(summary.aggregate.rate).toBeLessThan(0.5);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

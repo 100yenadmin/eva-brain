@@ -14,6 +14,7 @@ import type {
   EvalCaptureFailure, EvalCaptureFailureReason,
   SalienceOpts, SalienceResult, AnomaliesOpts, AnomalyResult,
   EmotionalWeightInputRow, EmotionalWeightWriteRow,
+  DomainBankSampleOpts, CorpusSampleOpts, DomainBankRow,
 } from './types.ts';
 
 /**
@@ -21,6 +22,46 @@ import type {
  * shape on both engines (Postgres has had it since v0.18; PGLite gets it
  * via migration v36).
  */
+/**
+ * Options for `traverseGraph`.
+ *
+ * `frontierCap`: when set, the BFS recursive term applies a parenthesized
+ * `LIMIT N ORDER BY slug,id` so each iteration emits at most N rows. This
+ * is the "approximately per-layer" cap discussed in the T8 plan — Postgres'
+ * recursive CTE caps per ITERATION, not strictly per BFS LAYER (BFS layer
+ * boundaries map to recursive iterations only when fan-out is bounded).
+ * For hub-fanout graphs the cap fires early and bounds the work. Default:
+ * unset = no cap (back-compat; existing callers see no change).
+ *
+ * NOTE: a truncation-detection signal (`onTruncation` callback) was
+ * designed but the v1 algorithm had both false-positive (organic count ==
+ * cap) and false-negative (LIMIT-before-DISTINCT in diamond graphs) cases
+ * caught by adversarial review. The signal is deferred until a
+ * dedupe-then-cap SQL rewrite + real Postgres parity coverage lands. See
+ * TODOS.md → "T8 truncation signal" entry. Callers that need to detect
+ * truncation can compare `result.length` against expected fanout bounds
+ * as a coarse-but-honest signal in the interim.
+ */
+/**
+ * v0.38: bare row shape returned by `BrainEngine.listAllSources()`.
+ * Kept lean (no per-source page_count) so the autopilot tick stays O(1)
+ * SQL queries regardless of source count. `sources-ops.SourceListEntry`
+ * is the enriched application-layer shape.
+ */
+export interface SourceRow {
+  id: string;
+  name: string | null;
+  local_path: string | null;
+  last_sync_at: Date | null;
+  config: Record<string, unknown>;
+}
+
+export interface TraverseGraphOpts {
+  sourceId?: string;
+  sourceIds?: string[];
+  frontierCap?: number;
+}
+
 export interface FileRow {
   id: number;
   source_id: string;
@@ -132,8 +173,19 @@ export interface ReservedConnection {
  * derived index. Page-scoped via page_id (NOT slug — slug is unique only
  * within a source). `(page_id, row_num)` is the natural unique key.
  */
-export interface TakeKindLiteral { kind: 'fact' | 'take' | 'bet' | 'hunch' }
-export type TakeKind = TakeKindLiteral['kind'];
+// v0.38: TakeKind opens from closed 4-element union to string (T3/T10).
+// Pre-v0.38, kinds {fact|take|bet|hunch} were enforced by DB CHECK
+// (migrations v41/v48) AND by this TS closed union. Codex outside-voice
+// review caught that dropping the CHECK without also widening the TS
+// type "moves inconsistency around" — raw SQL and old clients could
+// poison rows that runtime-validate cleanly. v0.38 migration v76 drops
+// the CHECK; this widens the type. Runtime validation moves to the
+// active schema pack's `takes_kinds:` declaration. The annotation
+// primitive's seed list in gbrain-base reproduces {fact|take|bet|hunch}
+// so existing behavior is unchanged; packs can extend to {finding|
+// hypothesis|observation|...} per domain.
+export interface TakeKindLiteral { kind: string }
+export type TakeKind = string;
 
 /** Input row for addTakesBatch. */
 export interface TakeBatchInput {
@@ -168,13 +220,16 @@ export interface Take {
   resolved_at: string | null;
   resolved_outcome: boolean | null;
   /**
-   * v0.30.0: 3-state outcome label. Sits alongside `resolved_outcome` for
-   * back-compat. New writes populate both; legacy v0.28-resolved rows have
-   * `resolved_quality` backfilled by migration v40 from the boolean.
-   * Null on unresolved rows. Schema CHECK enforces (quality, outcome) consistency:
-   * `correct` ↔ `outcome=true`, `incorrect` ↔ `outcome=false`, `partial` ↔ `outcome=NULL`.
+   * v0.30.0: 3-state outcome label. v0.36.1.1 added 'unresolvable' as a 4th
+   * state for verdicts where evidence was insufficient to grade. Sits
+   * alongside `resolved_outcome` for back-compat. New writes populate both;
+   * legacy v0.28-resolved rows have `resolved_quality` backfilled by
+   * migration v40 from the boolean. Null on unresolved rows. Schema CHECK
+   * (widened in v74) enforces (quality, outcome) consistency:
+   * `correct` ↔ `outcome=true`, `incorrect` ↔ `outcome=false`,
+   * `partial` ↔ `outcome=NULL`, `unresolvable` ↔ `outcome=NULL`.
    */
-  resolved_quality: 'correct' | 'incorrect' | 'partial' | null;
+  resolved_quality: 'correct' | 'incorrect' | 'partial' | 'unresolvable' | null;
   resolved_value: number | null;
   resolved_unit: string | null;
   resolved_source: string | null;
@@ -223,11 +278,14 @@ export interface StaleTakeRow {
 /** Resolution metadata for resolveTake. */
 export interface TakeResolution {
   /**
-   * v0.30.0: primary 3-state input. When set, takes precedence over `outcome`
-   * and the engine writes both columns (quality directly; outcome derived:
-   * `correct→true`, `incorrect→false`, `partial→null`).
+   * v0.30.0: primary 3-state input; v0.36.1.1 widened to 4-state with
+   * 'unresolvable'. When set, takes precedence over `outcome` and the engine
+   * writes both columns (quality directly; outcome derived:
+   * `correct→true`, `incorrect→false`, `partial→null`, `unresolvable→null`).
+   * `unresolvable` marks rows where the judge ran but evidence was
+   * insufficient to grade; surfaces in `TakesScorecard.unresolvable_count`.
    */
-  quality?: 'correct' | 'incorrect' | 'partial';
+  quality?: 'correct' | 'incorrect' | 'partial' | 'unresolvable';
   /**
    * v0.28 back-compat input. Keep submitting for v0.28 callers; the engine
    * derives quality (`true→correct`, `false→incorrect`). When `quality` is
@@ -245,6 +303,12 @@ export interface TakeResolution {
 /** v0.30.0: scorecard aggregate. */
 export interface TakesScorecard {
   total_bets: number;
+  /**
+   * Count of resolved rows where `resolved_quality IN
+   * ('correct','incorrect','partial')`. v0.36.1.1 deliberately keeps this
+   * 3-state semantic to preserve historical comparisons. Unresolvable rows
+   * land in the sibling `unresolvable_count` field instead.
+   */
   resolved: number;
   correct: number;
   incorrect: number;
@@ -255,12 +319,30 @@ export interface TakesScorecard {
    * Brier score over rows where `resolved_quality IN ('correct','incorrect')`.
    * Maps `correct→1`, `incorrect→0`, computes `mean((weight − outcome)²)`.
    * Lower is better; 0 = perfect; 0.25 = always-50% baseline.
-   * Excludes partial — that label hides hedging behavior; `partial_rate`
-   * surfaces it as a separate signal. NULL when no correct+incorrect rows.
+   * Excludes partial AND unresolvable — both hide signal; the dedicated
+   * `partial_rate` and `unresolvable_rate` fields surface them separately.
+   * NULL when no correct+incorrect rows.
    */
   brier: number | null;
   /** partial / resolved. NULL when n=0. */
   partial_rate: number | null;
+  /**
+   * v0.36.1.1: count of rows where `resolved_quality = 'unresolvable'`.
+   * Sibling field to `resolved` so historical comparisons against pre-v80
+   * scorecards stay valid; `resolved` retains its 3-state meaning, and
+   * unresolvable rows count here separately. Optional for SDK back-compat —
+   * downstream consumers constructing TakesScorecard fixtures shouldn't have
+   * to update on a hotfix. `finalizeScorecard` always populates it.
+   */
+  unresolvable_count?: number;
+  /**
+   * v0.37.2.0: `unresolvable_count / (resolved + unresolvable_count)`. NULL
+   * when both are 0. Surfaces the spec's headline calibration signal:
+   * "what fraction of grade-attempted takes couldn't be graded?" — high
+   * values signal weak evidence retrieval rather than wrong predictions.
+   * Optional for SDK back-compat; see `unresolvable_count` note above.
+   */
+  unresolvable_rate?: number | null;
 }
 
 export interface TakesScorecardOpts {
@@ -382,6 +464,14 @@ export interface NewFact {
   claim_value?: number | null;
   claim_unit?: string | null;
   claim_period?: string | null;
+  /**
+   * v0.40.2.0 — event-shaped row marker ('meeting', 'job_change',
+   * 'location_change', etc). Mutually informational with `claim_metric`:
+   * a row can have either, both, or neither. Persisted into
+   * `facts.event_type` (migration v89). Existing callers don't need to
+   * set this — leaving it undefined preserves pre-v0.40 behavior.
+   */
+  event_type?: string | null;
 }
 
 /** Options shared by list-facts methods. */
@@ -438,6 +528,19 @@ export interface TrajectoryOpts {
   remote?: boolean;
   /** Metric filter. When set, only facts with this canonical metric label participate. */
   metric?: string;
+  /**
+   * v0.40.2.0 — kind filter. Default 'all'. Defensive opt that future-proofs
+   * the API now that event_type rows live alongside metric rows in the same
+   * table. Existing callers (founder-scorecard, eval-trajectory) pass
+   * 'metric' explicitly for clarity (no behavior change since their
+   * downstream math already skips NULL-metric rows). Richer event-shape
+   * filtering (job_change vs meeting vs location) is a v0.40.3+ TODO once
+   * the event schema gets structured fields.
+   *   - 'metric': only rows with claim_metric IS NOT NULL
+   *   - 'event':  only rows with event_type IS NOT NULL
+   *   - 'all':    both (default)
+   */
+  kind?: 'metric' | 'event' | 'all';
   /** Lower bound on valid_from (inclusive). YYYY-MM-DD or full ISO. */
   since?: string | Date;
   /** Upper bound on valid_from (inclusive). YYYY-MM-DD or full ISO. */
@@ -460,6 +563,17 @@ export interface TrajectoryPoint {
   value: number | null;
   unit: string | null;
   period: string | null;
+  /**
+   * v0.40.2.0 — event-shaped row marker (e.g. 'meeting', 'job_change',
+   * 'location_change'). Mutually informational with metric: a row can have
+   * (a) metric set + event_type null (typed claim like MRR=$50K),
+   * (b) metric null + event_type set (event like "last met Marco"), or
+   * (c) both null (legacy free-text fact row from pre-v0.35.4 brains).
+   * Both founder-scorecard's per-metric math and eval-trajectory's
+   * regression analysis already skip null-metric rows, so event-only
+   * rows ride through invisibly to those callers.
+   */
+  event_type: string | null;
   text: string;
   source_session: string | null;
   source_markdown_slug: string | null;
@@ -581,6 +695,74 @@ export interface BrainEngine {
    * `forEachPage` from src/core/engine-iter.ts instead.
    */
   listAllPageRefs(): Promise<Array<{ slug: string; source_id: string }>>;
+
+  /**
+   * v0.38 — lean per-source enumeration for hot-loop callers (autopilot
+   * dispatch, doctor freshness check). Returns the bare row shape sources-ops
+   * needs without the N+1 per-source page_count enrichment in
+   * `sources-ops.listSources`.
+   *
+   * Defaults filter out archived sources. When `localPathOnly` is true,
+   * also filters `local_path IS NOT NULL` so the autopilot fan-out doesn't
+   * dispatch jobs for pure-DB sources whose handler would fall back to
+   * the global sync.repo_path (codex r1 P1-4).
+   *
+   * `config` is returned as `Record<string, unknown>` — both engines
+   * already parse the JSONB at the boundary (Postgres-js returns
+   * parsed objects; PGLite returns objects via its built-in JSONB
+   * codec). Callers reading `config['last_full_cycle_at']` get a string.
+   */
+  listAllSources(opts?: {
+    includeArchived?: boolean;
+    localPathOnly?: boolean;
+  }): Promise<SourceRow[]>;
+
+  /**
+   * v0.38 — atomic JSONB merge into sources.config. Uses Postgres's
+   * `config || $patch::jsonb` operator so concurrent writers don't
+   * stomp each other (last write wins, but no read-modify-write race).
+   *
+   * Primary caller: runCycle's exit hook writes
+   *   { last_full_cycle_at: '<ISO>' }
+   * after a successful per-source cycle so autopilot's freshness gate
+   * can read it next tick. Resolves codex round-1 P0-5 (write site for
+   * last_full_cycle_at was unspecified pre-PR).
+   *
+   * Returns true if a row was updated (source exists), false otherwise
+   * (silently no-ops on unknown sourceId — caller decides whether that's
+   * a problem).
+   */
+  updateSourceConfig(sourceId: string, patch: Record<string, unknown>): Promise<boolean>;
+
+  /**
+   * v0.37.0 — prefix-stratified page sampling for `gbrain brainstorm` / `gbrain lsd`
+   * domain-bank module. Takes a caller-supplied prefix list (cached at the domain-bank
+   * layer per D3), returns one page per prefix tiebroken by `connection_count`
+   * (LEFT JOIN to page_links, count of inbound links).
+   *
+   * Stale-bias (D5 / LSD): when `opts.staleBias === true`, ROW_NUMBER() ORDER BY
+   * prefers pages with `last_retrieved_at IS NULL` (never retrieved) > pages older
+   * than `staleThresholdDays` (default 90) > recently-retrieved.
+   *
+   * Source scoping (D5, codex r2 #2 fix): `sourceId` (scalar) and `sourceIds`
+   * (array, wins over scalar) per the [source-id-canonical-thread] pattern.
+   * Both threaded from day 1 even though v0.37.0 callers are CLI-local — D7
+   * MCP exposure ships zero-refactor.
+   *
+   * Soft-deleted pages (deleted_at IS NOT NULL) excluded automatically.
+   */
+  listPrefixSampledPages(opts: DomainBankSampleOpts): Promise<DomainBankRow[]>;
+
+  /**
+   * v0.37.0 — corpus-sampling fallback for `gbrain brainstorm` when prefix-stratified
+   * can't fill M (small brain, single-prefix corpus). Random sample of N pages with
+   * the same exclusion + source-scope semantics as `listPrefixSampledPages`.
+   * Deterministic with `opts.seed` set; falls back to RANDOM() otherwise.
+   *
+   * Returns the same `DomainBankRow` shape so the orchestrator can union both
+   * sources of pages and dedup by slug+source_id.
+   */
+  listCorpusSample(opts: CorpusSampleOpts): Promise<DomainBankRow[]>;
 
   // Search
   searchKeyword(query: string, opts?: SearchOpts): Promise<SearchResult[]>;
@@ -741,7 +923,7 @@ export interface BrainEngine {
   traverseGraph(
     slug: string,
     depth?: number,
-    opts?: { sourceId?: string; sourceIds?: string[] },
+    opts?: TraverseGraphOpts,
   ): Promise<GraphNode[]>;
   /**
    * Edge-based graph traversal with optional type and direction filters.

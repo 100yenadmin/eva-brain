@@ -6,8 +6,14 @@ start here.
 
 ## Install (5 min)
 
-1. Clone: `git clone https://github.com/electricsheephq/eva-brain ~/eva-brain && cd ~/eva-brain`
-2. Install: `bun install`
+1. Clone Eva Brain:
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   export PATH="$HOME/.bun/bin:$PATH"
+   git clone https://github.com/electricsheephq/eva-brain ~/eva-brain
+   cd ~/eva-brain
+   ```
+2. Install: `bun install && bun link`.
 3. Init the brain: `gbrain init --embedding-model voyage:voyage-4-large --embedding-dimensions 2048`
    when `VOYAGE_API_KEY` is available. For a text-only bootstrap, import with
    `gbrain import <dir> --no-embed` after init and run embeddings later.
@@ -47,13 +53,13 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
 ## Common tasks
 
 - **Configure:** [`docs/ENGINES.md`](./docs/ENGINES.md),
-  [`docs/guides/provider-install-matrix.md`](./docs/guides/provider-install-matrix.md),
   [`docs/guides/live-sync.md`](./docs/guides/live-sync.md),
   [`docs/mcp/DEPLOY.md`](./docs/mcp/DEPLOY.md).
 - **Debug:** [`docs/GBRAIN_VERIFY.md`](./docs/GBRAIN_VERIFY.md),
   [`docs/guides/minions-fix.md`](./docs/guides/minions-fix.md), `gbrain doctor --fix`.
-- **Migrate:** [`docs/UPGRADING_DOWNSTREAM_AGENTS.md`](./docs/UPGRADING_DOWNSTREAM_AGENTS.md),
-  [`skills/migrations/`](./skills/migrations/), `gbrain apply-migrations`.
+- **Migrate / upgrade:** `gbrain upgrade` (binary self-update + schema migrations + post-upgrade prompts),
+  [`docs/UPGRADING_DOWNSTREAM_AGENTS.md`](./docs/UPGRADING_DOWNSTREAM_AGENTS.md),
+  [`skills/migrations/`](./skills/migrations/), `gbrain apply-migrations --yes` (manual schema-only).
 - **Eval retrieval changes:** capture is off by default. To benchmark a
   retrieval change against real captured queries, set
   `GBRAIN_CONTRIBUTOR_MODE=1`, then `gbrain eval export --since 7d > base.ndjson`
@@ -62,6 +68,31 @@ writing or reviewing an operation, consult `src/core/operations.ts` for the cont
   <dataset.jsonl>` (v0.28.8) runs against an isolated in-memory PGLite
   per question — your `~/.gbrain` is never opened. Full guide:
   [`docs/eval-bench.md`](./docs/eval-bench.md).
+- **Drive the brain to a target health score (v0.36.4.0):** the one-command
+  loop. `gbrain doctor --remediation-plan --json` previews what would be
+  fixed; `gbrain doctor --remediate --yes --target-score 90 --max-usd 5`
+  walks a dependency-ordered plan (sync before extract, embed after
+  consolidate), re-checking score between every step, refusing to spend
+  past the cost cap. Empty brains (no entity pages) or unconfigured embedding
+  keys hit a `max_reachable_score` ceiling and bail with what's missing.
+  Three phase handlers (synthesize / patterns / consolidate) are
+  PROTECTED — only trusted local callers can submit them; MCP cannot.
+  Reference: [`docs/architecture/topologies.md`](./docs/architecture/topologies.md)
+  and the CHANGELOG entry for v0.36.4.0.
+- **Track a founder/company over time (v0.35.7):** when an entity has
+  typed metric claims in its `## Facts` fence (`metric: mrr`, `value: 50000`,
+  `unit: USD`, `period: monthly` columns), run
+  `gbrain eval trajectory <entity-slug>` for the chronological history
+  with regressions auto-flagged, or `gbrain founder scorecard <entity-slug>`
+  for a four-signal JSON rollup (claim_accuracy / consistency /
+  growth_trajectory / red_flags). MCP op `find_trajectory` exposes the
+  same data — read scope, visibility-filtered for remote callers. **v0.40.2.0:**
+  `gbrain think` now uses this substrate automatically on temporal /
+  knowledge_update intent (default ON; flip `think.trajectory_enabled=false`
+  to opt out). Migration v82 added `facts.event_type` so non-metric event
+  rows (`meeting`, `job_change`, `location_change`) ride through the same
+  pipeline; pass `kind: 'event'` or `'all'` to `find_trajectory` to query
+  them.
 - **Everything else:** [`./llms.txt`](./llms.txt) is the full documentation map.
   [`./llms-full.txt`](./llms-full.txt) is the same map with core docs inlined for
   single-fetch ingestion.

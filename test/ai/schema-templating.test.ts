@@ -3,10 +3,15 @@ import { getPGLiteSchema, PGLITE_SCHEMA_SQL } from '../../src/core/pglite-schema
 import { getPostgresSchema } from '../../src/core/postgres-engine.ts';
 
 describe('getPGLiteSchema', () => {
-  test('default produces v0.13-compatible schema (1536d + text-embedding-3-large)', () => {
+  test('default produces Eva install-default schema (2048d + voyage:voyage-4-large)', () => {
+    // Eva keeps Voyage 4 Large 2048d as the downstream install posture while
+    // adopting upstream's provider gateway. Bare `gbrain init --pglite` must
+    // therefore template the same 2048d schema the gateway will use at embed
+    // time, and skip HNSW because pgvector only supports HNSW up to 2000 dims.
     const sql = getPGLiteSchema();
-    expect(sql).toMatch(/vector\(1536\)/);
-    expect(sql).toMatch(/'text-embedding-3-large'/);
+    expect(sql).toMatch(/vector\(2048\)/);
+    expect(sql).toMatch(/'voyage:voyage-4-large'/);
+    expect(sql).not.toContain('idx_chunks_embedding ON content_chunks USING hnsw');
     expect(sql).not.toMatch(/__EMBEDDING_DIMS__/);
     expect(sql).not.toMatch(/__EMBEDDING_MODEL__/);
   });

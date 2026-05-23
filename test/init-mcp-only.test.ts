@@ -168,7 +168,7 @@ describe('gbrain init --mcp-only — happy path', () => {
     // Env-var secrets stay in env — disk copy is opt-in via flag
     expect(cfg.remote_mcp.oauth_client_secret).toBeUndefined();
     const parsed = JSON.parse(r.stdout.trim().split('\n').pop()!);
-    expect(parsed.oauth_secret_in_config).toBe(false);
+    expect(parsed.secret_saved).toBe(false);
   });
 
   test('trailing slashes on issuer_url are normalized', async () => {

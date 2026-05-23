@@ -50,6 +50,7 @@ import {
   type RepoState,
 } from './git-remote.ts';
 import { gbrainPath } from './config.ts';
+import { isValidSourceId } from './source-id.ts';
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -78,8 +79,6 @@ export class SourceOpError extends Error {
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
-
-const SOURCE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 export interface SourceRow {
   id: string;
@@ -142,8 +141,14 @@ export interface RemoveSourceOpts {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Validate via the canonical regex from `source-id.ts` but rethrow as the
+ * sources-ops-tagged error so `gbrain sources add` keeps its user-facing
+ * SourceOpError shape. The regex itself is in one place; only the error
+ * envelope differs per caller.
+ */
 function validateSourceId(id: string): void {
-  if (!SOURCE_ID_RE.test(id)) {
+  if (!isValidSourceId(id)) {
     throw new SourceOpError(
       'invalid_id',
       `Invalid source id "${id}". Must be 1-32 lowercase alnum chars with optional interior hyphens.`,

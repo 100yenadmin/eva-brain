@@ -732,10 +732,9 @@ describe('git() helper invocation order (CJK wave v0.32.7)', () => {
 describe('source-scoped sync wiring guards', () => {
   test('threads source id through ingest log, facts lookup, and auto-embed', () => {
     const source = readFileSync(join(process.cwd(), 'src/commands/sync.ts'), 'utf-8');
-    expect(source).toContain("source_id: opts.sourceId ?? 'default'");
     expect(source).toContain('engine.getPage(slug, { sourceId: factsSourceId })');
-    expect(source).toContain("['--stale', '--source', opts.sourceId]");
-    expect(source).toContain('buildAutoEmbedArgs(pagesAffected, opts.sourceId)');
+    expect(source).toContain('const embedOpts = opts.sourceId');
+    expect(source).toContain('sourceId: opts.sourceId');
   });
 });
 

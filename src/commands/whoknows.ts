@@ -50,6 +50,12 @@ export interface WhoknowsOpts {
    * this undefined and accept the default; surface is here so future ops
    * (find_experts_in_companies, find_advisors, etc.) can reuse the
    * ranking function without redefining the type filter.
+   *
+   * v0.39 T1.5: callers with an `activePack` should derive `types` via
+   * `expertTypesFromPack(pack)` from `src/core/schema-pack/expert-types.ts`
+   * and pass the result here. This honors user-defined `expert_routing:`
+   * declarations in the active pack. Backward compatible: undefined types
+   * falls back to DEFAULT_TYPES (person/company).
    */
   types?: PageType[];
   /**
@@ -86,6 +92,8 @@ export interface WhoknowsResult {
   };
 }
 
+// v0.39 T1.5 — DEFAULT_TYPES preserved for parity when no activePack is
+// threaded. Pack-aware callers go through expertTypesFromPack().
 const DEFAULT_TYPES: PageType[] = ['person', 'company'];
 const DEFAULT_LIMIT = 5;
 const RECENCY_HALF_LIFE_DAYS = 180; // 6 months

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, relative } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
-import { importSyncableFile } from '../core/import-file.ts';
+import { importFile } from '../core/import-file.ts';
 import { collectSyncableFiles } from './import.ts';
 import { createInterface } from 'readline';
 import {
@@ -432,6 +432,24 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     throw new Error(hint);
   }
 
+  // v0.39 T1.5: load active pack ONCE at sync entry; pass to every per-file
+  // importFile call below. Codex perf finding #7: per-file loadActivePack adds
+  // disk/YAML/hash overhead × thousands of files. Best-effort: pack load
+  // failure falls through to legacy inferType (parity preserved).
+  let syncActivePack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> } | undefined;
+  try {
+    const { loadActivePack } = await import('../core/schema-pack/load-active.ts');
+    const { loadConfig } = await import('../core/config.ts');
+    const resolved = await loadActivePack({
+      cfg: loadConfig(),
+      remote: false, // sync is always a trusted CLI / autopilot caller
+      sourceId: opts.sourceId,
+    });
+    syncActivePack = { page_types: resolved.manifest.page_types };
+  } catch {
+    syncActivePack = undefined;
+  }
+
   // v0.28: source-aware re-clone branch. When the source has a remote_url
   // recorded (i.e. it was registered via `sources add --url`), the on-disk
   // clone is auto-managed. validateRepoState classifies the on-disk state;
@@ -731,7 +749,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       // Reimport at new path (picks up content changes)
       const filePath = join(repoPath, to);
       if (existsSync(filePath)) {
-        const result = await importSyncableFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId });
+        const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
         if (result.status === 'imported') chunksCreated += result.chunks;
       }
       pagesAffected.push(newSlug);
@@ -795,7 +813,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         // / addLink) target (sourceId, slug). Pre-fix the schema DEFAULT
         // 'default' was applied even for non-default sources, fabricating
         // duplicate rows that crashed bare-slug subqueries with Postgres 21000.
-        const result = await importSyncableFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId });
+        const result = await importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId, activePack: syncActivePack });
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -961,7 +979,6 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   await engine.logIngest({
     source_type: 'git_sync',
     source_ref: `${repoPath} @ ${headCommit.slice(0, 8)}`,
-    source_id: opts.sourceId ?? 'default',
     pages_updated: pagesAffected,
     summary: `Sync: +${filtered.added.length} ~${filtered.modified.length} -${filtered.deleted.length} R${filtered.renamed.length}, ${chunksCreated} chunks, ${elapsed}ms`,
   });
@@ -1018,22 +1035,35 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     }
   }
 
-  // Auto-embed (skip for large syncs — embedding calls the configured provider).
-  // Thread --source into runEmbed so non-default syncs re-embed the intended
-  // (source_id, slug) rows instead of falling back to default.
+  // Auto-embed (skip for large syncs — embedding calls OpenAI).
+  // Thread sourceId so incremental source syncs embed the page row they just
+  // imported instead of falling back to the default source.
+  //
+  // v0.37 fix wave (Lane D.3 + CDX2-8): switched from `runEmbed` (which
+  // does its own process.exit) to `runEmbedCore` so sync can detect the
+  // dim-mismatch class and surface a stderr hint without killing the
+  // sync. Non-mismatch errors stay best-effort (rate limits, transient
+  // network) — those shouldn't break sync.
   let embedded = 0;
   if (!noEmbed && pagesAffected.length > 0 && pagesAffected.length <= 100) {
     try {
-      const { runEmbed } = await import('./embed.ts');
-      const result = await runEmbed(engine, buildAutoEmbedArgs(pagesAffected, opts.sourceId));
-      // Before commit 2 lands: runEmbed is void. Best estimate is pagesAffected,
-      // since runEmbed re-embeds every requested slug. Commit 2 sharpens this
-      // with EmbedResult.embedded.
-      embedded = result?.embedded ?? pagesAffected.length;
-    } catch { /* embedding is best-effort */ }
+      const { runEmbedCore } = await import('./embed.ts');
+      const embedOpts = opts.sourceId
+        ? { slugs: pagesAffected, sourceId: opts.sourceId }
+        : { slugs: pagesAffected };
+      await runEmbedCore(engine, embedOpts);
+      embedded = pagesAffected.length;
+    } catch (e: unknown) {
+      const { EmbeddingDimMismatchError } = await import('./embed.ts');
+      if (e instanceof EmbeddingDimMismatchError) {
+        console.error('\nEmbedding dimension mismatch. Run `gbrain doctor` for the repair recipe, or see docs/embedding-migrations.md.\n');
+        console.error(`Tip: pass --no-embed to sync without embedding, then`);
+        console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
+      }
+      // Other errors stay best-effort — rate limits, transient network.
+    }
   } else if (noEmbed || totalChanges > 100) {
-    const sourceArg = opts.sourceId ? ` --source ${opts.sourceId}` : '';
-    console.log(`Text imported. Run 'gbrain embed --stale${sourceArg}' to generate embeddings.`);
+    console.log(`Text imported. Run 'gbrain embed --stale' to generate embeddings.`);
   }
 
   return {
@@ -1159,16 +1189,27 @@ async function performFullSync(
   await writeChunkerVersion(engine, opts.sourceId, String(CHUNKER_VERSION));
 
   // Full sync doesn't track pagesAffected, so fall back to embed --stale.
-  // Before commit 2: runEmbed is void; use result.imported as best estimate of
-  // pages touched. Commit 2 sharpens this with real EmbedResult counts.
+  // v0.37 fix wave (Lane D.3 + CDX2-8): switched to runEmbedCore for the
+  // same reason as the incremental path — surface dim-mismatch via hint
+  // instead of silently swallowing or killing the process.
   let embedded = 0;
   if (!opts.noEmbed) {
     try {
-      const { runEmbed } = await import('./embed.ts');
-      const embedArgs = opts.sourceId ? ['--stale', '--source', opts.sourceId] : ['--stale'];
-      await runEmbed(engine, embedArgs);
+      const { runEmbedCore } = await import('./embed.ts');
+      const embedOpts = opts.sourceId
+        ? { stale: true, sourceId: opts.sourceId }
+        : { stale: true };
+      await runEmbedCore(engine, embedOpts);
       embedded = result.imported;
-    } catch { /* embedding is best-effort */ }
+    } catch (e: unknown) {
+      const { EmbeddingDimMismatchError } = await import('./embed.ts');
+      if (e instanceof EmbeddingDimMismatchError) {
+        console.error('\nEmbedding dimension mismatch. Run `gbrain doctor` for the repair recipe, or see docs/embedding-migrations.md.\n');
+        console.error(`Tip: pass --no-embed to sync without embedding, then`);
+        console.error(`run 'gbrain embed --stale' after fixing the schema.\n`);
+      }
+      // Other errors stay best-effort.
+    }
   }
 
   return {
@@ -1185,25 +1226,46 @@ async function performFullSync(
   };
 }
 
-function acknowledgeExistingSyncFailuresForSkip(skipFailed: boolean): void {
-  // --skip-failed: acknowledge pre-existing unacked failures BEFORE the sync
-  // runs, not only ones the current run produces. Without this, the common
-  // recovery flow — fix the YAML, re-run sync, then run --skip-failed to
-  // clear the log — fails to clear anything: when there are no NEW failures
-  // (because the files are now fixed), the inner ack path in performSync is
-  // never reached, and "Already up to date." leaves the log untouched. Both
-  // doctor and printSyncResult instruct users to run --skip-failed in
-  // exactly this case, so the flag has to handle stale entries up-front.
-  if (skipFailed) {
-    const stale = unacknowledgedSyncFailures();
-    if (stale.length > 0) {
-      const acked = acknowledgeSyncFailures();
-      console.log(`Acknowledged ${acked.count} pre-existing failure(s).`);
-    }
-  }
-}
-
 export async function runSync(engine: BrainEngine, args: string[]) {
+  // v0.37 fix wave (Lane D.4 + CDX2-12): print usage when `--help`/`-h` is
+  // passed. Pre-fix this was unreachable because the dispatcher's generic
+  // CLI-only short-circuit fired first; sync is now in CLI_ONLY_SELF_HELP.
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: gbrain sync [options]
+
+Sync the brain repo's text content into the engine, then embed.
+
+Options:
+  --no-embed           Skip the embed step. Use this when the embed
+                       provider is misconfigured or you want to defer
+                       embedding (run 'gbrain embed --stale' later).
+  --workers N          Run the import phase with N parallel workers
+                       (alias: --concurrency). Default: 4 when the
+                       diff is >100 files, else serial.
+  --source <id>        Scope sync to a single source. Defaults to the
+                       brain's default source.
+  --repo <path>        Path to the brain repo. Defaults to the path
+                       saved by 'gbrain init'.
+  --full               Force a full re-sync (rare; usually incremental).
+  --dry-run            Show what would be synced without writing.
+  --skip-failed        Acknowledge previously-recorded sync failures so
+                       the bookmark can advance past unparseable files.
+  --retry-failed       Re-attempt previously-failed files; clear on success.
+  --watch              Re-sync continuously on an interval.
+  --interval N         Watch-mode interval in seconds (default 60).
+  --no-pull            Skip 'git pull' before the sync (useful for tests).
+  --all                Sync every registered source instead of just the
+                       default (multi-source brains).
+  --json               Emit a structured JSON summary on stdout.
+  --yes                Accept any interactive prompts (CI / non-TTY).
+
+See also:
+  gbrain embed --stale    Re-embed all stale chunks (post --no-embed).
+  gbrain doctor           Diagnose dim mismatches and other sync issues.
+`);
+    return;
+  }
+
   const repoPath = args.find((a, i) => args[i - 1] === '--repo') || undefined;
   const watch = args.includes('--watch');
   const intervalStr = args.find((a, i) => args[i - 1] === '--interval');
@@ -1230,7 +1292,21 @@ export async function runSync(engine: BrainEngine, args: string[]) {
     process.exit(1);
   }
 
-  acknowledgeExistingSyncFailuresForSkip(skipFailed);
+  // --skip-failed: acknowledge pre-existing unacked failures BEFORE the sync
+  // runs, not only ones the current run produces. Without this, the common
+  // recovery flow — fix the YAML, re-run sync, then run --skip-failed to
+  // clear the log — fails to clear anything: when there are no NEW failures
+  // (because the files are now fixed), the inner ack path in performSync is
+  // never reached, and "Already up to date." leaves the log untouched. Both
+  // doctor and printSyncResult instruct users to run --skip-failed in
+  // exactly this case, so the flag has to handle stale entries up-front.
+  if (skipFailed) {
+    const stale = unacknowledgedSyncFailures();
+    if (stale.length > 0) {
+      const acked = acknowledgeSyncFailures();
+      console.log(`Acknowledged ${acked.count} pre-existing failure(s).`);
+    }
+  }
 
   // v0.18.0 Step 5: --source resolves to a sources(id) row. Falls back
   // to pre-v0.17 global config (sync.repo_path + sync.last_commit) when

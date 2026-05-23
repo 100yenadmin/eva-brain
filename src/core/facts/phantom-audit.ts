@@ -20,7 +20,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { resolveAuditDir } from '../minions/handlers/shell-audit.ts';
+import { isoWeekFilename, resolveAuditDir } from '../audit-week-file.ts';
 
 export type PhantomOutcome =
   | 'redirected'
@@ -41,18 +41,10 @@ export interface PhantomAuditEvent {
   candidates?: Array<{ slug: string; connection_count: number }>;
 }
 
-/** ISO-week-rotated filename: `phantoms-YYYY-Www.jsonl`. */
+/** ISO-week-rotated filename: `phantoms-YYYY-Www.jsonl`. Delegates to
+ *  `src/core/audit-week-file.ts`. */
 export function computePhantomAuditFilename(now: Date = new Date()): string {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const dayNum = (d.getUTCDay() + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - dayNum + 3);
-  const isoYear = d.getUTCFullYear();
-  const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
-  const firstThursdayDayNum = (firstThursday.getUTCDay() + 6) % 7;
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstThursdayDayNum + 3);
-  const weekNum = Math.round((d.getTime() - firstThursday.getTime()) / (7 * 86400000)) + 1;
-  const ww = String(weekNum).padStart(2, '0');
-  return `phantoms-${isoYear}-W${ww}.jsonl`;
+  return isoWeekFilename('phantoms', now);
 }
 
 /**

@@ -26,15 +26,15 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { importCodeFile } from '../core/import-file.ts';
 import { estimateTokens } from '../core/chunkers/code.ts';
+import { getEmbeddingModelName, estimateEmbeddingCostUsd } from '../core/embedding.ts';
+import { lookupEmbeddingPrice } from '../core/embedding-pricing.ts';
 import { errorFor, serializeError } from '../core/errors.ts';
 import { createInterface } from 'readline';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
-import { getEmbeddingModel } from '../core/ai/gateway.ts';
-import { assertTouchpoint, resolveRecipe } from '../core/ai/model-resolver.ts';
+import { BudgetTracker, BudgetExhausted } from '../core/budget/budget-tracker.ts';
+import { getEmbeddingModel as getConfiguredEmbeddingModel, withBudgetTracker } from '../core/ai/gateway.ts';
 import { safePublicModelLabel, sanitizeJsonForLog, sanitizeLogText } from '../core/log-safety.ts';
-
-const DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-large';
 
 export interface ReindexCodeOpts {
   sourceId?: string;
@@ -45,6 +45,15 @@ export interface ReindexCodeOpts {
   noEmbed?: boolean;
   /** Page batch size. Default 100 (codex Finding 4.4 OOM protection). */
   batchSize?: number;
+  /**
+   * Cap embedding spend in USD. Default undefined = no cap (legacy behavior).
+   * When set, the reindex body runs inside a `withBudgetTracker` scope so
+   * every `gateway.embed()` call inside `importCodeFile` composes with the
+   * cap. Throws BudgetExhausted (reason='cost') when cumulative exceeds the
+   * cap; partial progress is preserved (already-imported pages stay
+   * imported, the throw aborts the remaining batch).
+   */
+  maxCostUsd?: number;
 }
 
 export interface ReindexCodeResult {
@@ -54,9 +63,67 @@ export interface ReindexCodeResult {
   skipped: number;
   failed: number;
   totalTokens: number;
-  costUsd: number | null;
+  costUsd: number;
   model: string;
   failures?: Array<{ slug: string; error: string }>;
+}
+
+/**
+ * Voyage publishes voyage-code-3, a code-specialized embedding model that
+ * outperforms their general flagships on code retrieval. Per-worktree code
+ * brains (Topology 3) are pure source-code, so the recommendation is clean.
+ * The nudge surfaces this from `gbrain reindex --code` on dry-run AND
+ * execute paths so an agent sees it before spending Anthropic/OpenAI tokens.
+ *
+ * Allowlist matches against the BARE model name (what getEmbeddingModelName()
+ * returns — the gateway strips the provider prefix). Lives in runReindexCode
+ * (not the CLI wrapper) because the CLI wrapper's dry-run branch returns
+ * before the gate block.
+ */
+const CODE_TUNED_BARE_MODELS = new Set(['voyage-code-3']);
+
+export type NudgeDecision =
+  | { shouldNudge: false }
+  | { shouldNudge: true; currentModel: string; recommendedModel: 'voyage:voyage-code-3' };
+
+export function shouldNudgeCodeModel(bareModelName: string | undefined | null): NudgeDecision {
+  if (!bareModelName || typeof bareModelName !== 'string') return { shouldNudge: false };
+  const trimmed = bareModelName.trim();
+  if (!trimmed) return { shouldNudge: false };
+  if (CODE_TUNED_BARE_MODELS.has(trimmed.toLowerCase())) return { shouldNudge: false };
+  return {
+    shouldNudge: true,
+    currentModel: trimmed,
+    recommendedModel: 'voyage:voyage-code-3',
+  };
+}
+
+/** Render the nudge to stderr. Pure-stderr by construction so --json stdout stays clean. */
+function printCodeModelNudge(decision: Extract<NudgeDecision, { shouldNudge: true }>): void {
+  const currentModel = safePublicModelLabel(decision.currentModel);
+  const recommendedModel = safePublicModelLabel(decision.recommendedModel);
+  process.stderr.write(
+    `[reindex-code] Configured embedding model is \`${currentModel}\`. For pure code retrieval, Voyage's code-tuned \`voyage-code-3\` typically outperforms general-purpose models. Switch:\n` +
+      `  gbrain config set embedding_model ${recommendedModel}\n` +
+      `  gbrain config set embedding_dimensions 1024\n` +
+      `Suppress with GBRAIN_NO_CODE_MODEL_NUDGE=1.\n`,
+  );
+}
+
+function currentEmbeddingModelForReindex(): string {
+  try {
+    return getConfiguredEmbeddingModel();
+  } catch {
+    return `openai:${getEmbeddingModelName()}`;
+  }
+}
+
+function estimateReindexEmbeddingCostUsd(tokens: number, model: string): number {
+  const price = lookupEmbeddingPrice(model);
+  if (price.kind === 'known') {
+    return (tokens / 1_000_000) * price.pricePerMTok;
+  }
+  return estimateEmbeddingCostUsd(tokens);
 }
 
 interface CodePageRow {
@@ -73,58 +140,25 @@ async function fetchCodePages(
 ): Promise<CodePageRow[]> {
   // Direct SQL: listPages doesn't expose source_id filtering, and we need
   // compiled_truth + frontmatter anyway (not just the Page shape).
-  const params: unknown[] = [batchSize, offset];
-  const sourceClause = sourceId !== undefined ? `AND p.source_id = $3` : '';
-  if (sourceId !== undefined) params.push(sourceId);
+  const sourceClause = sourceId ? `AND p.source_id = '${sourceId.replace(/'/g, "''")}'` : '';
   const rows = await engine.executeRaw<CodePageRow>(
     `SELECT p.slug, p.compiled_truth, p.frontmatter
      FROM pages p
      WHERE p.type = 'code' ${sourceClause}
      ORDER BY p.slug
-     LIMIT $1 OFFSET $2`,
-    params,
+     LIMIT ${batchSize} OFFSET ${offset}`,
   );
   return rows;
 }
 
 async function countCodePages(engine: BrainEngine, sourceId: string | undefined): Promise<number> {
-  const params: unknown[] = [];
-  const sourceClause = sourceId !== undefined ? `AND p.source_id = $1` : '';
-  if (sourceId !== undefined) params.push(sourceId);
+  const sourceClause = sourceId ? `AND p.source_id = '${sourceId.replace(/'/g, "''")}'` : '';
   const rows = await engine.executeRaw<{ n: string | number }>(
     `SELECT COUNT(*)::text AS n FROM pages p WHERE p.type = 'code' ${sourceClause}`,
-    params,
   );
   if (rows.length === 0) return 0;
   const raw = rows[0]!.n;
   return typeof raw === 'string' ? parseInt(raw, 10) : raw;
-}
-
-function currentEmbeddingModelForPreview(): string {
-  try {
-    return getEmbeddingModel();
-  } catch {
-    return DEFAULT_EMBEDDING_MODEL;
-  }
-}
-
-function estimateEmbeddingPreviewCost(tokens: number): { costUsd: number | null; model: string } {
-  const configuredModel = currentEmbeddingModelForPreview();
-  try {
-    const { parsed, recipe } = resolveRecipe(configuredModel);
-    assertTouchpoint(recipe, 'embedding', parsed.modelId);
-    const costPerMillion = recipe.touchpoints.embedding?.cost_per_1m_tokens_usd;
-    return {
-      model: `${recipe.id}:${parsed.modelId}`,
-      costUsd: costPerMillion === undefined ? null : (tokens / 1_000_000) * costPerMillion,
-    };
-  } catch {
-    return { model: configuredModel, costUsd: null };
-  }
-}
-
-function formatCostPreview(costUsd: number | null): string {
-  return costUsd === null ? 'cost unknown' : `est. $${costUsd.toFixed(2)}`;
 }
 
 /**
@@ -173,7 +207,22 @@ export async function runReindexCode(
   const batchSize = opts.batchSize ?? 100;
 
   const { totalTokens, totalPages } = await estimateReindexCost(engine, opts.sourceId, batchSize);
-  const { costUsd, model } = estimateEmbeddingPreviewCost(totalTokens);
+  const model = currentEmbeddingModelForReindex();
+  const costUsd = estimateReindexEmbeddingCostUsd(totalTokens, model);
+
+  // Code-model nudge: fire when there's actual work, the operator hasn't opted
+  // out, and JSON-mode isn't active. Lives here (not in runReindexCodeCli) so
+  // dry-run paths surface it too — the CLI wrapper's dry-run branch returns
+  // before its gate block, which is where any UI placed there would be missed.
+  if (
+    totalPages > 0 &&
+    !opts.json &&
+    !opts.noEmbed &&
+    process.env.GBRAIN_NO_CODE_MODEL_NUDGE !== '1'
+  ) {
+    const decision = shouldNudgeCodeModel(getEmbeddingModelName());
+    if (decision.shouldNudge) printCodeModelNudge(decision);
+  }
 
   if (opts.dryRun) {
     return {
@@ -212,51 +261,99 @@ export async function runReindexCode(
   let failed = 0;
   const failures: Array<{ slug: string; error: string }> = [];
   let offset = 0;
+  let budgetExhausted: BudgetExhausted | null = null;
+
+  // F3: when --max-cost is set, run the body inside withBudgetTracker so
+  // every gateway.embed() call inside importCodeFile composes with the cap.
+  // On BudgetExhausted, we catch + persist what's been imported so far,
+  // then surface the throw as a partial-progress result the caller can
+  // re-run. importCodeFile is idempotent (content_hash short-circuit), so
+  // a re-run picks up where the cap fired.
+  const reindexBody = async (): Promise<void> => {
+    try {
+      while (true) {
+        const batch = await fetchCodePages(engine, opts.sourceId, batchSize, offset);
+        if (batch.length === 0) break;
+
+        for (const row of batch) {
+          const fm = row.frontmatter ?? {};
+          const relPath = typeof fm.file === 'string' ? fm.file : null;
+          if (!relPath) {
+            failed++;
+            failures.push({ slug: row.slug, error: 'missing frontmatter.file' });
+            reporter.tick();
+            continue;
+          }
+          if (!row.compiled_truth) {
+            failed++;
+            failures.push({ slug: row.slug, error: 'missing compiled_truth' });
+            reporter.tick();
+            continue;
+          }
+          try {
+            const result = await importCodeFile(engine, relPath, row.compiled_truth, {
+              noEmbed: opts.noEmbed,
+              force: opts.force,
+              sourceId: opts.sourceId,
+            });
+            if (result.status === 'imported') reindexed++;
+            else if (result.status === 'skipped') skipped++;
+            else {
+              failed++;
+              failures.push({ slug: row.slug, error: result.error ?? result.status });
+            }
+          } catch (e: unknown) {
+            // Budget cap is the one error the per-page catch must NOT swallow.
+            // Caller's outer catch reports partial progress and exits.
+            if (e instanceof BudgetExhausted) throw e;
+            failed++;
+            failures.push({ slug: row.slug, error: e instanceof Error ? e.message : String(e) });
+          }
+          reporter.tick();
+        }
+
+        offset += batch.length;
+        if (batch.length < batchSize) break;
+      }
+    } finally {
+      reporter.finish();
+    }
+  };
 
   try {
-    while (true) {
-      const batch = await fetchCodePages(engine, opts.sourceId, batchSize, offset);
-      if (batch.length === 0) break;
-
-      for (const row of batch) {
-        const fm = row.frontmatter ?? {};
-        const relPath = typeof fm.file === 'string' ? fm.file : null;
-        if (!relPath) {
-          failed++;
-          failures.push({ slug: row.slug, error: 'missing frontmatter.file' });
-          reporter.tick();
-          continue;
-        }
-        if (!row.compiled_truth) {
-          failed++;
-          failures.push({ slug: row.slug, error: 'missing compiled_truth' });
-          reporter.tick();
-          continue;
-        }
-        try {
-          const result = await importCodeFile(engine, relPath, row.compiled_truth, {
-            noEmbed: opts.noEmbed,
-            force: opts.force,
-            sourceId: opts.sourceId,
-          });
-          if (result.status === 'imported') reindexed++;
-          else if (result.status === 'skipped') skipped++;
-          else {
-            failed++;
-            failures.push({ slug: row.slug, error: result.error ?? result.status });
-          }
-        } catch (e: unknown) {
-          failed++;
-          failures.push({ slug: row.slug, error: e instanceof Error ? e.message : String(e) });
-        }
-        reporter.tick();
-      }
-
-      offset += batch.length;
-      if (batch.length < batchSize) break;
+    if (typeof opts.maxCostUsd === 'number' && opts.maxCostUsd > 0) {
+      const tracker = new BudgetTracker({ maxCostUsd: opts.maxCostUsd, label: 'reindex-code' });
+      await withBudgetTracker(tracker, reindexBody);
+    } else {
+      await reindexBody();
     }
-  } finally {
-    reporter.finish();
+  } catch (e) {
+    if (e instanceof BudgetExhausted) {
+      budgetExhausted = e;
+    } else {
+      throw e;
+    }
+  }
+
+  if (budgetExhausted) {
+    // Partial-progress result: surfaces what got reindexed before the cap
+    // fired. The CLI wrapper translates this into a clear user-facing
+    // message + non-zero exit; the library result lets agent callers see
+    // what happened without grep'ing stderr.
+    return {
+      status: 'ok',
+      codePages: totalPages,
+      reindexed,
+      skipped,
+      failed,
+      totalTokens,
+      costUsd: budgetExhausted.spent,
+      model,
+      failures: [
+        { slug: '(budget)', error: budgetExhausted.message },
+        ...(failures.length > 0 ? failures : []),
+      ],
+    };
   }
 
   return {
@@ -286,16 +383,31 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
   const force = args.includes('--force');
   const noEmbed = args.includes('--no-embed');
 
+  // F3: --max-cost / --max-cost-usd both accepted for symmetry with brainstorm.
+  let maxCostUsd: number | undefined;
+  for (const flag of ['--max-cost', '--max-cost-usd']) {
+    const idx = args.indexOf(flag);
+    if (idx >= 0) {
+      const v = args[idx + 1];
+      const n = v ? parseFloat(v) : NaN;
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`gbrain reindex --code: ${flag} requires a positive number in USD (got ${v ?? '(missing)'})`);
+        process.exit(2);
+      }
+      maxCostUsd = n;
+      break;
+    }
+  }
+
   if (dryRun) {
-    const result = await runReindexCode(engine, { sourceId, dryRun: true, yes, json, force, noEmbed });
-    const safeResult = sanitizeJsonForLog({ ...result, model: safePublicModelLabel(result.model) });
+    const result = await runReindexCode(engine, { sourceId, dryRun: true, yes, json, force, noEmbed, maxCostUsd });
     if (json) {
-      console.log(JSON.stringify(safeResult));
+      console.log(JSON.stringify(sanitizeJsonForLog(result)));
     } else {
       console.log(
         `reindex-code preview: ${result.codePages} code page(s), ` +
           `~${result.totalTokens.toLocaleString()} tokens, ` +
-          `${formatCostPreview(result.costUsd)} on ${safePublicModelLabel(result.model)}.`,
+          `est. $${result.costUsd.toFixed(2)} on ${safePublicModelLabel(result.model)}.`,
       );
       console.log('--dry-run: exit without reindexing.');
     }
@@ -305,16 +417,17 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
   // Cost preview + gate, before touching the DB.
   if (!noEmbed) {
     const preview = await estimateReindexCost(engine, sourceId, 100);
-    const { costUsd, model } = estimateEmbeddingPreviewCost(preview.totalTokens);
-    const safeModel = safePublicModelLabel(model);
+    const previewModel = currentEmbeddingModelForReindex();
+    const safePreviewModel = safePublicModelLabel(previewModel);
+    const costUsd = estimateReindexEmbeddingCostUsd(preview.totalTokens, previewModel);
     const previewMsg =
       `reindex-code: ${preview.totalPages} code page(s), ` +
       `~${preview.totalTokens.toLocaleString()} tokens, ` +
-      `${formatCostPreview(costUsd)} on ${safeModel}.`;
+      `est. $${costUsd.toFixed(2)} on ${safePreviewModel}.`;
 
     if (preview.totalPages === 0) {
       if (json) {
-        console.log(JSON.stringify({ status: 'ok', codePages: 0, reindexed: 0, skipped: 0, failed: 0, totalTokens: 0, costUsd: 0, model: safeModel }));
+        console.log(JSON.stringify(sanitizeJsonForLog({ status: 'ok', codePages: 0, reindexed: 0, skipped: 0, failed: 0, totalTokens: 0, costUsd: 0, model: safePreviewModel })));
       } else {
         console.log('No code pages to reindex.');
       }
@@ -330,7 +443,7 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
           message: previewMsg,
           hint: 'Pass --yes to proceed, or --dry-run to see the preview and exit 0.',
         }));
-        console.log(JSON.stringify(sanitizeJsonForLog({ error: envelope, preview, costUsd, model: safeModel })));
+        console.log(JSON.stringify(sanitizeJsonForLog({ error: envelope, preview, costUsd, model: safePreviewModel })));
         process.exit(2);
       }
       console.log(previewMsg);
@@ -342,15 +455,14 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
     }
   }
 
-  const result = await runReindexCode(engine, { sourceId, yes, json, force, noEmbed });
-  const safeResult = sanitizeJsonForLog({ ...result, model: safePublicModelLabel(result.model) });
+  const result = await runReindexCode(engine, { sourceId, yes, json, force, noEmbed, maxCostUsd });
   if (json) {
-    console.log(JSON.stringify(safeResult));
+    console.log(JSON.stringify(sanitizeJsonForLog(result)));
   } else {
     console.log(
       `reindex-code: ${result.reindexed} reindexed, ${result.skipped} skipped, ${result.failed} failed ` +
         `(${result.codePages} total code pages, ~${result.totalTokens.toLocaleString()} tokens, ` +
-        `${formatCostPreview(result.costUsd)} on ${safePublicModelLabel(result.model)}).`,
+        `est. $${result.costUsd.toFixed(2)}).`,
     );
     if (result.failures && result.failures.length > 0) {
       console.log(`\n${result.failures.length} failure(s):`);

@@ -83,22 +83,13 @@ function ensureFloat(raw: string | undefined, fallback: number): number {
   return n;
 }
 
-function concreteSourceId(args: string[]): string {
-  const sourceId = flagValue(args, '--source-id') ?? 'default';
-  if (sourceId === '__all__') {
-    console.error('--source-id must name one concrete source for page-scoped takes mutations.');
-    process.exit(1);
-  }
-  return sourceId;
-}
-
-async function getPageId(engine: BrainEngine, slug: string, sourceId = 'default'): Promise<number> {
+async function getPageId(engine: BrainEngine, slug: string): Promise<number> {
   const rows = await engine.executeRaw<{ id: number }>(
-    `SELECT id FROM pages WHERE slug = $1 AND source_id = $2 LIMIT 1`,
-    [slug, sourceId],
+    `SELECT id FROM pages WHERE slug = $1 LIMIT 1`,
+    [slug],
   );
   if (!rows[0]) {
-    console.error(`Page not found in brain: source=${sourceId} slug=${slug}. Run \`gbrain sync\` first.`);
+    console.error(`Page not found in brain: ${slug}. Run \`gbrain sync\` first.`);
     process.exit(1);
   }
   return rows[0].id;
@@ -119,19 +110,17 @@ function writeBody(path: string, body: string): void {
 async function cmdList(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   if (!slug) {
-    console.error('Usage: gbrain takes <slug> [--source-id <id>] [--json]');
+    console.error('Usage: gbrain takes <slug> [--json]');
     process.exit(1);
   }
   const json = flagPresent(args, '--json');
   const holder = flagValue(args, '--who');
-  const kind = flagValue(args, '--kind') as TakeKind | undefined;
+  const kind = flagValue(args, '--kind') as string | undefined;
   const sort = flagValue(args, '--sort') as 'weight' | 'since_date' | 'created_at' | undefined;
   const expired = flagPresent(args, '--expired');
-  const sourceId = concreteSourceId(args);
 
   const takes = await engine.listTakes({
     page_slug: slug,
-    sourceId,
     holder,
     kind,
     active: expired ? false : true,
@@ -165,8 +154,7 @@ async function cmdSearch(engine: BrainEngine, args: string[]): Promise<void> {
   }
   const json = flagPresent(args, '--json');
   const limit = parseInt(flagValue(args, '--limit') ?? '30', 10);
-  const sourceId = flagValue(args, '--source-id');
-  const hits = await engine.searchTakes(query, { limit, sourceId });
+  const hits = await engine.searchTakes(query, { limit });
   if (json) {
     console.log(JSON.stringify(hits, null, 2));
     return;
@@ -184,7 +172,7 @@ async function cmdSearch(engine: BrainEngine, args: string[]): Promise<void> {
 async function cmdAdd(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   if (!slug) {
-    console.error('Usage: gbrain takes add <slug> --claim "..." --kind <k> --who <h> [--source-id <id>] [--weight 0.5] [--source "..."] [--since YYYY-MM]');
+    console.error('Usage: gbrain takes add <slug> --claim "..." --kind <k> --who <h> [--weight 0.5] [--source "..."] [--since YYYY-MM]');
     process.exit(1);
   }
   const claim = flagValue(args, '--claim');
@@ -194,7 +182,6 @@ async function cmdAdd(engine: BrainEngine, args: string[]): Promise<void> {
   if (!holder) { console.error('Missing --who'); process.exit(1); }
   const weight = ensureFloat(flagValue(args, '--weight'), 0.5);
   const source = flagValue(args, '--source');
-  const sourceId = concreteSourceId(args);
   const since = flagValue(args, '--since');
   const dirArg = flagValue(args, '--dir');
   const brainDir = await resolveBrainDir(engine, dirArg ?? null);
@@ -208,7 +195,7 @@ async function cmdAdd(engine: BrainEngine, args: string[]): Promise<void> {
     writeBody(path, nextBody);
 
     // Mirror to DB. Page may not be in DB yet if not synced — caller must run sync first.
-    const pageId = await getPageId(engine, slug, sourceId);
+    const pageId = await getPageId(engine, slug);
     await engine.addTakesBatch([{
       page_id: pageId, row_num: rowNum, claim, kind, holder, weight,
       since_date: since, source, active: true, superseded_by: null,
@@ -221,7 +208,7 @@ async function cmdUpdate(engine: BrainEngine, args: string[]): Promise<void> {
   const slug = args[0];
   const rowNumStr = flagValue(args, '--row');
   if (!slug || !rowNumStr) {
-    console.error('Usage: gbrain takes update <slug> --row N [--source-id <id>] [--weight 0.7] [--source "..."] [--since YYYY-MM]');
+    console.error('Usage: gbrain takes update <slug> --row N [--weight 0.7] [--source "..."] [--since YYYY-MM]');
     process.exit(1);
   }
   const rowNum = parseInt(rowNumStr, 10);
@@ -230,14 +217,13 @@ async function cmdUpdate(engine: BrainEngine, args: string[]): Promise<void> {
   if (w !== undefined) fields.weight = ensureFloat(w, 0.5);
   const s = flagValue(args, '--source');
   if (s !== undefined) fields.source = s;
-  const sourceId = concreteSourceId(args);
   const since = flagValue(args, '--since');
   if (since !== undefined) fields.since_date = since;
   const dirArg = flagValue(args, '--dir');
   const brainDir = await resolveBrainDir(engine, dirArg ?? null);
 
   await withPageLock(slug, async () => {
-    const pageId = await getPageId(engine, slug, sourceId);
+    const pageId = await getPageId(engine, slug);
     await engine.updateTake(pageId, rowNum, fields);
 
     // Sync the markdown table: read fence, find row, apply field updates, re-render.
@@ -246,7 +232,7 @@ async function cmdUpdate(engine: BrainEngine, args: string[]): Promise<void> {
     const parsed = parseTakesFence(body);
     const target = parsed.takes.find(t => t.rowNum === rowNum);
     if (!target) {
-      console.warn(`[takes update] DB updated but row #${rowNum} not in markdown fence on disk; markdown may be out of sync. Run 'gbrain extract takes --slugs ${slug} --source-id ${sourceId}' to reconcile.`);
+      console.warn(`[takes update] DB updated but row #${rowNum} not in markdown fence on disk; markdown may be out of sync. Run 'gbrain extract takes --slugs ${slug}' to reconcile.`);
       return;
     }
     const updated: ParsedTake = {
@@ -272,18 +258,17 @@ async function cmdSupersede(engine: BrainEngine, args: string[]): Promise<void> 
   const slug = args[0];
   const rowNumStr = flagValue(args, '--row');
   if (!slug || !rowNumStr) {
-    console.error('Usage: gbrain takes supersede <slug> --row N --claim "..." [--source-id <id>] [--kind k] [--who h] [--weight 0.5] [--source "..."]');
+    console.error('Usage: gbrain takes supersede <slug> --row N --claim "..." [--kind k] [--who h] [--weight 0.5] [--source "..."]');
     process.exit(1);
   }
   const rowNum = parseInt(rowNumStr, 10);
   const claim = flagValue(args, '--claim');
   if (!claim) { console.error('Missing --claim'); process.exit(1); }
-  const sourceId = concreteSourceId(args);
   const dirArg = flagValue(args, '--dir');
   const brainDir = await resolveBrainDir(engine, dirArg ?? null);
 
   await withPageLock(slug, async () => {
-    const pageId = await getPageId(engine, slug, sourceId);
+    const pageId = await getPageId(engine, slug);
 
     // Read existing row to inherit kind/holder unless overridden
     const existing = await engine.listTakes({ page_id: pageId, active: false, limit: 500 });
@@ -323,7 +308,7 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
   const qualityStr = flagValue(args, '--quality');
   const outcomeStr = flagValue(args, '--outcome');
   if (!slug || !rowNumStr || (!qualityStr && !outcomeStr)) {
-    console.error('Usage: gbrain takes resolve <slug> --row N --quality correct|incorrect|partial [--source-id <id>] [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]');
+    console.error('Usage: gbrain takes resolve <slug> --row N --quality correct|incorrect|partial|unresolvable [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]');
     console.error('       (back-compat) gbrain takes resolve <slug> --row N --outcome true|false [...]');
     process.exit(1);
   }
@@ -334,12 +319,13 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
   const rowNum = parseInt(rowNumStr, 10);
 
   // v0.30.0: --quality is the new primary input. --outcome stays as a back-compat
-  // alias auto-mapping true→correct / false→incorrect; cannot express partial.
-  let quality: 'correct' | 'incorrect' | 'partial' | undefined;
+  // alias auto-mapping true→correct / false→incorrect; cannot express partial
+  // or unresolvable (v0.36.1.1).
+  let quality: 'correct' | 'incorrect' | 'partial' | 'unresolvable' | undefined;
   let outcome: boolean | undefined;
   if (qualityStr) {
-    if (qualityStr !== 'correct' && qualityStr !== 'incorrect' && qualityStr !== 'partial') {
-      console.error(`Invalid --quality "${qualityStr}". Expected: correct, incorrect, partial.`);
+    if (qualityStr !== 'correct' && qualityStr !== 'incorrect' && qualityStr !== 'partial' && qualityStr !== 'unresolvable') {
+      console.error(`Invalid --quality "${qualityStr}". Expected: correct, incorrect, partial, unresolvable.`);
       process.exit(1);
     }
     quality = qualityStr;
@@ -358,11 +344,10 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
   // --evidence is the v0.30.0 alias for --source on the resolve subcommand
   // (semantic clarity: "what evidence resolved this bet?").
   const source = flagValue(args, '--evidence') ?? flagValue(args, '--source');
-  const sourceId = concreteSourceId(args);
   const resolvedBy = flagValue(args, '--by') ?? 'garry';
   const dirArg = flagValue(args, '--dir');
 
-  const pageId = await getPageId(engine, slug, sourceId);
+  const pageId = await getPageId(engine, slug);
   await engine.resolveTake(pageId, rowNum, {
     quality,
     outcome,
@@ -388,7 +373,7 @@ async function cmdResolve(engine: BrainEngine, args: string[]): Promise<void> {
     const parsed = parseTakesFence(body);
     const target = parsed.takes.find(t => t.rowNum === rowNum);
     if (!target) {
-      console.warn(`[takes resolve] DB updated but row #${rowNum} not in markdown fence; run 'gbrain extract takes --slugs ${slug} --source-id ${sourceId}' to reconcile.`);
+      console.warn(`[takes resolve] DB updated but row #${rowNum} not in markdown fence; run 'gbrain extract takes --slugs ${slug}' to reconcile.`);
       return;
     }
     // Derive resolved fields from the inputs. Mirror the engine semantics:
@@ -448,29 +433,46 @@ async function cmdScorecard(engine: BrainEngine, args: string[]): Promise<void> 
     return;
   }
 
-  if (card.resolved === 0) {
+  // v0.37.2.0: don't hide the unresolvable signal. A brain with only unresolvable
+  // verdicts still has a story to tell — "your judge tried but couldn't decide" —
+  // and the spec's whole headline ("50% of your tech calls land unresolvable")
+  // depends on this output rendering when resolved=0 but unresolvable_count>0.
+  const unresolvableCount = card.unresolvable_count ?? 0;
+  if (card.resolved === 0 && unresolvableCount === 0) {
     console.log(`No resolved bets yet${holder ? ` for ${holder}` : ''}.`);
     return;
   }
-  const fmt = (n: number | null, digits = 3) => n === null ? '—' : n.toFixed(digits);
+  const fmt = (n: number | null | undefined, digits = 3) =>
+    n === null || n === undefined ? '—' : n.toFixed(digits);
   console.log(`# Scorecard${holder ? ` — ${holder}` : ''}`);
   if (domainPrefix) console.log(`Scope: domain=${domainPrefix}`);
   if (since || until) console.log(`Window: ${since ?? 'all'} → ${until ?? 'now'}`);
   console.log('');
-  console.log(`  total bets:    ${card.total_bets}`);
-  console.log(`  resolved:      ${card.resolved}`);
-  console.log(`  correct:       ${card.correct}`);
-  console.log(`  incorrect:     ${card.incorrect}`);
-  console.log(`  partial:       ${card.partial}`);
-  console.log(`  accuracy:      ${fmt(card.accuracy)}`);
-  console.log(`  Brier:         ${fmt(card.brier, 4)}   (correct ∨ incorrect only; lower is better; 0.25 = always-50% baseline)`);
-  console.log(`  partial_rate:  ${fmt(card.partial_rate)}`);
+  console.log(`  total bets:        ${card.total_bets}`);
+  console.log(`  resolved:          ${card.resolved}`);
+  console.log(`  correct:           ${card.correct}`);
+  console.log(`  incorrect:         ${card.incorrect}`);
+  console.log(`  partial:           ${card.partial}`);
+  if (unresolvableCount > 0 || card.unresolvable_rate !== undefined) {
+    console.log(`  unresolvable:      ${unresolvableCount}`);
+  }
+  console.log(`  accuracy:          ${fmt(card.accuracy)}`);
+  console.log(`  Brier:             ${fmt(card.brier, 4)}   (correct ∨ incorrect only; lower is better; 0.25 = always-50% baseline)`);
+  console.log(`  partial_rate:      ${fmt(card.partial_rate)}`);
+  if (unresolvableCount > 0 || card.unresolvable_rate !== undefined && card.unresolvable_rate !== null) {
+    console.log(`  unresolvable_rate: ${fmt(card.unresolvable_rate)}   (unresolvable / (resolved + unresolvable); high = weak evidence retrieval)`);
+  }
   if (card.partial_rate !== null && card.partial_rate > PARTIAL_RATE_WARNING_THRESHOLD) {
     console.log('');
     console.log(`  [!] partial_rate is high (>${(PARTIAL_RATE_WARNING_THRESHOLD * 100).toFixed(0)}%) — calibration may be optimistic.`);
     console.log(`      Hedged bets escape the Brier denominator. Resolve them more decisively if the data supports it.`);
   }
-  if (card.resolved < 100) {
+  if (card.unresolvable_rate !== null && card.unresolvable_rate !== undefined && card.unresolvable_rate > 0.30) {
+    console.log('');
+    console.log(`  [!] unresolvable_rate is high (>${(0.30 * 100).toFixed(0)}%) — most grade attempts are running into evidence gaps.`);
+    console.log(`      The judge is working; retrieval isn't producing enough context to decide. Look at evidence-retrieval coverage, not prediction accuracy.`);
+  }
+  if (card.resolved < 100 && card.resolved > 0) {
     console.log('');
     console.log(`  Note: n=${card.resolved} is small. Brier is noisy below ~100 resolved bets.`);
   }
@@ -530,18 +532,18 @@ export async function runTakes(engine: BrainEngine, args: string[]): Promise<voi
     console.log(`Usage: gbrain takes <subcommand> [options]
 
 Subcommands:
-  takes <slug> [--source-id id] [--json] [--who h] [--kind k] [--sort weight|since_date|created_at] [--expired]
+  takes <slug> [--json] [--who h] [--kind k] [--sort weight|since_date|created_at] [--expired]
                                           List takes for a page
-  takes search "<query>" [--source-id id|__all__] [--limit N] [--json]
+  takes search "<query>" [--limit N] [--json]
                                           Keyword search across all takes
   takes add <slug> --claim "..." --kind <fact|take|bet|hunch> --who <holder>
-                   [--source-id id] [--weight 0.5] [--source "..."] [--since YYYY-MM]
+                   [--weight 0.5] [--source "..."] [--since YYYY-MM]
                                           Append a take (markdown + DB)
-  takes update <slug> --row N [--source-id id] [--weight 0.7] [--source "..."] [--since YYYY-MM]
+  takes update <slug> --row N [--weight 0.7] [--source "..."] [--since YYYY-MM]
                                           Update mutable fields
-  takes supersede <slug> --row N --claim "..." [--source-id id] [--kind k] [--who h] [--weight 0.5] [--source "..."]
+  takes supersede <slug> --row N --claim "..." [--kind k] [--who h] [--weight 0.5] [--source "..."]
                                           Strikethrough old + append new
-  takes resolve <slug> --row N --quality correct|incorrect|partial [--source-id id]
+  takes resolve <slug> --row N --quality correct|incorrect|partial
                        [--evidence "..."] [--value N --unit usd|pct|count] [--by <slug>]
                                           Record bet resolution (immutable, v0.30.0)
                                           Back-compat: --outcome true|false (deprecated alias)
@@ -552,7 +554,6 @@ Subcommands:
 
 Common flags:
   --dir <path>    Override the brain directory (default: sync.repo_path config)
-  --source-id id  Target the GBrain source row for duplicate-safe page lookup (default: default)
   --help, -h      Show this help
 `);
     return;
