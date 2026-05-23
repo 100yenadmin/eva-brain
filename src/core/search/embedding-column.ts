@@ -68,6 +68,7 @@ import type {
   SearchOpts,
 } from '../types.ts';
 import type { GBrainConfig } from '../config.ts';
+import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from '../ai/defaults.ts';
 
 // ---- Constants ---------------------------------------------------------
 
@@ -293,11 +294,35 @@ export function getEmbeddingColumnRegistry(
   const out: Record<string, EmbeddingColumnConfig> = Object.create(null);
 
   // Builtin: 'embedding' — derived from primary config keys.
-  const embedModel = cfg.embedding_model ?? 'voyage:voyage-4-large';
+  //
+  // v0.37 fix wave (Lane A.5 + CDX2-3): resolution chain is
+  // `cfg.embedding_model > gateway resolved model > DEFAULT_EMBEDDING_MODEL`.
+  // The middle tier matters because callers that configure the gateway
+  // (init paths, tests, programmatic SDK consumers) expect the registry
+  // to reflect the gateway state — they didn't write the field into
+  // `~/.gbrain/config.json`. Falling straight from `cfg.embedding_model`
+  // to the static DEFAULT loses that information.
+  //
+  // try/catch covers the gateway-unconfigured case (rare but exists in
+  // unit tests that exercise the registry without booting the gateway).
+  let gwModel: string | undefined;
+  let gwDims: number | undefined;
+  try {
+    // Dynamic import avoids a static cycle (gateway can transitively
+    // depend on this module via search/hybrid.ts → search/embedding-column.ts).
+    // require() is synchronous here because we're already on a hot path.
+    const gw = require('../ai/gateway.ts') as typeof import('../ai/gateway.ts');
+    gwModel = gw.getEmbeddingModel();
+    gwDims = gw.getEmbeddingDimensions();
+  } catch {
+    // Gateway unconfigured or import cycle — fall through to the
+    // canonical default in `ai/defaults.ts`.
+  }
+  const embedModel = cfg.embedding_model ?? gwModel ?? DEFAULT_EMBEDDING_MODEL;
   const embedDims =
     typeof cfg.embedding_dimensions === 'number' && cfg.embedding_dimensions > 0
       ? cfg.embedding_dimensions
-      : 2048;
+      : (typeof gwDims === 'number' && gwDims > 0 ? gwDims : DEFAULT_EMBEDDING_DIMENSIONS);
   out['embedding'] = {
     provider: embedModel,
     dimensions: embedDims,
@@ -442,23 +467,31 @@ export function isDefaultColumn(resolved: ResolvedColumn): boolean {
  * Cache-safety criteria:
  *   1. Column name is `embedding` (the cache table only knows about
  *      this column; non-default columns always skip).
- *   2. Resolved dimensions match `cfg.embedding_dimensions` (or Eva's
- *      Voyage 2048 default when unset).
- *   3. Resolved provider matches `cfg.embedding_model` (or the Eva
- *      default). The model is the "embedding space identifier" — two
- *      models produce non-interchangeable vectors even at the same
- *      dim count.
+ *   2. Resolved dimensions match `cfg.embedding_dimensions` (or
+ *      DEFAULT_EMBEDDING_DIMENSIONS from `ai/defaults.ts` when unset).
+ *   3. Resolved provider matches `cfg.embedding_model` (or
+ *      DEFAULT_EMBEDDING_MODEL). The model is the "embedding space
+ *      identifier" — two models produce non-interchangeable vectors
+ *      even at the same dim count.
  *
  * When any of these mismatch, return false so hybridSearchCached
  * skips both the lookup and the writeback paths.
  */
 export function isCacheSafe(resolved: ResolvedColumn, cfg: GBrainConfig): boolean {
   if (resolved.name !== DEFAULT_COLUMN_NAME) return false;
+  // v0.37 fix wave: same resolution chain as the registry — cfg > gateway > default.
+  let gwModel: string | undefined;
+  let gwDims: number | undefined;
+  try {
+    const gw = require('../ai/gateway.ts') as typeof import('../ai/gateway.ts');
+    gwModel = gw.getEmbeddingModel();
+    gwDims = gw.getEmbeddingDimensions();
+  } catch { /* gateway unconfigured — fall through to constants */ }
   const cfgDims = (typeof cfg.embedding_dimensions === 'number' && cfg.embedding_dimensions > 0)
     ? cfg.embedding_dimensions
-    : 2048;
+    : (typeof gwDims === 'number' && gwDims > 0 ? gwDims : DEFAULT_EMBEDDING_DIMENSIONS);
   if (resolved.dimensions !== cfgDims) return false;
-  const cfgModel = cfg.embedding_model ?? 'voyage:voyage-4-large';
+  const cfgModel = cfg.embedding_model ?? gwModel ?? DEFAULT_EMBEDDING_MODEL;
   if (resolved.embeddingModel !== cfgModel) return false;
   return true;
 }
@@ -480,14 +513,14 @@ export function isBuiltinColumn(name: string): name is BuiltinKey {
  *
  * Behavior:
  *   - ResolvedColumn → returned as-is.
- *   - undefined → builtin 'embedding' descriptor (vector, dims=2048).
+ *   - undefined → builtin 'embedding' descriptor (vector, dims=1536).
  *   - 'embedding' literal → same as undefined.
  *   - 'embedding_image' literal → builtin 'embedding_image' descriptor.
  *   - Any other string → throws EmbeddingColumnNotRegisteredError. The
  *     resolver lives at hybrid/op boundary; bare string names are NOT
  *     accepted at the engine layer (per D11 — engine purity).
  *
- * `dims` for the 'embedding' builtin is hardcoded 2048 here purely as
+ * `dims` for the 'embedding' builtin is hardcoded 1536 here purely as
  * a no-op placeholder; the engine's SQL cast is `$1::vector` (no
  * parenthesized N) when type='vector', so the dims field is unused by
  * `buildVectorCastFragment` and never touches the wire. Tests that
@@ -511,7 +544,7 @@ export function normalizeEngineColumn(
     return {
       name: 'embedding',
       type: 'vector',
-      dimensions: 2048, // placeholder — not used by $1::vector cast
+      dimensions: 1536, // placeholder — not used by $1::vector cast
       embeddingModel: '', // engine doesn't embed; left blank
     };
   }
@@ -524,6 +557,17 @@ export function normalizeEngineColumn(
       type: 'vector',
       dimensions: 1024,
       embeddingModel: '',
+    };
+  }
+
+  // v0.36 Phase 3 unified multimodal column — populated by
+  // `gbrain reindex --multimodal`. Voyage multimodal-3, vector(1024).
+  if (embeddingColumn === 'embedding_multimodal') {
+    return {
+      name: 'embedding_multimodal',
+      type: 'vector',
+      dimensions: 1024,
+      embeddingModel: 'voyage:voyage-multimodal-3',
     };
   }
 

@@ -1,25 +1,46 @@
 // Page types
-// email | slack | calendar-event: native Page types for inbox/chat/calendar
-// ingest (and the amara-life-v1 eval corpus in the sibling gbrain-evals repo).
-// Previously these collapsed into `source`, which lost workflow semantics
-// (e.g. "attended meetings" vs "received emails").
-// `code` (v0.19.0): tree-sitter-chunked source files; consumed by code-def /
-// code-refs / code-callers / code-callees + Cathedral II two-pass retrieval.
-// `image` (v0.27.1): multimodal-embedded images (PNG/JPG/HEIC/AVIF). One page
-// per image; chunk lives in content_chunks with modality='image' +
-// embedding_image vector(1024). Bytes never enter the DB; the brain repo
-// holds the file and `files.storage_path` references it.
-// `synthesis` (v0.28): think-generated provenance pages.
-export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture' | 'meeting' | 'note' | 'email' | 'slack' | 'calendar-event' | 'code' | 'image' | 'synthesis';
+// v0.38: `PageType` opens from a closed 23-element union to `string`. The
+// closed union was always a fiction — every gbrain user accumulated organic
+// types (`apple-note`, `therapy-session`, `tweet-bundle`, etc.) via
+// `as PageType` casts the engine never enforced. v0.38 schema packs make
+// the runtime authoritative: validation moves from compile-time
+// exhaustiveness to pack-driven runtime checks against the active schema
+// pack's declared types.
+//
+// Backward compat: `ALL_PAGE_TYPES` stays as the canonical list of types
+// `gbrain-base` declares (the universal starter pack). It is NO LONGER an
+// exhaustive enum — it is the seed set that reproduces pre-v0.38 hardcoded
+// behavior. Schema packs can add, alias, or remove types via their manifest;
+// the engine consults `loadActivePack()` for the runtime view.
+//
+// Historical type docs (kept for `gbrain-base` codegen reference):
+// - email | slack | calendar-event: native Page types for inbox/chat/calendar
+//   ingest (and the amara-life-v1 eval corpus in the sibling gbrain-evals repo).
+//   Previously these collapsed into `source`, which lost workflow semantics
+//   (e.g. "attended meetings" vs "received emails").
+// - `code` (v0.19.0): tree-sitter-chunked source files; consumed by code-def /
+//   code-refs / code-callers / code-callees + Cathedral II two-pass retrieval.
+// - `image` (v0.27.1): multimodal-embedded images (PNG/JPG/HEIC/AVIF). One page
+//   per image; chunk lives in content_chunks with modality='image' +
+//   embedding_image vector(1024). Bytes never enter the DB; the brain repo
+//   holds the file and `files.storage_path` references it.
+// - `synthesis` (v0.28): think-generated provenance pages.
+export type PageType = string;
 
 /**
- * Canonical list of every PageType value. Kept in sync with the union above.
- * Used by the v0.27.1 page-type-exhaustive contract test to walk every value
- * through public surfaces (serialize, slug registry, frontmatter validate)
- * and assert no surprise. Adding a value to PageType MUST also add it here —
- * the contract test enforces parity.
+ * v0.38: Seed list of types declared by the built-in `gbrain-base` schema
+ * pack. NO LONGER exhaustive — schema packs add their own types via manifest.
+ * This array is referenced by `scripts/generate-gbrain-base.ts` codegen to
+ * produce the `gbrain-base.yaml` pack manifest that reproduces today's
+ * hardcoded behavior byte-for-byte.
+ *
+ * Pre-v0.38 contract: this list was exhaustive and the `page-type-exhaustive`
+ * test walked every value through public surfaces. v0.38 relaxes that —
+ * the test now verifies these BASE types are still recognized, but new
+ * pack-declared types are validated by the schema-pack runtime, not by
+ * type-system exhaustiveness.
  */
-export const ALL_PAGE_TYPES: readonly PageType[] = [
+export const ALL_PAGE_TYPES: readonly string[] = [
   'person', 'company', 'deal', 'yc', 'civic', 'project', 'concept',
   'source', 'media', 'writing', 'analysis', 'guide', 'hardware',
   'architecture', 'meeting', 'note', 'email', 'slack', 'calendar-event',
@@ -27,21 +48,16 @@ export const ALL_PAGE_TYPES: readonly PageType[] = [
 ] as const;
 
 /**
- * Exhaustiveness helper. Use in the default branch of any `switch (x.type)`
- * to force the TypeScript compiler to error if the union grows. The CI guard
- * scripts/check-pagetype-exhaustive.sh enforces that any new switch on a
- * PageType-shaped discriminator imports and uses this helper in default.
+ * v0.38: PageType is now `string`. The pre-v0.38 `assertNever` helper used
+ * to enforce exhaustive switches over the closed PageType union; with the
+ * open-type model, that pattern moves to per-primitive switches (the
+ * 5-element primitive enum still gives compile-time exhaustiveness via
+ * narrowing, but page types themselves no longer do).
  *
- *   switch (page.type) {
- *     case 'person': return ...;
- *     case 'company': return ...;
- *     // ... every other PageType ...
- *     default: return assertNever(page.type);
- *   }
- *
- * If a new PageType is added without a corresponding case, `assertNever`
- * fails to type-check (the parameter is no longer `never`), preventing the
- * silent default-branch fall-through that bit gbrain v0.20 / v0.22.
+ * Kept as a generic exhaustiveness helper for switches over the closed
+ * `PackPrimitive` enum (entity | media | temporal | annotation | concept)
+ * declared by `src/core/schema-pack/primitives.ts`. NOT used on PageType
+ * itself anymore.
  */
 export function assertNever(x: never): never {
   throw new Error(`Unhandled discriminant: ${JSON.stringify(x)}`);
@@ -107,6 +123,22 @@ export interface Page {
    * Test fixtures building synthetic Page rows must include this field.
    */
   source_id: string;
+
+  // v0.39.3.0 provenance read-path (WARN-8 + CV5). Migration v81 columns
+  // surfaced through getPage / list_pages so `gbrain call get_page | jq
+  // .source_kind` actually returns the value the put_page op wrote. NULL
+  // on historical pages that pre-date v0.38. Three-state read pattern
+  // (undefined: not in projection, null: column NULL, populated: real
+  // value) — matches the v0.26.5 deleted_at convention so SELECTs that
+  // don't project these columns continue to compile.
+  /** Ingestion-channel taxonomy. See PageInput.source_kind for the closed set. */
+  source_kind?: string | null;
+  /** Original URI/path/message-id the ingestion event carried. */
+  source_uri?: string | null;
+  /** Richer label paired with source_kind (often same value; indexable separately). */
+  ingested_via?: string | null;
+  /** Server-stamped first-write audit timestamp; CV12 COALESCE-preserved across edits. */
+  ingested_at?: Date | null;
 }
 
 export type EffectiveDateSource =
@@ -159,6 +191,42 @@ export interface PageInput {
    * NULL on legacy / non-file callers (MCP `put_page`, fixture seeds).
    */
   source_path?: string | null;
+
+  // v0.39.3.0 provenance write-through (WARN-8 + A1 + CV6).
+  // Migration v81 added these 4 nullable columns to `pages`. Until v0.39.3.0,
+  // put_page wrote them into the file's frontmatter (via the write-through
+  // path) but never to the DB columns — `gbrain call get_page | jq .source_kind`
+  // returned null even though the JSON receipt claimed `capture-cli`. These
+  // params close the loop. Trust gate lives at the put_page op layer
+  // (operations.ts): ONLY ctx.remote === false (trusted local callers like
+  // capture CLI, autopilot, dream cycle) may populate these fields. Remote
+  // MCP callers get server-stamped `mcp:put_page` regardless of what they
+  // pass (CV6 fail-closed; closes the spoofing surface where a write-scope
+  // OAuth token could poison the audit trail with arbitrary labels).
+  //
+  // Storage shape: nullable TEXT columns; the engine's putPage SQL uses
+  // COALESCE-preserve UPDATE semantics (CV12) so omitting these fields on
+  // a later put_page (e.g. a routine edit) does NOT erase the original
+  // ingestion's audit trail. First-write wins.
+  /**
+   * Ingestion-channel taxonomy: 'capture-cli' | 'webhook' | 'file-watcher' |
+   * 'inbox-folder' | 'cron-scheduler' | 'put_page' | 'mcp:put_page' |
+   * '<skillpack-kind>'. Server stamps `mcp:put_page` for remote callers.
+   */
+  source_kind?: string | null;
+  /** Original URI/path/message-id the event carried (file path, mail message-id, URL). NULL when unknown. */
+  source_uri?: string | null;
+  /**
+   * Richer label paired with source_kind (often the same value; kept narrow
+   * + indexable separately per migration v81's documented intent).
+   */
+  ingested_via?: string | null;
+  /**
+   * Always server-stamped at put_page time when any provenance is being
+   * written (NEVER client-controlled — keeps the audit timestamp truthful).
+   * NULL on historical rows that pre-date v0.38.
+   */
+  ingested_at?: Date | null;
 }
 
 export interface PageFilters {
@@ -228,6 +296,60 @@ export const PAGE_SORT_SQL: Record<NonNullable<PageFilters['sort']>, string> = {
  * See `src/core/cycle/emotional-weight.ts` for the score formula and
  * `engine.getRecentSalience` for the SQL.
  */
+/**
+ * v0.37.0 — domain-bank sampling for `gbrain brainstorm` / `gbrain lsd`.
+ * Pulls one page per prefix from a caller-supplied prefix list.
+ * Tiebreaker via JOIN to page_links (inbound link count = "structural centrality").
+ * Stale-bias optional (LSD mode prefers forgotten pages via `last_retrieved_at`).
+ * sourceId/sourceIds threaded from day 1 per [source-id-canonical-thread].
+ */
+export interface DomainBankSampleOpts {
+  /** Top-level slug prefixes to sample from (e.g. ['wiki/vc', 'wiki/biology']). */
+  prefixes: string[];
+  /** Slugs to exclude (typically the close-set from hybridSearch). */
+  excludeSlugs?: string[];
+  /** When true, prefer pages with NULL last_retrieved_at or > staleThresholdDays old. */
+  staleBias?: boolean;
+  /** Days threshold for "stale" classification. Default 90. */
+  staleThresholdDays?: number;
+  /** Single-source scope (canonical scalar form). */
+  sourceId?: string;
+  /** Federated read scope (array form, wins over scalar). */
+  sourceIds?: string[];
+}
+
+/** v0.37.0 — corpus-sampling fallback for `gbrain brainstorm` when prefix-stratified can't fill M. */
+export interface CorpusSampleOpts {
+  /** Number of pages to sample. */
+  n: number;
+  /** Slugs to exclude (close-set + already-picked-by-prefix-stratified). */
+  excludeSlugs?: string[];
+  /** Stable seed for deterministic sampling in tests. Falls back to random when omitted. */
+  seed?: number;
+  /** Single-source scope. */
+  sourceId?: string;
+  /** Federated read scope. */
+  sourceIds?: string[];
+}
+
+/** v0.37.0 — one row per page returned by domain-bank's prefix/corpus sampling. */
+export interface DomainBankRow {
+  slug: string;
+  source_id: string;
+  /** Top-level prefix (`^[^/]+/[^/]+`) or null for short slugs. */
+  prefix: string | null;
+  page_id: number;
+  title: string | null;
+  /** Page body — what gets injected into the brainstorm prompt as "the user wrote..." */
+  compiled_truth: string;
+  /** COUNT(page_links.id WHERE to_page_id = this) — inbound link count, the "structural centrality" tiebreaker (D10). */
+  connection_count: number;
+  /** When this page was last surfaced by a user-facing search/query. Powers LSD stale-bias. */
+  last_retrieved_at: Date | null;
+  /** Lowest chunk_index with non-null embedding on the default embedding_column. Null if no embedded chunks. */
+  representative_chunk_id: number | null;
+}
+
 export interface SalienceOpts {
   /** Window in days. Default 14. */
   days?: number;
@@ -405,6 +527,15 @@ export interface SearchResult {
   score: number;
   stale: boolean;
   /**
+   * v0.36 (cross-modal wave): the chunk's modality discriminator from
+   * content_chunks.modality. 'text' for the existing text-embedding rows,
+   * 'image' for rows populated by importImageFile. Surfaced so callers /
+   * renderers can distinguish text matches from image matches in `'both'`
+   * mode results. Optional for back-compat with engines that don't project
+   * the column (defaults to 'text' in renderers when absent).
+   */
+  modality?: 'text' | 'image';
+  /**
    * v0.18.0: the sources.id the page belongs to. Dedup composite-keys
    * on (source_id, slug) — see src/core/search/dedup.ts. Defaults to
    * 'default' for pre-v0.17 rows that lacked the column.
@@ -541,8 +672,10 @@ export interface SearchOpts {
    * 1. String name (legacy + user-facing). Engine and hybridSearch convert
    *    to ResolvedColumn at the boundary via `resolveEmbeddingColumn()`.
    *    Built-in names: 'embedding' (default, text), 'embedding_image'
-   *    (multimodal). Custom user-declared names also accepted when
-   *    registered in `embedding_columns` config.
+   *    (multimodal). v0.36 cross-modal wave adds 'embedding_multimodal'
+   *    (unified column populated by `gbrain reindex --multimodal`). Custom
+   *    user-declared names also accepted when registered in
+   *    `embedding_columns` config.
    *
    * 2. ResolvedColumn descriptor (internal). The engine ONLY accepts
    *    this shape — hybridSearch resolves once at entry and passes the
@@ -556,7 +689,7 @@ export interface SearchOpts {
    * searchKeyword is unaffected — modality filtering on the keyword path
    * is independent.
    */
-  embeddingColumn?: 'embedding' | 'embedding_image' | string | ResolvedColumn;
+  embeddingColumn?: 'embedding' | 'embedding_image' | 'embedding_multimodal' | string | ResolvedColumn;
   /**
    * @deprecated v0.29.1: use `since` instead. Removed in v0.30.
    * v0.27.0: filter results to pages updated/created after this date. ISO-8601 string.
@@ -636,33 +769,34 @@ export interface SearchOpts {
     rerankerFn?: (input: { query: string; documents: string[]; topN?: number; model?: string; signal?: AbortSignal; timeoutMs?: number }) => Promise<{ index: number; relevanceScore: number }[]>;
   };
   /**
-   * v0.35.6.0 — floor-ratio gate for metadata-axis boost stages (backlink,
-   * salience, recency). Number in [0, 1] or undefined (default = no gate).
-   *
-   * When set, each gated stage skips results whose pre-boost score is below
-   * `floorRatio * topScore`, where `topScore` is computed ONCE at
-   * `runPostFusionStages` entry from the post-cosine-rescore snapshot. The
-   * same threshold gates all three stages — order-independent semantic.
-   *
-   * Resolution chain (mirrors other search-lite knobs):
-   *   per-call `SearchOpts.floorRatio` → config `search.floor_ratio`
-   *   → MODE_BUNDLES[mode].floor_ratio (undefined for all 3 modes today)
-   *   → undefined fallback.
-   *
-   * SCOPE: gates ONLY the three metadata stages. Exact-match boost
-   * (`applyExactMatchBoost` in intent-weights.ts) runs independently as a
-   * lexical-relevance signal and is NOT gated by design.
-   *
-   * Sensible operator override values for dense-embedder corpora: 0.85-0.95.
-   * Default stays undefined pending per-corpus ablation evidence (see
-   * `TODOS.md` floor-ratio ablation entry).
-   *
-   * Out-of-range values (negative, > 1, NaN, Infinity) silently disable
-   * the gate at the runtime layer; the config-parse layer also rejects
-   * out-of-range values. Defense in depth — a malformed value never
-   * gates anything.
+   * v0.35.6.0 — floor-ratio gate for metadata-axis boost stages.
+   * Number in [0, 1] or undefined (default = no gate). When set, each gated
+   * stage skips results whose pre-boost score is below `floorRatio * topScore`.
+   * Same threshold gates all three metadata stages; exact-match boost runs
+   * independently. Out-of-range values silently disable the gate.
+   * Sensible operator overrides for dense-embedder corpora: 0.85-0.95.
    */
   floorRatio?: number;
+  /**
+   * v0.36 cross-modal wave: route this search through the multimodal
+   * embedding space (Voyage multimodal-3 by default).
+   *
+   * - 'text' (default for queries that don't match image-intent regex):
+   *   existing text-embedding path. No behavior change vs pre-v0.36.
+   * - 'image': force routing through the multimodal model + embedding_image
+   *   column. Skip LLM expansion (image embeddings handle synonyms in-space)
+   *   and skip keyword search (no FTS index on image content).
+   * - 'both': run text and image vector searches in parallel; merge via
+   *   modality-weighted RRF.
+   * - 'auto' (literal): same effect as undefined — let intent classifier
+   *   decide. Accepted on the wire so MCP callers can be explicit.
+   *
+   * Cross-modal override matrix (D9): when effective modality is 'image',
+   * cross-modal path overrides expansion (false) and reranker (false)
+   * regardless of mode bundle. zerank-2 can't rerank image embeddings;
+   * sending them produces garbage scores.
+   */
+  crossModal?: 'text' | 'image' | 'both' | 'auto';
 }
 
 /**

@@ -15,7 +15,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { gbrainPath } from '../../config.ts';
+import { isoWeekFilename, resolveAuditDir as _sharedResolveAuditDir } from '../../audit-week-file.ts';
 
 export interface ShellAuditEvent {
   ts: string;
@@ -30,33 +30,18 @@ export interface ShellAuditEvent {
   inherit?: string[];
 }
 
-/** Compute `shell-jobs-YYYY-Www.jsonl` using ISO-8601 week numbering.
- *
- *  Year-boundary edge: 2027-01-01 is ISO week 53 of year 2026, so the correct
- *  filename is `shell-jobs-2026-W53.jsonl`. This matches the ISO week standard
- *  (week containing the first Thursday of the year is W1; week containing Dec 28
- *  is always W52 or W53 of that year).
- */
+/** Compute `shell-jobs-YYYY-Www.jsonl`. Delegates to the shared helper in
+ *  `src/core/audit-week-file.ts` — Year-boundary edges (2027-01-01 → W53 of
+ *  2026, 2020-W53 etc.) are covered by `test/core/audit-week-file.test.ts`. */
 export function computeAuditFilename(now: Date = new Date()): string {
-  // Copy date and move to nearest Thursday (ISO week anchor).
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const dayNum = (d.getUTCDay() + 6) % 7; // Mon=0, Sun=6
-  d.setUTCDate(d.getUTCDate() - dayNum + 3); // shift to Thursday
-  const isoYear = d.getUTCFullYear();
-  const firstThursday = new Date(Date.UTC(isoYear, 0, 4));
-  const firstThursdayDayNum = (firstThursday.getUTCDay() + 6) % 7;
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstThursdayDayNum + 3);
-  const weekNum = Math.round((d.getTime() - firstThursday.getTime()) / (7 * 86400000)) + 1;
-  const ww = String(weekNum).padStart(2, '0');
-  return `shell-jobs-${isoYear}-W${ww}.jsonl`;
+  return isoWeekFilename('shell-jobs', now);
 }
 
 /** Resolve the audit dir. Honors `GBRAIN_AUDIT_DIR` for container/sandbox deployments
- *  where `$HOME` is read-only. Defaults to `~/.gbrain/audit/`. */
+ *  where `$HOME` is read-only. Defaults to `~/.gbrain/audit/`. Delegates to the
+ *  shared helper. */
 export function resolveAuditDir(): string {
-  const override = process.env.GBRAIN_AUDIT_DIR;
-  if (override && override.trim().length > 0) return override;
-  return gbrainPath('audit');
+  return _sharedResolveAuditDir();
 }
 
 export function logShellSubmission(event: Omit<ShellAuditEvent, 'ts'>): void {

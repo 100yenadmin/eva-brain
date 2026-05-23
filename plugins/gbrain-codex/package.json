@@ -1,6 +1,6 @@
 {
   "name": "@eva-brain/gbrain-codex",
-  "version": "0.36.5.0",
+  "version": "0.40.2.0",
   "description": "Codex Desktop local plugin adapter for Eva Brain/GBrain.",
   "type": "module",
   "private": true,

@@ -66,8 +66,18 @@ describe('v0.36.1.x #1090 — admin embed two-tier resolution', () => {
 describe('v0.36.1.x #1077 — admin register-client supports PKCE public clients', () => {
   test('admin endpoint reads grantTypes / redirectUris / tokenEndpointAuthMethod from request body', () => {
     const src = readFileSync('src/commands/serve-http.ts', 'utf8');
-    // Single destructure line includes all three fields
-    expect(src).toMatch(/const\s+\{\s*name,\s*scopes,\s*tokenTtl,\s*grantTypes,\s*redirectUris,\s*tokenEndpointAuthMethod\s*\}\s*=\s*req\.body/);
+    // The destructure must surface name / tokenTtl / grantTypes /
+    // redirectUris / tokenEndpointAuthMethod from req.body. v0.39.3.0
+    // WARN-9 (PR #1308) moved `scopes` to a separate read line that
+    // accepts BOTH `scopes` (admin SPA) AND `scope` (OAuth wire singular)
+    // via `?? `, so this regex no longer requires `scopes` in the inline
+    // destructure — it's separately covered by the scope-source check
+    // below.
+    expect(src).toMatch(/const\s+\{\s*name,\s*(?:[^}]*?,\s*)?tokenTtl,\s*grantTypes,\s*redirectUris,\s*tokenEndpointAuthMethod\s*\}\s*=\s*req\.body/);
+    // v0.39.3.0 WARN-9: the route must still read a `scope`/`scopes` field
+    // (under either name) from req.body. Pin the fallback pattern so the
+    // PKCE-fix regression contract stays load-bearing.
+    expect(src).toMatch(/req\.body[^;]*scopes\s*\?\?\s*[^;]*scope\b/);
     // PKCE branch NULLs client_secret_hash + sets auth method to 'none'
     expect(src).toMatch(/tokenEndpointAuthMethod\s*===\s*'none'/);
     expect(src).toMatch(/client_secret_hash\s*=\s*NULL,\s*token_endpoint_auth_method\s*=\s*'none'/);

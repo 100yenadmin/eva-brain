@@ -3200,6 +3200,87 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
+    version: 78,
+    name: 'embedding_multimodal_column',
+    // D20 Phase 3: add the unified-multimodal vector column to content_chunks.
+    //
+    // Column-only migration — the HNSW partial index is built AFTER the first
+    // bulk reindex completes (via `gbrain reindex --multimodal --build-index`
+    // or auto-built at completion). pgvector docs explicitly note that HNSW
+    // build is faster after data load, and per-row index maintenance during
+    // bulk reindex would slow the operation 2-3x.
+    //
+    // Operator class will be vector_cosine_ops to match the existing
+    // embedding_image index for ranking parity.
+    //
+    // The column ships at 1024 dims to match Voyage multimodal-3 output.
+    // Operators wanting a different dim (Cohere multimodal at 1408d, etc.)
+    // need a column rebuild — surfaced by the `multimodal_column_dim_match`
+    // doctor check (D20 model+dim pin).
+    idempotent: true,
+    sql: `
+      ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedding_multimodal vector(1024);
+    `,
+    sqlFor: {
+      pglite: `
+        ALTER TABLE content_chunks ADD COLUMN IF NOT EXISTS embedding_multimodal vector(1024);
+      `,
+    },
+  },
+  {
+    version: 77,
+    name: 'mcp_spend_log',
+    // D23-#6: per-OAuth-client paid-API spend tracking. search_by_image
+    // (Phase 2 of cross-modal wave) makes paid Voyage calls on behalf of
+    // remote OAuth clients. The existing v0.22.7 limiter caps requests/min
+    // but not spend. A 100-req/min attacker can burn ~$3/hour at Voyage
+    // rates. This table aggregates spend so the daily-budget check can
+    // refuse new calls when a client crosses
+    // search.image_query.daily_budget_usd_per_client (default $5).
+    //
+    // Indexed for the hot read: (client_id, day) lookup, summed.
+    // Row count is bounded by O(clients × days) — tiny.
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS mcp_spend_log (
+        id SERIAL PRIMARY KEY,
+        client_id TEXT,
+        token_name TEXT,
+        operation TEXT NOT NULL,
+        spend_cents NUMERIC(12, 4) NOT NULL DEFAULT 0,
+        provider TEXT,
+        model TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      -- BTREE on (client_id, created_at) covers the per-day rollup query
+      -- (SELECT SUM ... WHERE client_id = $ AND created_at >= today_start) via
+      -- range scan on created_at. date_trunc in an index expression would
+      -- require IMMUTABLE — TIMESTAMPTZ truncation depends on session timezone.
+      CREATE INDEX IF NOT EXISTS idx_mcp_spend_log_client_time
+        ON mcp_spend_log (client_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_mcp_spend_log_token_time
+        ON mcp_spend_log (token_name, created_at);
+    `,
+    sqlFor: {
+      pglite: `
+        CREATE TABLE IF NOT EXISTS mcp_spend_log (
+          id SERIAL PRIMARY KEY,
+          client_id TEXT,
+          token_name TEXT,
+          operation TEXT NOT NULL,
+          spend_cents NUMERIC(12, 4) NOT NULL DEFAULT 0,
+          provider TEXT,
+          model TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_spend_log_client_time
+          ON mcp_spend_log (client_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_mcp_spend_log_token_time
+          ON mcp_spend_log (token_name, created_at);
+      `,
+    },
+  },
+  {
     version: 66,
     name: 'embed_stale_partial_index',
     // Renumbered v58→v59→v60→v66 across merge waves:
@@ -3655,6 +3736,374 @@ export const MIGRATIONS: Migration[] = [
       `,
       pglite: '',
     },
+  },
+  {
+    version: 79,
+    name: 'pages_last_retrieved_at',
+    // v0.37.1.0 brainstorm/lsd wave (D15 + D11 + D12):
+    // Originally planned as v77 but v77 + v78 were claimed by the v0.37.0.0
+    // skillpack-registry + cross-modal waves landing on master first.
+    //
+    // Adds `pages.last_retrieved_at TIMESTAMPTZ NULL` — the real stale-page
+    // signal for `gbrain lsd`'s "your brain at 3am noticing what it forgot"
+    // mode. Bumped by op-layer write-back inside the `search` / `query` /
+    // `get_page` op handlers AFTER results return (NOT inside the engine
+    // methods — internal callers like sync / migrations / tests must not
+    // pollute the signal per codex round 2 #3).
+    //
+    // Full index, no partial WHERE per D12 + codex round 2 #6: LSD's primary
+    // query is `WHERE last_retrieved_at IS NULL OR last_retrieved_at < NOW()
+    // - INTERVAL '90 days'`. Postgres B-tree indexes handle NULL (sorted to
+    // one end), so one index supports both branches. A partial `WHERE NOT
+    // NULL` would miss LSD's prioritized never-retrieved branch.
+    //
+    // ADD COLUMN with no DEFAULT (NULL) is metadata-only on Postgres 11+
+    // and PGLite 17.5; instant on tables of any size.
+    idempotent: true,
+    sql: `
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS last_retrieved_at TIMESTAMPTZ NULL;
+      CREATE INDEX IF NOT EXISTS pages_last_retrieved_at_idx
+        ON pages (last_retrieved_at);
+    `,
+  },
+  {
+    version: 80,
+    name: 'takes_unresolvable_quality_v0_37_2_0',
+    // v0.37.2.0 hotfix (master) — accepts quality='unresolvable' as a 4th
+    // valid resolution state. Unblocks production grading scripts that write
+    // the 4th verdict type (the judge in grade-takes returns
+    // correct|incorrect|partial|unresolvable, but v37's CHECKs only allowed
+    // the first three).
+    //
+    // Two CHECKs to widen:
+    //   (a) Table-level `takes_resolution_consistency` enumerates valid
+    //       (quality, outcome) pairs. We add ('unresolvable', NULL).
+    //   (b) Column-level CHECK on resolved_quality enumerates valid string
+    //       values. Postgres auto-names this `takes_resolved_quality_check`
+    //       when it's attached via ADD COLUMN ... CHECK. We drop it and
+    //       re-add with the wider value list (named explicitly this time
+    //       so future widening targets a known name).
+    //
+    // v0.38 note: master's v80 (this migration) shipped to master between
+    // when this branch cut and the v0.38 ship. The v0.38 schema-pack
+    // migrations renumbered to v81 + v82 to land cleanly above it. Order
+    // matters because v80 drops + re-adds takes_resolved_quality_values
+    // and v81 will drop takes_kind_check — both touch the takes table but
+    // different constraints, no ordering hazard between them.
+    idempotent: true,
+    sql: `
+      -- (b) Drop both possible names for the column-level CHECK:
+      ALTER TABLE takes DROP CONSTRAINT IF EXISTS takes_resolved_quality_check;
+      ALTER TABLE takes DROP CONSTRAINT IF EXISTS takes_resolved_quality_values;
+      ALTER TABLE takes ADD CONSTRAINT takes_resolved_quality_values CHECK (
+        resolved_quality IS NULL
+        OR resolved_quality IN ('correct', 'incorrect', 'partial', 'unresolvable')
+      );
+
+      -- (a) Widen the (quality, outcome) consistency CHECK.
+      ALTER TABLE takes DROP CONSTRAINT IF EXISTS takes_resolution_consistency;
+      ALTER TABLE takes ADD CONSTRAINT takes_resolution_consistency CHECK (
+        (resolved_quality IS NULL             AND resolved_outcome IS NULL)
+        OR (resolved_quality = 'correct'      AND resolved_outcome = true)
+        OR (resolved_quality = 'incorrect'    AND resolved_outcome = false)
+        OR (resolved_quality = 'partial'      AND resolved_outcome IS NULL)
+        OR (resolved_quality = 'unresolvable' AND resolved_outcome IS NULL)
+      );
+    `,
+  },
+  {
+    version: 81,
+    name: 'pages_provenance_columns',
+    // v0.38 ingestion cathedral (eng review E4):
+    // Adds four nullable provenance columns to `pages` so every ingested
+    // page carries a record of WHERE it came from. The columns are
+    // populated by the ingest_capture Minion handler (via the put_page
+    // write-through path landing in a sibling commit). NULL is the
+    // historical-page default — pre-v0.38 pages never had provenance.
+    //
+    //   - ingested_via    TEXT  — source kind taxonomy
+    //                             (file-watcher | inbox-folder | webhook |
+    //                              cron-scheduler | capture-cli |
+    //                              <skillpack-kind>)
+    //   - ingested_at     TIMESTAMPTZ — UTC time the ingestion daemon
+    //                                   accepted the event
+    //   - source_uri      TEXT  — original URI/path/message-id the event
+    //                             carried (file path, mail message-id, URL)
+    //   - source_kind     TEXT  — duplicates ingested_via for indexed
+    //                             filtering convenience (one column for
+    //                             "type of source", one for richer label
+    //                             — kept narrow + indexable separately)
+    //
+    // ADD COLUMN with NULL default is metadata-only on Postgres 11+ and
+    // PGLite 17.5 — instant on tables of any size.
+    //
+    // No index: provenance queries are admin-surface only.
+    //
+    // Forward-reference bootstrap: every brain that upgrades through this
+    // version needs the columns visible to the embedded SCHEMA_SQL replay
+    // BEFORE migrations run. applyForwardReferenceBootstrap on both
+    // engines covers this; REQUIRED_BOOTSTRAP_COVERAGE pins the contract.
+    //
+    // Renumbered v80→v81 during master merge with v0.37.2.0's
+    // takes_unresolvable_quality hotfix.
+    idempotent: true,
+    sql: `
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS ingested_via TEXT NULL;
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ NULL;
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS source_uri TEXT NULL;
+      ALTER TABLE pages ADD COLUMN IF NOT EXISTS source_kind TEXT NULL;
+    `,
+  },
+  {
+    version: 82,
+    name: 'subagent_tool_executions_stable_id',
+    // (master v0.38.1.0; see end of conflict marker block for full body)
+    idempotent: true,
+    sql: `
+      ALTER TABLE subagent_tool_executions
+        ADD COLUMN IF NOT EXISTS ordinal INTEGER,
+        ADD COLUMN IF NOT EXISTS gbrain_tool_use_id UUID;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'subagent_tool_executions_stable_id'
+        ) THEN
+          ALTER TABLE subagent_tool_executions
+            ADD CONSTRAINT subagent_tool_executions_stable_id
+            UNIQUE (job_id, message_idx, ordinal);
+        END IF;
+      END$$;
+    `,
+    sqlFor: {
+      pglite: `
+        ALTER TABLE subagent_tool_executions
+          ADD COLUMN IF NOT EXISTS ordinal INTEGER;
+        ALTER TABLE subagent_tool_executions
+          ADD COLUMN IF NOT EXISTS gbrain_tool_use_id UUID;
+        ALTER TABLE subagent_tool_executions
+          DROP CONSTRAINT IF EXISTS subagent_tool_executions_stable_id;
+        ALTER TABLE subagent_tool_executions
+          ADD CONSTRAINT subagent_tool_executions_stable_id
+          UNIQUE (job_id, message_idx, ordinal);
+      `,
+    },
+  },
+  {
+    version: 83,
+    name: 'mcp_spend_reservations',
+    // (master v0.38.1.0 — full body in merged region)
+    idempotent: true,
+    sql: `
+      CREATE TABLE IF NOT EXISTS mcp_spend_reservations (
+        reservation_id UUID PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        job_id BIGINT NULL REFERENCES minion_jobs(id) ON DELETE SET NULL,
+        estimated_cents NUMERIC(12, 4) NOT NULL,
+        actual_cents NUMERIC(12, 4) NULL,
+        model TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'settled', 'expired')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        settled_at TIMESTAMPTZ NULL,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_mcp_spend_reservations_client_time
+        ON mcp_spend_reservations (client_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_mcp_spend_reservations_pending_expires
+        ON mcp_spend_reservations (status, expires_at)
+        WHERE status = 'pending';
+    `,
+  },
+  {
+    version: 84,
+    name: 'oauth_clients_budget_usd_per_day',
+    // (master v0.38.1.0 — full body in merged region)
+    idempotent: true,
+    sql: `
+      ALTER TABLE oauth_clients
+        ADD COLUMN IF NOT EXISTS budget_usd_per_day NUMERIC(10, 2) NULL;
+    `,
+  },
+  {
+    version: 85,
+    name: 'oauth_clients_agent_binding',
+    // (master v0.38.1.0 — full body in merged region)
+    idempotent: true,
+    sql: `
+      ALTER TABLE oauth_clients
+        ADD COLUMN IF NOT EXISTS bound_tools TEXT[] NULL,
+        ADD COLUMN IF NOT EXISTS bound_source_id TEXT NULL,
+        ADD COLUMN IF NOT EXISTS bound_brain_id TEXT NULL,
+        ADD COLUMN IF NOT EXISTS bound_slug_prefixes TEXT[] NULL,
+        ADD COLUMN IF NOT EXISTS bound_max_concurrent INTEGER NOT NULL DEFAULT 1;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'fk_oauth_clients_bound_source'
+        ) THEN
+          BEGIN
+            ALTER TABLE oauth_clients
+              ADD CONSTRAINT fk_oauth_clients_bound_source
+              FOREIGN KEY (bound_source_id)
+              REFERENCES sources(id) ON DELETE SET NULL;
+          EXCEPTION WHEN others THEN
+            NULL;
+          END;
+        END IF;
+      END$$;
+    `,
+    sqlFor: {
+      pglite: `
+        ALTER TABLE oauth_clients
+          ADD COLUMN IF NOT EXISTS bound_tools TEXT[] NULL;
+        ALTER TABLE oauth_clients
+          ADD COLUMN IF NOT EXISTS bound_source_id TEXT NULL;
+        ALTER TABLE oauth_clients
+          ADD COLUMN IF NOT EXISTS bound_brain_id TEXT NULL;
+        ALTER TABLE oauth_clients
+          ADD COLUMN IF NOT EXISTS bound_slug_prefixes TEXT[] NULL;
+        ALTER TABLE oauth_clients
+          ADD COLUMN IF NOT EXISTS bound_max_concurrent INTEGER NOT NULL DEFAULT 1;
+      `,
+    },
+  },
+  {
+    version: 86,
+    name: 'page_links_view_alias',
+    // v0.39.0.0 schema-cathedral wave. Renumbered v81→v86 during the
+    // master-merge of v0.38.0.0 ingestion cathedral + v0.38.1.0 agent loop
+    // (master claimed v81-v85). page_links view alias is idempotent so
+    // brains that already ran it under shanghai-v3's v81 number are safe.
+    //
+    // pglite-engine.ts and postgres-engine.ts both query a relation named
+    // `page_links` (see pglite-engine.ts:896 / postgres-engine.ts:959). The
+    // canonical table has always been `links`. This view aliases the table
+    // so brains initialized before the v0.38 schema bundle pick up the
+    // alias on upgrade.
+    //
+    // Narrow projection (id, from_page_id, to_page_id) so the view doesn't
+    // depend on later-added columns — keeps DROP COLUMN + bootstrap probes
+    // unblocked on legacy brains.
+    sql: `
+      CREATE OR REPLACE VIEW page_links AS
+        SELECT id, from_page_id, to_page_id FROM links;
+    `,
+  },
+  {
+    version: 87,
+    name: 'takes_kind_drop_check',
+    // v0.39.0.0 schema-cathedral wave (T3 + codex T10 fix). Renumbered
+    // v80→v81→v82→v87 across successive master merges. Final renumber
+    // landed it after master's v0.38.1.0 agent-loop bundle (v81-v85).
+    //
+    // Pre-v0.38: `takes.kind` was enforced by a DB CHECK constraint
+    // CHECK (kind IN ('fact','take','bet','hunch')) at the original
+    // table-creation migration (v41 / v48 in pre-renumber numbering).
+    // The same closed enum was duplicated as a TS type union.
+    //
+    // v0.38 opens the type surface so schema packs declare allowed kinds
+    // at runtime against the active pack's `annotation` primitive
+    // `takes_kinds:` field. This migration drops the DB CHECK; runtime
+    // validation in src/core/schema-pack/registry.ts takes over.
+    //
+    // Codex F10: dropping the DB CHECK without also widening the TS
+    // type "moves inconsistency around" — old clients and raw SQL could
+    // poison rows that runtime-validate cleanly. Both layers move
+    // together: this migration + src/core/engine.ts + src/core/takes-fence.ts
+    // already widened to `string`.
+    //
+    // Idempotent: `IF EXISTS` on both engines. PGLite supports
+    // ALTER TABLE DROP CONSTRAINT IF EXISTS (standard SQL).
+    idempotent: true,
+    sql: `
+      ALTER TABLE takes DROP CONSTRAINT IF EXISTS takes_kind_check;
+    `,
+  },
+  {
+    version: 88,
+    name: 'eval_candidates_schema_pack_per_source',
+    // v0.39.0.0 schema-cathedral wave (T4 + T28 + E10 + E11 codex fold).
+    // Renumbered v81→v82→v83→v88 across successive master merges. Final
+    // renumber landed it after master's v0.38.1.0 agent-loop bundle.
+    //
+    // Adds `eval_candidates.schema_pack_per_source JSONB` so `gbrain
+    // eval replay` reproduces the EXACT per-source closure that the
+    // captured query ran against. Without this, a year-old replay
+    // against an evolved pack returns different rows than the original
+    // capture — eval becomes a moving target.
+    //
+    // Shape (E11 inline canonical snapshot):
+    //   {
+    //     "<source_id>": {
+    //       "pack_name": "garry-pack",
+    //       "pack_version": "1.2.0",
+    //       "manifest_sha8": "ab12cd34",
+    //       "alias_closure_resolved": {"person": ["person","researcher"], ...}
+    //     },
+    //     ...
+    //   }
+    //
+    // Inline snapshot (E11): captures the FULL resolved alias graph at
+    // query time so replay is self-contained — no dependency on the
+    // pack file still existing in ~/.gbrain/schema-packs/. ~1KB per row
+    // for a typical 50-type pack; ~10MB/year for a heavy user (10K
+    // captured queries). Acceptable storage cost for permanent replay
+    // reliability.
+    //
+    // Codex F8 (replay version-mismatch policy): replay fails closed by
+    // default when captured pack identity drifts from the active. Pass
+    // --use-captured-snapshot flag to replay against the inline closure
+    // anyway.
+    //
+    // Pack identity = `<pack-name>@<version>+<manifest_sha8>` (codex F7).
+    //
+    // ADD COLUMN with no DEFAULT (NULL) is metadata-only on Postgres 11+
+    // and PGLite 17.5; instant on tables of any size.
+    idempotent: true,
+    sql: `
+      ALTER TABLE eval_candidates
+        ADD COLUMN IF NOT EXISTS schema_pack_per_source JSONB NULL;
+    `,
+  },
+  {
+    version: 89,
+    name: 'facts_event_type_column',
+    // v0.40.2.0 — trajectory routing wave.
+    //
+    // Adds nullable `event_type TEXT` to facts so the existing typed-claim
+    // substrate (v0.35.4 / v67) can carry event-shaped rows (e.g.
+    // event_type='meeting', 'job_change', 'location_change') alongside
+    // metric-shaped rows (claim_metric / claim_value etc). Temporal-
+    // reasoning LongMemEval questions ask about event chronology that the
+    // metric-only shape couldn't carry; this column is the minimum
+    // schema extension that lets `findTrajectory` surface event rows
+    // alongside metric rows in one chronological stream.
+    //
+    // Column-only, no index. Existing callers (founder-scorecard,
+    // eval-trajectory, gbrain think) already defensively skip NULL-metric
+    // rows in their per-metric math, so event-only rows ride through
+    // invisibly. Structured event fields (object/actor/location) are
+    // deferred to v0.40.3+ once usage shows what fields are needed.
+    //
+    // ADD COLUMN with no DEFAULT (NULL) is metadata-only on Postgres 11+
+    // and PGLite; instant on tables of any size. No bootstrap probe
+    // needed (no index, no FK references this column) — exemption pinned
+    // in test/schema-bootstrap-coverage.test.ts COLUMN_EXEMPTIONS.
+    //
+    // Renumbered v81→v82→v86→v87→v89 across four master merges:
+    //   v81 claimed by v0.38.0.0 (pages_provenance_columns).
+    //   v82-v85 claimed by v0.38.1.0 (subagent_tool_executions_stable_id,
+    //   mcp_spend_reservations, oauth_clients_budget_usd_per_day,
+    //   oauth_clients_agent_binding).
+    //   v86 claimed by v0.39.0.0 (page_links_view_alias).
+    //   v87-v88 claimed by v0.39.1.0 (takes_kind_drop_check,
+    //   eval_candidates_schema_pack_per_source).
+    idempotent: true,
+    sql: `
+      ALTER TABLE facts ADD COLUMN IF NOT EXISTS event_type TEXT;
+    `,
   },
 ];
 

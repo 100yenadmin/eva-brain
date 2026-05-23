@@ -1149,6 +1149,53 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
       ? job.data.repoPath
       : (await engine.getConfig('sync.repo_path')) ?? '.';
 
+    // v0.38 (codex r1 P1-2 + P1-5): per-source dispatch threading.
+    //   - source_id: when set, runCycle uses the per-source lock ID and
+    //     writes last_full_cycle_at on success. Validated at handler entry
+    //     so queue replays with malformed source_id dead-letter instead of
+    //     reaching cycle code.
+    //   - pull: when set, overrides the legacy hardcoded `true` so
+    //     per-source dispatch can disable pull for local-only sources.
+    //     Missing/undefined keeps the legacy `true` for back-compat.
+    //   - Archive recheck: if source_id is set but the source was
+    //     archived between fan-out and worker claim, skip cleanly.
+    const rawSourceId = job.data.source_id;
+    let sourceId: string | undefined;
+    if (rawSourceId !== undefined && rawSourceId !== null) {
+      if (typeof rawSourceId !== 'string') {
+        throw new Error(`autopilot-cycle: invalid source_id (not a string): ${JSON.stringify(rawSourceId)}`);
+      }
+      const { isValidSourceId } = await import('../core/source-id.ts');
+      if (!isValidSourceId(rawSourceId)) {
+        // Dead-letter early — malformed source_id from queue replay shouldn't
+        // reach cycle code. TS narrowing via isValidSourceId boolean shape
+        // (assertValidSourceId would require static-import per TS2775).
+        throw new Error(`autopilot-cycle: invalid source_id (regex): ${JSON.stringify(rawSourceId)}`);
+      }
+      // Archive recheck (codex r1 P1-5): cheap pre-cycle lookup. Returns
+      // immediately if source is gone or archived; runCycle never even
+      // acquires a lock.
+      const rows = await engine.executeRaw<{ archived: boolean | null }>(
+        `SELECT archived FROM sources WHERE id = $1`,
+        [rawSourceId],
+      );
+      if (rows.length === 0) {
+        return {
+          partial: false,
+          status: 'skipped',
+          report: { reason: 'source_not_found', source_id: rawSourceId },
+        };
+      }
+      if (rows[0].archived === true) {
+        return {
+          partial: false,
+          status: 'skipped',
+          report: { reason: 'source_archived', source_id: rawSourceId },
+        };
+      }
+      sourceId = rawSourceId;
+    }
+
     // Allow callers to select phases via job data (e.g. skip embed for
     // fast cycles). Validates against ALL_PHASES to prevent injection.
     const { ALL_PHASES } = await import('../core/cycle.ts');
@@ -1157,10 +1204,14 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
 
+    // Pull default: legacy `true` for back-compat; explicit boolean wins.
+    const pull = typeof job.data.pull === 'boolean' ? job.data.pull : true;
+
     const report = await runCycle(engine, {
       brainDir: repoPath,
-      pull: true, // autopilot daemon opts into git pull
+      pull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
+      ...(sourceId ? { sourceId } : {}),
       ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
       yieldBetweenPhases: async () => {
         // Yield to the event loop so worker lock-renewal can fire.
@@ -1200,6 +1251,17 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
   worker.register('subagent', makeSubagentHandler({ engine }));
   worker.register('subagent_aggregator', subagentAggregatorHandler);
   process.stderr.write('[minion worker] subagent handlers enabled\n');
+
+  // ============================================================
+  // v0.38 ingestion substrate — ingest_capture handler. Receives
+  // IngestionEvent payloads from the daemon's dispatcher (file-watcher,
+  // inbox-folder, cron-scheduler sources) and from serve --http's
+  // POST /ingest route (webhook source). Routes through importFromContent
+  // to land as a brain page under inbox/YYYY-MM-DD-<hash6> (or the
+  // caller-provided slug).
+  // ============================================================
+  const { makeIngestCaptureHandler } = await import('../core/minions/handlers/ingest-capture.ts');
+  worker.register('ingest_capture', makeIngestCaptureHandler(engine));
 
   // ============================================================
   // v0.36+ brain-health-100 wave: 11 new handlers for autonomous

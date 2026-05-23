@@ -10,7 +10,11 @@ import type {
   TakesScorecard, TakesScorecardOpts, CalibrationBucket, CalibrationCurveOpts,
   FactRow, FactKind, FactVisibility, FactInsertStatus,
   NewFact, FactListOpts, FactsHealth,
+  SourceRow,
 } from './engine.ts';
+import type {
+  DomainBankSampleOpts, CorpusSampleOpts, DomainBankRow,
+} from './types.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from './engine.ts';
 import { deriveResolutionTuple, finalizeScorecard } from './takes-resolution.ts';
 import { normalizeWeightForStorage } from './takes-fence.ts';
@@ -49,12 +53,16 @@ import { logConnectionEvent } from './connection-audit.ts';
 import { validateSlug, contentHash, rowToPage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, takeRowToTake } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql } from './search/sql-ranking.ts';
+import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 
 function escapeSqlStringLiteral(value: string): string {
   return value.replace(/'/g, "''");
 }
 
-export function getPostgresSchema(dims: number = 1536, model: string = 'text-embedding-3-large'): string {
+export function getPostgresSchema(
+  dims: number = DEFAULT_EMBEDDING_DIMENSIONS,
+  model: string = DEFAULT_EMBEDDING_MODEL,
+): string {
   const parsedDims = Number(dims);
   if (!Number.isInteger(parsedDims) || parsedDims <= 0) {
     throw new Error(`Invalid embedding dimensions: ${dims}`);
@@ -208,14 +216,17 @@ export class PostgresEngine implements BrainEngine {
       ? await this.connectionManager.ddl()
       : this.sql;
 
-    // Resolve the embedding dim/model from the gateway (v0.14+).
-    // Falls back to v0.13 defaults (1536d + text-embedding-3-large) when gateway isn't configured yet.
-    let dims = 1536;
-    let model = 'text-embedding-3-large';
+    // Resolve the embedding dim/model from the gateway. v0.37 fix wave:
+    // fallbacks track the canonical defaults in `ai/defaults.ts` instead of
+    // stale v0.13 OpenAI literals, AND we store the full `provider:model`
+    // string in the DB config table — consumers like ze-switch and doctor
+    // expect the provider prefix. (Round-1 CDX-4 + A.8.)
+    let dims: number = DEFAULT_EMBEDDING_DIMENSIONS;
+    let model: string = DEFAULT_EMBEDDING_MODEL;
     try {
       const gw = await import('./ai/gateway.ts');
       dims = gw.getEmbeddingDimensions();
-      model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
+      model = gw.getEmbeddingModel() || model;
     } catch { /* gateway not yet configured — use defaults */ }
 
     const sqlText = getPostgresSchema(dims, model);
@@ -403,7 +414,17 @@ export class PostgresEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema = current_schema() AND table_name = 'sources' AND column_name = 'archived_at') AS sources_archived_at_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema = current_schema() AND table_name = 'sources' AND column_name = 'archive_expires_at') AS sources_archive_expires_at_exists
+                WHERE table_schema = current_schema() AND table_name = 'sources' AND column_name = 'archive_expires_at') AS sources_archive_expires_at_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'last_retrieved_at') AS pages_last_retrieved_at_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'ingested_via') AS pages_ingested_via_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'ingested_at') AS pages_ingested_at_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'source_uri') AS pages_source_uri_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'pages' AND column_name = 'source_kind') AS pages_source_kind_exists
     `;
     const probe = probeRows[0]!;
 
@@ -451,12 +472,33 @@ export class PostgresEngine implements BrainEngine {
       && (!probe.sources_archived_exists
           || !probe.sources_archived_at_exists
           || !probe.sources_archive_expires_at_exists);
+    // v0.37.0 (v79): pages_last_retrieved_at_idx in SCHEMA_SQL references
+    // last_retrieved_at. Pre-v79 brains crash without the column; bootstrap
+    // adds it before SCHEMA_SQL replay creates the index. v79 runs later
+    // via runMigrations and is idempotent.
+    const needsPagesLastRetrievedAt = probe.pages_exists && !(probe as { pages_last_retrieved_at_exists?: boolean }).pages_last_retrieved_at_exists;
+    // v0.38.0 (v80): provenance columns. Not referenced by any SCHEMA_SQL
+    // index/FK today; bootstrap exists for the column-only forward-
+    // reference class defense-in-depth.
+    const probeProv = probe as {
+      pages_ingested_via_exists?: boolean;
+      pages_ingested_at_exists?: boolean;
+      pages_source_uri_exists?: boolean;
+      pages_source_kind_exists?: boolean;
+    };
+    const needsPagesProvenance = probe.pages_exists
+      && (!probeProv.pages_ingested_via_exists
+          || !probeProv.pages_ingested_at_exists
+          || !probeProv.pages_source_uri_exists
+          || !probeProv.pages_source_kind_exists);
 
     if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap
         && !needsPagesDeletedAt && !needsMcpLogBootstrap && !needsSubagentProviderId
         && !needsChunksEmbeddingImage && !needsPagesRecency
         && !needsIngestLogSourceId && !needsFilesBootstrap
-        && !needsOauthClientsBootstrap && !needsSourcesArchive) return;
+        && !needsOauthClientsBootstrap && !needsSourcesArchive
+        && !needsPagesLastRetrievedAt
+        && !needsPagesProvenance) return;
 
     console.log('  Pre-v0.21 brain detected, applying forward-reference bootstrap');
 
@@ -635,6 +677,29 @@ export class PostgresEngine implements BrainEngine {
         ALTER TABLE sources ADD COLUMN IF NOT EXISTS archive_expires_at TIMESTAMPTZ;
       `);
     }
+
+    if (needsPagesLastRetrievedAt) {
+      // v79 (pages_last_retrieved_at): adds the real stale-page signal column
+      // + full B-tree index. SCHEMA_SQL's CREATE INDEX
+      // pages_last_retrieved_at_idx crashes without the column. v79 runs
+      // later via runMigrations and is idempotent.
+      await conn.unsafe(`
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS last_retrieved_at TIMESTAMPTZ;
+      `);
+    }
+
+    if (needsPagesProvenance) {
+      // v81 (pages_provenance_columns): four nullable columns added by the
+      // v0.38 ingestion cathedral. No SCHEMA_SQL index/FK references them
+      // today; bootstrap exists defense-in-depth so future schema work that
+      // does reference them doesn't wedge pre-v81 brains.
+      await conn.unsafe(`
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS ingested_via TEXT;
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ;
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS source_uri TEXT;
+        ALTER TABLE pages ADD COLUMN IF NOT EXISTS source_kind TEXT;
+      `);
+    }
   }
 
   async transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T> {
@@ -675,7 +740,8 @@ export class PostgresEngine implements BrainEngine {
     // filter via fragment chaining (postgres.js supports sql`` composition).
     const deletedCondition = includeDeleted ? sql`` : sql`AND deleted_at IS NULL`;
     const rows = await sql`
-      SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at
+      SELECT id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at,
+             source_kind, source_uri, ingested_via, ingested_at
       FROM pages
       WHERE slug = ${slug} AND source_id = ${sourceId} ${deletedCondition}
       LIMIT 1
@@ -710,9 +776,18 @@ export class PostgresEngine implements BrainEngine {
     // v0.32.7 CJK wave: chunker_version + source_path columns.
     const chunkerVersion = page.chunker_version ?? null;
     const sourcePath = page.source_path ?? null;
+    // v0.39.3.0 provenance write-through (WARN-8 + CV12). Server stamps
+    // `ingested_at = now()` ONLY when any provenance is being written —
+    // null `source_kind` / `source_uri` / `ingested_via` means no provenance
+    // write fired this call, and COALESCE-preserve UPDATE keeps the prior
+    // first-write timestamp intact (audit trail survives routine edits).
+    const sourceKind = page.source_kind ?? null;
+    const sourceUri = page.source_uri ?? null;
+    const ingestedVia = page.ingested_via ?? null;
+    const ingestedAt = (sourceKind || sourceUri || ingestedVia) ? new Date() : null;
     const rows = await sql`
-      INSERT INTO pages (source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at, effective_date, effective_date_source, import_filename, chunker_version, source_path)
-      VALUES (${sourceId}, ${slug}, ${page.type}, ${pageKind}, ${page.title}, ${page.compiled_truth}, ${page.timeline || ''}, ${sql.json(frontmatter as Parameters<typeof sql.json>[0])}, ${hash}, now(), ${effectiveDate}, ${effectiveDateSource}, ${importFilename}, COALESCE(${chunkerVersion}::smallint, 1), ${sourcePath})
+      INSERT INTO pages (source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at, effective_date, effective_date_source, import_filename, chunker_version, source_path, source_kind, source_uri, ingested_via, ingested_at)
+      VALUES (${sourceId}, ${slug}, ${page.type}, ${pageKind}, ${page.title}, ${page.compiled_truth}, ${page.timeline || ''}, ${sql.json(frontmatter as Parameters<typeof sql.json>[0])}, ${hash}, now(), ${effectiveDate}, ${effectiveDateSource}, ${importFilename}, COALESCE(${chunkerVersion}::smallint, 1), ${sourcePath}, ${sourceKind}, ${sourceUri}, ${ingestedVia}, ${ingestedAt})
       ON CONFLICT (source_id, slug) DO UPDATE SET
         type = EXCLUDED.type,
         page_kind = EXCLUDED.page_kind,
@@ -726,8 +801,12 @@ export class PostgresEngine implements BrainEngine {
         effective_date_source = COALESCE(EXCLUDED.effective_date_source, pages.effective_date_source),
         import_filename       = COALESCE(EXCLUDED.import_filename,       pages.import_filename),
         chunker_version       = COALESCE(EXCLUDED.chunker_version,       pages.chunker_version),
-        source_path           = COALESCE(EXCLUDED.source_path,           pages.source_path)
-      RETURNING id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, effective_date, effective_date_source, import_filename
+        source_path           = COALESCE(EXCLUDED.source_path,           pages.source_path),
+        source_kind           = COALESCE(EXCLUDED.source_kind,           pages.source_kind),
+        source_uri            = COALESCE(EXCLUDED.source_uri,            pages.source_uri),
+        ingested_via          = COALESCE(EXCLUDED.ingested_via,          pages.ingested_via),
+        ingested_at           = COALESCE(EXCLUDED.ingested_at,           pages.ingested_at)
+      RETURNING id, source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, effective_date, effective_date_source, import_filename, source_kind, source_uri, ingested_via, ingested_at
     `;
     return rowToPage(rows[0]);
   }
@@ -899,6 +978,218 @@ export class PostgresEngine implements BrainEngine {
       ORDER BY source_id, slug
     `;
     return rows.map((r) => ({ slug: r.slug as string, source_id: r.source_id as string }));
+  }
+
+  async listAllSources(opts?: {
+    includeArchived?: boolean;
+    localPathOnly?: boolean;
+  }): Promise<SourceRow[]> {
+    // v0.38: lean per-source enumeration for autopilot dispatch + doctor.
+    // Filters at SQL so the autopilot tick stays one query regardless of
+    // how many archived rows exist. ORDER BY (id='default') DESC, id
+    // matches sources-ops.listSources for operator-output stability.
+    const sql = this.sql;
+    const includeArchived = opts?.includeArchived === true;
+    const localPathOnly = opts?.localPathOnly === true;
+    const rows = await sql`
+      SELECT id, name, local_path, last_sync_at, config
+        FROM sources
+       WHERE (${includeArchived} OR archived IS NOT TRUE)
+         AND (${!localPathOnly} OR local_path IS NOT NULL)
+       ORDER BY (id = 'default') DESC, id
+    `;
+    return rows.map((r) => ({
+      id: r.id as string,
+      name: (r.name as string | null) ?? null,
+      local_path: (r.local_path as string | null) ?? null,
+      last_sync_at: r.last_sync_at ? new Date(r.last_sync_at as string) : null,
+      config: typeof r.config === 'string' ? JSON.parse(r.config) : ((r.config as Record<string, unknown> | null) ?? {}),
+    }));
+  }
+
+  async updateSourceConfig(sourceId: string, patch: Record<string, unknown>): Promise<boolean> {
+    // v0.38: atomic JSONB merge. `||` is the Postgres concat operator —
+    // for jsonb, right-side keys overwrite left-side; nested object keys
+    // are NOT deep-merged (use jsonb_set for nested paths). The patch
+    // shape this autopilot wave uses is flat (`last_full_cycle_at`,
+    // `archive_*`, etc.) so concat is sufficient. Idempotent on re-run.
+    //
+    // MUST use sql.json(patch) inside the template tag — postgres-js's
+    // positional executeRaw + `$1::jsonb` cast DOUBLE-ENCODES the
+    // JSON.stringify'd string, producing a JSONB STRING shape instead
+    // of OBJECT. `||` between JSONB object + JSONB string yields a
+    // JSONB ARRAY (concat semantics for non-matching types), which
+    // wipes every existing config key. sql.json(...) inside the
+    // template tag is the canonical safe path — same pattern as
+    // putPage + submitJob elsewhere in this file. Empirically verified
+    // produces jsonb_typeof = 'object'.
+    const sql = this.sql;
+    const result = await sql`
+      UPDATE sources
+         SET config = COALESCE(config, '{}'::jsonb) || ${sql.json(patch as Parameters<typeof sql.json>[0])}
+       WHERE id = ${sourceId}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+
+  // v0.37.0 — domain-bank engine methods (D14 + D5 + D10).
+  //
+  // `listPrefixSampledPages`: one page per prefix, tiebroken by inbound-link
+  // count (connection_count via LEFT JOIN to page_links). Stale-bias optional
+  // for LSD mode (D5). Source-scoped (D5). Excludes close-set slugs.
+  //
+  // Ranking inside each prefix partition:
+  //   1. stale_score DESC (when staleBias) — never-retrieved beats >90d-stale beats fresh
+  //   2. connection_count DESC — structural-centrality tiebreaker (D10)
+  //   3. slug ASC — deterministic for tests
+  async listPrefixSampledPages(opts: DomainBankSampleOpts): Promise<DomainBankRow[]> {
+    const sql = this.sql;
+    if (opts.prefixes.length === 0) return [];
+    const exclude = opts.excludeSlugs ?? [];
+    const staleBias = opts.staleBias === true;
+    const staleThreshold = opts.staleThresholdDays ?? 90;
+    // Source scoping (D5, codex r2 #2 — federated array wins over scalar).
+    const sourceIds = opts.sourceIds ?? null;
+    const sourceId = opts.sourceId ?? null;
+    const rows = await sql`
+      WITH prefix_pages AS (
+        SELECT
+          p.id AS page_id,
+          p.slug,
+          p.source_id,
+          p.title,
+          p.compiled_truth,
+          p.last_retrieved_at,
+          substring(p.slug from '^[^/]+/[^/]+') AS prefix,
+          COUNT(pl.id) AS connection_count
+        FROM pages p
+        LEFT JOIN page_links pl ON pl.to_page_id = p.id
+        WHERE p.deleted_at IS NULL
+          AND substring(p.slug from '^[^/]+/[^/]+') = ANY(${opts.prefixes}::text[])
+          AND (cardinality(${exclude}::text[]) = 0 OR NOT (p.slug = ANY(${exclude}::text[])))
+          AND (
+            (${sourceIds}::text[] IS NOT NULL AND p.source_id = ANY(${sourceIds}::text[]))
+            OR (${sourceIds}::text[] IS NULL AND ${sourceId}::text IS NOT NULL AND p.source_id = ${sourceId})
+            OR (${sourceIds}::text[] IS NULL AND ${sourceId}::text IS NULL)
+          )
+        GROUP BY p.id, p.slug, p.source_id, p.title, p.compiled_truth, p.last_retrieved_at
+      ),
+      ranked AS (
+        SELECT
+          pp.*,
+          (CASE WHEN ${staleBias}::boolean THEN
+            CASE
+              WHEN pp.last_retrieved_at IS NULL THEN 2
+              WHEN pp.last_retrieved_at < NOW() - (${staleThreshold}::int * INTERVAL '1 day') THEN 1
+              ELSE 0
+            END
+          ELSE 0
+          END) AS stale_score,
+          ROW_NUMBER() OVER (
+            PARTITION BY pp.prefix
+            ORDER BY
+              (CASE WHEN ${staleBias}::boolean THEN
+                CASE
+                  WHEN pp.last_retrieved_at IS NULL THEN 2
+                  WHEN pp.last_retrieved_at < NOW() - (${staleThreshold}::int * INTERVAL '1 day') THEN 1
+                  ELSE 0
+                END
+              ELSE 0
+              END) DESC,
+              pp.connection_count DESC,
+              pp.slug ASC
+          ) AS rn
+        FROM prefix_pages pp
+      ),
+      with_chunk AS (
+        SELECT
+          r.*,
+          (
+            SELECT cc.id FROM content_chunks cc
+            WHERE cc.page_id = r.page_id AND cc.embedding IS NOT NULL
+            ORDER BY cc.chunk_index ASC
+            LIMIT 1
+          ) AS representative_chunk_id
+        FROM ranked r
+        WHERE r.rn = 1
+      )
+      SELECT page_id, slug, source_id, title, compiled_truth, last_retrieved_at,
+             prefix, connection_count, representative_chunk_id
+      FROM with_chunk
+      ORDER BY prefix
+    `;
+    return rows.map((r): DomainBankRow => ({
+      slug: r.slug as string,
+      source_id: r.source_id as string,
+      prefix: r.prefix as string | null,
+      page_id: Number(r.page_id),
+      title: r.title as string | null,
+      compiled_truth: (r.compiled_truth as string | null) ?? '',
+      connection_count: Number(r.connection_count),
+      last_retrieved_at: r.last_retrieved_at as Date | null,
+      representative_chunk_id: r.representative_chunk_id == null ? null : Number(r.representative_chunk_id),
+    }));
+  }
+
+  // v0.37.0 — corpus-sampling fallback when prefix-stratified can't fill M.
+  // Deterministic with opts.seed (setseed before SELECT); random otherwise.
+  async listCorpusSample(opts: CorpusSampleOpts): Promise<DomainBankRow[]> {
+    const sql = this.sql;
+    if (opts.n <= 0) return [];
+    const exclude = opts.excludeSlugs ?? [];
+    const sourceIds = opts.sourceIds ?? null;
+    const sourceId = opts.sourceId ?? null;
+    // setseed deterministic path: use SELECT setseed($1) + RANDOM(). PGLite/Postgres
+    // both honor setseed for the same session/transaction. For tests this gives
+    // identical ordering across runs.
+    if (typeof opts.seed === 'number') {
+      // Clamp to [-1, 1] required by setseed.
+      const clamped = Math.max(-1, Math.min(1, opts.seed));
+      await sql`SELECT setseed(${clamped}::float8)`;
+    }
+    const rows = await sql`
+      WITH sampled AS (
+        SELECT
+          p.id AS page_id,
+          p.slug,
+          p.source_id,
+          p.title,
+          p.compiled_truth,
+          p.last_retrieved_at,
+          substring(p.slug from '^[^/]+/[^/]+') AS prefix,
+          (SELECT COUNT(*) FROM page_links pl WHERE pl.to_page_id = p.id) AS connection_count
+        FROM pages p
+        WHERE p.deleted_at IS NULL
+          AND (cardinality(${exclude}::text[]) = 0 OR NOT (p.slug = ANY(${exclude}::text[])))
+          AND (
+            (${sourceIds}::text[] IS NOT NULL AND p.source_id = ANY(${sourceIds}::text[]))
+            OR (${sourceIds}::text[] IS NULL AND ${sourceId}::text IS NOT NULL AND p.source_id = ${sourceId})
+            OR (${sourceIds}::text[] IS NULL AND ${sourceId}::text IS NULL)
+          )
+        ORDER BY RANDOM()
+        LIMIT ${opts.n}
+      )
+      SELECT
+        s.*,
+        (
+          SELECT cc.id FROM content_chunks cc
+          WHERE cc.page_id = s.page_id AND cc.embedding IS NOT NULL
+          ORDER BY cc.chunk_index ASC
+          LIMIT 1
+        ) AS representative_chunk_id
+      FROM sampled s
+    `;
+    return rows.map((r): DomainBankRow => ({
+      slug: r.slug as string,
+      source_id: r.source_id as string,
+      prefix: r.prefix as string | null,
+      page_id: Number(r.page_id),
+      title: r.title as string | null,
+      compiled_truth: (r.compiled_truth as string | null) ?? '',
+      connection_count: Number(r.connection_count),
+      last_retrieved_at: r.last_retrieved_at as Date | null,
+      representative_chunk_id: r.representative_chunk_id == null ? null : Number(r.representative_chunk_id),
+    }));
   }
 
   async resolveSlugs(partial: string): Promise<string[]> {
@@ -1300,16 +1591,21 @@ export class PostgresEngine implements BrainEngine {
     // read config — caller (hybrid/op) resolved it and passed it in.
     // normalizeEngineColumn accepts the legacy union (string literals,
     // ResolvedColumn, undefined) and produces a canonical descriptor.
+    //
+    // v0.36 Phase 3: 'embedding_multimodal' is the unified column populated
+    // by `gbrain reindex --multimodal`. Carries BOTH text and image content
+    // in Voyage multimodal-3 space — no modality filter; the column itself
+    // is the discriminator (rows without embedding_multimodal aren't searched).
     const resolvedCol = normalizeEngineColumn(opts?.embeddingColumn);
     const { col, castSql } = buildVectorCastFragment(resolvedCol);
-    // Modality filter: image rows live in modality='image'; text/code in
-    // 'text'. The image-column literal is the only one with image rows.
-    // For all other columns (default + user-declared), restrict to text
-    // mode to avoid cross-modality dim leaks. The check is on
-    // resolved.name (already validated, never raw input).
-    const modalityFilter = resolvedCol.name === 'embedding_image'
-      ? `AND cc.modality = 'image'`
-      : `AND cc.modality = 'text'`;
+    let modalityFilter: string;
+    if (resolvedCol.name === 'embedding_image') {
+      modalityFilter = `AND cc.modality = 'image'`;
+    } else if (resolvedCol.name === 'embedding_multimodal') {
+      modalityFilter = '';
+    } else {
+      modalityFilter = `AND cc.modality = 'text'`;
+    }
 
     const rawQuery = `
       WITH hnsw_candidates AS (
@@ -1448,7 +1744,7 @@ export class PostgresEngine implements BrainEngine {
       if (embeddingImageStr) params.push(embeddingImageStr);
       params.push(
         pageId, chunk.chunk_index, chunk.chunk_text, chunk.chunk_source,
-        chunk.model || 'text-embedding-3-large', chunk.token_count || null,
+        chunk.model || DEFAULT_EMBEDDING_MODEL, chunk.token_count || null,
         chunk.language || null, chunk.symbol_name || null, chunk.symbol_type || null,
         chunk.start_line ?? null, chunk.end_line ?? null,
         parentPath, chunk.doc_comment || null, chunk.symbol_name_qualified || null,
@@ -1807,7 +2103,7 @@ export class PostgresEngine implements BrainEngine {
   async traverseGraph(
     slug: string,
     depth: number = 5,
-    opts?: { sourceId?: string; sourceIds?: string[] },
+    opts?: import('./engine.ts').TraverseGraphOpts,
   ): Promise<GraphNode[]> {
     const sql = this.sql;
     // v0.34.1 (#861 — P0 leak seal): scope visited nodes to the caller's
@@ -1833,6 +2129,31 @@ export class PostgresEngine implements BrainEngine {
       : opts?.sourceId
         ? sql`AND p3.source_id = ${opts.sourceId}`
         : sql``;
+    // T8 (v0.36+): frontier cap. When set, the recursive term applies a
+    // parenthesized LIMIT N with ORDER BY (slug, id) for stable selection.
+    // Postgres' parenthesized-LIMIT inside a recursive term caps per
+    // ITERATION, which maps approximately to per-BFS-LAYER (the mapping is
+    // exact when fanout is bounded; for hub-fanout graphs the cap fires
+    // early). Post-query, count rows per depth — if any depth == cap, fire
+    // the truncation callback.
+    const cap = opts?.frontierCap;
+    const recursiveStep = cap !== undefined && cap > 0
+      ? sql`(SELECT p2.id, p2.slug, p2.title, p2.type, g.depth + 1, g.visited || p2.id
+             FROM graph g
+             JOIN links l ON l.from_page_id = g.id
+             JOIN pages p2 ON p2.id = l.to_page_id
+             WHERE g.depth < ${depth}
+               AND NOT (p2.id = ANY(g.visited))
+               ${stepScope}
+             ORDER BY p2.slug ASC, p2.id ASC
+             LIMIT ${cap})`
+      : sql`SELECT p2.id, p2.slug, p2.title, p2.type, g.depth + 1, g.visited || p2.id
+            FROM graph g
+            JOIN links l ON l.from_page_id = g.id
+            JOIN pages p2 ON p2.id = l.to_page_id
+            WHERE g.depth < ${depth}
+              AND NOT (p2.id = ANY(g.visited))
+              ${stepScope}`;
     // Cycle prevention: visited array tracks page IDs already in the path.
     const rows = await sql`
       WITH RECURSIVE graph AS (
@@ -1841,13 +2162,7 @@ export class PostgresEngine implements BrainEngine {
 
         UNION ALL
 
-        SELECT p2.id, p2.slug, p2.title, p2.type, g.depth + 1, g.visited || p2.id
-        FROM graph g
-        JOIN links l ON l.from_page_id = g.id
-        JOIN pages p2 ON p2.id = l.to_page_id
-        WHERE g.depth < ${depth}
-          AND NOT (p2.id = ANY(g.visited))
-          ${stepScope}
+        ${recursiveStep}
       )
       SELECT DISTINCT g.slug, g.title, g.type, g.depth,
         coalesce(
@@ -1868,10 +2183,16 @@ export class PostgresEngine implements BrainEngine {
       ORDER BY g.depth, g.slug
     `;
 
+    // T8 truncation-detection callback was designed here but the v1 algorithm
+    // had both false-positive (organic count == cap) and false-negative
+    // (LIMIT-before-DISTINCT in diamond graphs) cases caught by adversarial
+    // review. Stripped pending the dedupe-then-cap SQL rewrite + real Postgres
+    // parity coverage. See TODOS.md → "T8 truncation signal".
+
     return rows.map((r: Record<string, unknown>) => ({
       slug: r.slug as string,
       title: r.title as string,
-      type: r.type as PageType,
+      type: r.type as string,
       depth: r.depth as number,
       links: (typeof r.links === 'string' ? JSON.parse(r.links) : r.links) as { to_slug: string; link_type: string }[],
     }));
@@ -2510,6 +2831,8 @@ export class PostgresEngine implements BrainEngine {
         const claimValue  = input.claim_value  ?? null;
         const claimUnit   = input.claim_unit   ?? null;
         const claimPeriod = input.claim_period ?? null;
+        // v0.40.2.0 — event_type column (Commit 1 migration v89).
+        const eventType   = input.event_type   ?? null;
 
         const ins = await tx<Array<{ id: number }>>`
           INSERT INTO facts (
@@ -2517,13 +2840,15 @@ export class PostgresEngine implements BrainEngine {
             valid_from, valid_until, source, source_session, confidence,
             embedding, embedded_at,
             row_num, source_markdown_slug,
-            claim_metric, claim_value, claim_unit, claim_period
+            claim_metric, claim_value, claim_unit, claim_period,
+            event_type
           ) VALUES (
             ${ctx.source_id}, ${entitySlug}, ${input.fact}, ${kind}, ${visibility}, ${notability}, ${context},
             ${validFrom}, ${validUntil}, ${input.source}, ${sourceSession}, ${confidence},
             ${embedLit === null ? null : tx.unsafe(`'${embedLit}'::vector`)}, ${embeddedAt},
             ${input.row_num}, ${input.source_markdown_slug},
-            ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod}
+            ${claimMetric}, ${claimValue}, ${claimUnit}, ${claimPeriod},
+            ${eventType}
           ) RETURNING id
         `;
         out.push(Number(ins[0].id));
@@ -2688,6 +3013,7 @@ export class PostgresEngine implements BrainEngine {
     const sinceDate = opts.since ? new Date(opts.since) : null;
     const untilDate = opts.until ? new Date(opts.until) : null;
     const metric = opts.metric ?? null;
+    const kind = opts.kind ?? 'all';
     const useArray = Array.isArray(opts.sourceIds) && opts.sourceIds.length > 0;
     const sourceIds = useArray ? opts.sourceIds! : null;
     const sourceId = opts.sourceId ?? 'default';
@@ -2696,6 +3022,7 @@ export class PostgresEngine implements BrainEngine {
     // Source-scope predicate: array path (federated) wins over scalar.
     // Engine.ts contract: returns chronological points; regressions +
     // drift_score are computed by the caller (src/core/trajectory.ts).
+    // v0.40.2.0 — kind filter ('all'|'metric'|'event'); event_type column.
     const rows = await sql<Array<{
       id: number;
       valid_from: Date;
@@ -2703,6 +3030,7 @@ export class PostgresEngine implements BrainEngine {
       claim_value: number | null;
       claim_unit: string | null;
       claim_period: string | null;
+      event_type: string | null;
       fact: string;
       source_session: string | null;
       source_markdown_slug: string | null;
@@ -2710,6 +3038,7 @@ export class PostgresEngine implements BrainEngine {
     }>>`
       SELECT id, valid_from,
              claim_metric, claim_value, claim_unit, claim_period,
+             event_type,
              fact, source_session, source_markdown_slug,
              embedding::text AS embedding
       FROM facts
@@ -2718,6 +3047,8 @@ export class PostgresEngine implements BrainEngine {
         AND expired_at IS NULL
         ${remoteFilter ? sql`AND visibility = 'world'` : sql``}
         ${metric !== null ? sql`AND claim_metric = ${metric}` : sql``}
+        ${kind === 'metric' ? sql`AND claim_metric IS NOT NULL` : sql``}
+        ${kind === 'event' ? sql`AND event_type IS NOT NULL` : sql``}
         ${sinceDate ? sql`AND valid_from >= ${sinceDate}` : sql``}
         ${untilDate ? sql`AND valid_from <= ${untilDate}` : sql``}
       ORDER BY valid_from ASC, id ASC
@@ -2731,6 +3062,7 @@ export class PostgresEngine implements BrainEngine {
       value: r.claim_value === null ? null : Number(r.claim_value),
       unit: r.claim_unit,
       period: r.claim_period,
+      event_type: r.event_type,
       text: r.fact,
       source_session: r.source_session,
       source_markdown_slug: r.source_markdown_slug,
@@ -3232,22 +3564,27 @@ export class PostgresEngine implements BrainEngine {
       : sql``;
     const sinceClause = opts.since ? sql`AND since_date >= ${opts.since}` : sql``;
     const untilClause = opts.until ? sql`AND since_date <= ${opts.until}` : sql``;
+    // v0.36.1.1 T1c: `resolved` deliberately filters to the 3-state subset
+    // (correct|incorrect|partial) — NOT `resolved_quality IS NOT NULL` — so
+    // historical comparisons against pre-v74 scorecards stay valid.
+    // `unresolvable_count` is a sibling field counting the new 4th state.
     const rows = await sql`
       SELECT
-        COUNT(*) FILTER (WHERE kind = 'bet')::int                              AS total_bets,
-        COUNT(*) FILTER (WHERE resolved_quality IS NOT NULL)::int              AS resolved,
-        COUNT(*) FILTER (WHERE resolved_quality = 'correct')::int              AS correct,
-        COUNT(*) FILTER (WHERE resolved_quality = 'incorrect')::int            AS incorrect,
-        COUNT(*) FILTER (WHERE resolved_quality = 'partial')::int              AS partial,
+        COUNT(*) FILTER (WHERE kind = 'bet')::int                                              AS total_bets,
+        COUNT(*) FILTER (WHERE resolved_quality IN ('correct','incorrect','partial'))::int     AS resolved,
+        COUNT(*) FILTER (WHERE resolved_quality = 'correct')::int                              AS correct,
+        COUNT(*) FILTER (WHERE resolved_quality = 'incorrect')::int                            AS incorrect,
+        COUNT(*) FILTER (WHERE resolved_quality = 'partial')::int                              AS partial,
+        COUNT(*) FILTER (WHERE resolved_quality = 'unresolvable')::int                         AS unresolvable_count,
         AVG(
           CASE WHEN resolved_quality IN ('correct','incorrect')
                THEN POWER(weight - (CASE resolved_quality WHEN 'correct' THEN 1 ELSE 0 END), 2)
           END
-        )::float                                                               AS brier
+        )::float                                                                               AS brier
       FROM takes
       WHERE 1=1 ${holderClause} ${domainClause} ${sinceClause} ${untilClause} ${allowed}
     `;
-    const r = rows[0] as { total_bets: number; resolved: number; correct: number; incorrect: number; partial: number; brier: number | null };
+    const r = rows[0] as { total_bets: number; resolved: number; correct: number; incorrect: number; partial: number; unresolvable_count: number; brier: number | null };
     return finalizeScorecard(r);
   }
 
@@ -3487,11 +3824,18 @@ export class PostgresEngine implements BrainEngine {
     const noOrphans = pageCount > 0 ? 1 - (orphanPages / pageCount) : 1;
     const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
     // Per-component points. Sum equals brainScore by construction.
-    const embedCoverageScore = pageCount === 0 ? 0 : Math.round(embedCoverage * 35);
-    const linkDensityScore = pageCount === 0 ? 0 : Math.round(linkDensity * 25);
-    const timelineCoverageScore = pageCount === 0 ? 0 : Math.round(timelineCoverageWhole * 15);
-    const noOrphansScore = pageCount === 0 ? 0 : Math.round(noOrphans * 15);
-    const noDeadLinksScore = pageCount === 0 ? 0 : Math.round(noDeadLinks * 10);
+    //
+    // v0.37.10.0: empty brains (pageCount === 0) get FULL marks (100/100),
+    // not 0. Semantically an empty brain has no coverage problem to penalize
+    // — there's nothing to embed, nothing to link, nothing to orphan. The
+    // pre-fix "empty = 0" caused fresh-init brains to score as critically
+    // unhealthy on `gbrain doctor`, which was a structural surprise to users
+    // who'd just successfully run init. PGLite path has the same fix.
+    const embedCoverageScore = pageCount === 0 ? 35 : Math.round(embedCoverage * 35);
+    const linkDensityScore = pageCount === 0 ? 25 : Math.round(linkDensity * 25);
+    const timelineCoverageScore = pageCount === 0 ? 15 : Math.round(timelineCoverageWhole * 15);
+    const noOrphansScore = pageCount === 0 ? 15 : Math.round(noOrphans * 15);
+    const noDeadLinksScore = pageCount === 0 ? 10 : Math.round(noDeadLinks * 10);
     const brainScore = embedCoverageScore + linkDensityScore + timelineCoverageScore + noOrphansScore + noDeadLinksScore;
 
     return {

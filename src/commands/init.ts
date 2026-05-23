@@ -6,12 +6,8 @@ import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-import { saveConfig, loadConfig, loadGbrainEnv, toEngineConfig, gbrainPath, configPath, isThinClient, type GBrainConfig } from '../core/config.ts';
+import { saveConfig, loadConfig, loadConfigFileOnly, loadGbrainEnv, toEngineConfig, gbrainPath, configPath, isThinClient, type GBrainConfig } from '../core/config.ts';
 import { createEngine } from '../core/engine-factory.ts';
-import { getRecipe } from '../core/ai/recipes/index.ts';
-import { configureGateway } from '../core/ai/gateway.ts';
-import { appendCompletedMigration, loadCompletedMigrations } from '../core/preferences.ts';
-import { migrations } from './migrations/index.ts';
 import { discoverOAuth, mintClientCredentialsToken, smokeTestMcp } from '../core/remote-mcp-probe.ts';
 
 export async function runInit(args: string[]) {
@@ -52,29 +48,39 @@ export async function runInit(args: string[]) {
     process.exit(1);
   }
 
+  // Schema-only path: apply initSchema against the already-configured engine
+  // without ever calling saveConfig. Used by apply-migrations, the stopgap
+  // script, and the postinstall hook. Bare `gbrain init` defaults to PGLite
+  // and overwrites any existing Postgres config — we must never take that
+  // branch from a migration orchestrator.
+  //
+  // IMPORTANT: this short-circuit MUST run BEFORE resolveAIOptions() so
+  // migrate-only callers (which already have a configured brain) don't
+  // trigger env-detection / picker / fail-loud paths designed for fresh
+  // installs.
+  if (isMigrateOnly) {
+    return initMigrateOnly({ jsonOutput });
+  }
+
   // v0.14: AI provider selection.
   // --embedding-model PROVIDER:MODEL (verbose) or --model PROVIDER (shorthand, picks recipe default)
   const embModelIdx = args.indexOf('--embedding-model');
   const modelShortIdx = args.indexOf('--model');
   const embDimsIdx = args.indexOf('--embedding-dimensions');
   const expModelIdx = args.indexOf('--expansion-model');
+  // v0.27: --chat-model PROVIDER:MODEL — default subagent driver.
   const chatModelIdx = args.indexOf('--chat-model');
-  const aiOpts = await resolveAIOptions(
-    embModelIdx !== -1 ? args[embModelIdx + 1] : null,
-    modelShortIdx !== -1 ? args[modelShortIdx + 1] : null,
-    embDimsIdx !== -1 ? parseInt(args[embDimsIdx + 1], 10) : null,
-    expModelIdx !== -1 ? args[expModelIdx + 1] : null,
-    chatModelIdx !== -1 ? args[chatModelIdx + 1] : null,
-  );
-
-  // Schema-only path: apply initSchema against the already-configured engine
-  // without ever calling saveConfig. Used by apply-migrations, the stopgap
-  // script, and the postinstall hook. Bare `gbrain init` defaults to PGLite
-  // and overwrites any existing Postgres config — we must never take that
-  // branch from a migration orchestrator.
-  if (isMigrateOnly) {
-    return initMigrateOnly({ jsonOutput });
-  }
+  // v0.37 (D9): --no-embedding opts into deferred-setup mode (D9 escape hatch).
+  const noEmbedding = args.includes('--no-embedding');
+  const aiOpts = await resolveAIOptions({
+    verbose: embModelIdx !== -1 ? args[embModelIdx + 1] : null,
+    shorthand: modelShortIdx !== -1 ? args[modelShortIdx + 1] : null,
+    dimsArg: embDimsIdx !== -1 ? parseInt(args[embDimsIdx + 1], 10) : null,
+    expansion: expModelIdx !== -1 ? args[expModelIdx + 1] : null,
+    chat: chatModelIdx !== -1 ? args[chatModelIdx + 1] : null,
+    noEmbedding,
+    nonInteractive: isNonInteractive,
+  });
 
   // Explicit PGLite mode
   if (isPGLite || (!isSupabase && !manualUrl && !isNonInteractive)) {
@@ -100,7 +106,8 @@ export async function runInit(args: string[]) {
   if (manualUrl) {
     databaseUrl = manualUrl;
   } else if (isNonInteractive) {
-    const envUrl = process.env.GBRAIN_DATABASE_URL || process.env.DATABASE_URL;
+    const env = loadGbrainEnv();
+    const envUrl = env.GBRAIN_DATABASE_URL || env.DATABASE_URL;
     if (envUrl) {
       databaseUrl = envUrl;
     } else {
@@ -114,44 +121,78 @@ export async function runInit(args: string[]) {
   return initPostgres({ databaseUrl, jsonOutput, apiKey, aiOpts });
 }
 
+interface ResolveAIOptionsArgs {
+  verbose: string | null;        // --embedding-model
+  shorthand: string | null;      // --model
+  dimsArg: number | null;        // --embedding-dimensions
+  expansion: string | null;      // --expansion-model
+  chat: string | null;           // --chat-model
+  noEmbedding: boolean;          // --no-embedding (D9)
+  nonInteractive: boolean;       // --non-interactive (forces D3 fail-loud, no picker)
+}
+
+interface ResolvedAIOptions {
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  expansion_model?: string;
+  chat_model?: string;
+  /** v0.37 (D9): user opted into deferred embedding setup. */
+  noEmbedding?: boolean;
+}
+
 /**
- * Resolve AI provider options from CLI flags. Verbose form (--embedding-model
- * openai:text-embedding-3-large) overrides shorthand (--model openai which
- * expands to the recipe's first embedding model).
+ * Resolve AI provider options for `gbrain init`.
+ *
+ * Precedence (per touchpoint, top wins):
+ *   1. Explicit flag (--embedding-model / --expansion-model / --chat-model)
+ *   2. Shorthand flag (--model PROVIDER) for embedding only
+ *   3. Env detection: walk env-ready recipes, group by provider id (D1-D4, D10).
+ *      - Exactly one provider ready AND has the touchpoint → auto-pick + stderr notice.
+ *      - Multiple ready → for embedding: TTY → picker (D1), non-TTY → fail loud (D3).
+ *        For chat/expansion: leave default (gateway falls back at call time, D10).
+ *      - Zero ready → for embedding: TTY → picker offers env-ready recipes
+ *        OR setup hint with typo detection (D13); non-TTY → fail loud (D3).
+ *
+ * --no-embedding (D9) opt-in: skips embedding tier resolution entirely;
+ * persists nulls; embed callsites refuse with a config-set hint.
  */
-async function resolveAIOptions(
-  verbose: string | null,
-  shorthand: string | null,
-  dimsArg: number | null,
-  expansion: string | null,
-  chat: string | null,
-): Promise<{ embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string }> {
-  const out: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string } = {};
+async function resolveAIOptions(opts: ResolveAIOptionsArgs): Promise<ResolvedAIOptions> {
+  const { verbose, shorthand, dimsArg, expansion, chat, noEmbedding, nonInteractive } = opts;
+  const out: ResolvedAIOptions = {};
+
+  // --- D5: persisted config wins on re-init -----------------------------------
+  // When `~/.gbrain/config.json` already has embedding_model set (a re-init
+  // against an existing brain), honor it BEFORE env detection. Without this
+  // the env-detection branch fires unnecessarily on every re-init, and a
+  // non-TTY re-init with no env keys exits 1 (D3) even though the brain is
+  // already correctly configured. Caught by CI's E2E init sequence where
+  // multiple tests share `~/.gbrain` and only the first init has flags.
+  //
+  // The deferred-setup sentinel (`embedding_disabled: true`) is also honored —
+  // a re-init without --no-embedding shouldn't re-trigger fail-loud when the
+  // user already opted into deferred mode.
+  try {
+    const { loadConfig } = await import('../core/config.ts');
+    const cfg = loadConfig();
+    if (cfg?.embedding_disabled) {
+      out.noEmbedding = true;
+    } else if (cfg?.embedding_model) {
+      out.embedding_model = cfg.embedding_model;
+      if (cfg.embedding_dimensions) out.embedding_dimensions = cfg.embedding_dimensions;
+    }
+    if (cfg?.expansion_model) out.expansion_model = cfg.expansion_model;
+    if (cfg?.chat_model) out.chat_model = cfg.chat_model;
+  } catch {
+    // loadConfig throws when no brain configured — first-time install, fall
+    // through to env detection.
+  }
+
+  // --- Tier 1+2: explicit flags ---------------------------------------------
 
   if (verbose) {
-    const [providerId, ...modelParts] = verbose.split(':');
-    const modelId = modelParts.join(':');
-    if (!providerId || !modelId) {
-      console.error('Invalid --embedding-model. Expected provider:model.');
-      process.exit(1);
-    }
-    const recipe = getRecipe(providerId);
-    if (!recipe) {
-      console.error(`Unknown provider: ${providerId}. Run \`gbrain providers list\` to see known providers.`);
-      process.exit(1);
-    }
-    const embedding = recipe.touchpoints.embedding;
-    if (!embedding) {
-      console.error(`Provider ${providerId} does not support embeddings.`);
-      process.exit(1);
-    }
-    if (embedding.models.length > 0 && !embedding.models.includes(modelId)) {
-      console.error(`Model ${modelId} is not listed for provider ${providerId}. Known models: ${embedding.models.join(', ')}`);
-      process.exit(1);
-    }
-    out.embedding_model = `${providerId}:${modelId}`;
-    if (embedding.default_dims) out.embedding_dimensions = embedding.default_dims;
+    out.embedding_model = verbose;
   } else if (shorthand) {
+    const { getRecipe } = await import('../core/ai/recipes/index.ts');
     const recipe = getRecipe(shorthand);
     if (!recipe) {
       console.error(`Unknown provider: ${shorthand}. Run \`gbrain providers list\` to see known providers.`);
@@ -182,6 +223,7 @@ async function resolveAIOptions(
     out.embedding_dimensions = dimsArg;
   } else if (out.embedding_model && out.embedding_dimensions === undefined) {
     // Derive default dims from the resolved recipe when verbose form was used.
+    const { getRecipe } = await import('../core/ai/recipes/index.ts');
     const providerId = out.embedding_model.split(':')[0];
     const recipe = getRecipe(providerId);
     // v0.32: user_provided_models recipes (litellm, llama-server) have
@@ -203,15 +245,245 @@ async function resolveAIOptions(
     }
   }
 
-  if (out.embedding_model && out.embedding_dimensions === undefined) {
-    console.error('Could not resolve embedding dimensions. Pass --embedding-dimensions <N>.');
-    process.exit(1);
-  }
-
   if (expansion) out.expansion_model = expansion;
   if (chat) out.chat_model = chat;
 
+  // --- D9: --no-embedding opt-in --------------------------------------------
+  // Even when other flags were passed, --no-embedding signals "skip embedding
+  // configuration entirely". Persist the explicit opt-in (T6/T7 use it).
+  if (noEmbedding) {
+    out.noEmbedding = true;
+    // Wipe any tentative embedding settings — opt-in means truly nothing.
+    delete out.embedding_model;
+    delete out.embedding_dimensions;
+  }
+
+  // --- Tier 3: env detection ------------------------------------------------
+  // Fires per touchpoint, only when no explicit flag was passed for that
+  // tier. Embedding is the critical path (column width); chat/expansion are
+  // best-effort (gateway falls back gracefully at call time, D10).
+
+  if (!out.noEmbedding && !out.embedding_model) {
+    await resolveEmbeddingByEnv(out, nonInteractive);
+  }
+  if (!out.expansion_model) {
+    await resolveExpansionByEnv(out);
+  }
+  if (!out.chat_model) {
+    await resolveChatByEnv(out);
+  }
+
   return out;
+}
+
+// ============================================================================
+// v0.37 env-detection helpers (T5)
+//
+// These run when no explicit flag is passed for the corresponding touchpoint.
+// They share `groupReadyByProvider` so the per-touchpoint surface stays
+// consistent (codex finding #2: group by provider id, not by recipe, so two
+// recipes sharing OPENAI_API_KEY can't double-count).
+// ============================================================================
+
+interface ReadyProvider {
+  recipeId: string;
+  recipe: import('../core/ai/types.ts').Recipe;
+}
+
+/**
+ * Walk recipes and return providers env-ready for the given touchpoint.
+ * Exported for unit tests (parameterizable via env arg).
+ *
+ * Excludes local-only providers (no auth_env.required, e.g. Ollama,
+ * llama-server) from auto-pick UNLESS they're the only thing available.
+ * Picking Ollama silently when the user has OPENAI_API_KEY set is a
+ * silent-broken-state class (Ollama daemon may not be running, or the
+ * user clearly intended a hosted provider). Local-only providers stay
+ * accessible via explicit `--embedding-model ollama:...`.
+ */
+export async function groupReadyByProvider(
+  touchpoint: 'embedding' | 'expansion' | 'chat',
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ReadyProvider[]> {
+  const { listRecipes } = await import('../core/ai/recipes/index.ts');
+  const { envReady } = await import('./providers.ts');
+  const ready: ReadyProvider[] = [];
+  const seen = new Set<string>();
+  for (const r of listRecipes()) {
+    if (seen.has(r.id)) continue;
+    const tp = r.touchpoints[touchpoint];
+    if (!tp) continue;
+    // Skip recipes that ship without any models (user_provided_models flag,
+    // e.g. litellm-proxy, llama-server). The shorthand --model path errors
+    // for these; auto-pick should too.
+    const tpModels = (tp as { models?: string[] }).models;
+    if (!Array.isArray(tpModels) || tpModels.length === 0) continue;
+    // Skip recipes whose user_provided_models flag is set even when models[]
+    // has entries (defensive — shouldn't happen but cheap).
+    if ((tp as { user_provided_models?: boolean }).user_provided_models) continue;
+    // Skip local-only providers (no auth required) from auto-pick. They're
+    // still picker-selectable explicitly, but silent auto-pick is wrong UX.
+    const required = r.auth_env?.required ?? [];
+    if (required.length === 0) continue;
+    if (envReady(r, env)) {
+      ready.push({ recipeId: r.id, recipe: r });
+      seen.add(r.id);
+    }
+  }
+  return ready;
+}
+
+/** Look at env-vars the user set that look like typos of recipe-required keys.
+ *  Exported for unit tests (parameterizable via env arg). */
+export async function findEnvKeyTypos(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Array<{ userSet: string; suggested: string }>> {
+  const { suggestNearest } = await import('../core/levenshtein.ts');
+  const { listRecipes } = await import('../core/ai/recipes/index.ts');
+  // Build the canonical name set from every recipe's auth_env.required.
+  const canonical = new Set<string>();
+  for (const r of listRecipes()) {
+    for (const k of r.auth_env?.required ?? []) canonical.add(k);
+  }
+  const out: Array<{ userSet: string; suggested: string }> = [];
+  // Walk user env vars that look API-key-shaped to keep the suggestion noise low.
+  const KEY_SHAPE = /^[A-Z][A-Z0-9_]*_(API_)?KEY$/;
+  for (const userKey of Object.keys(env)) {
+    if (!KEY_SHAPE.test(userKey)) continue;
+    if (canonical.has(userKey)) continue;        // exact match, not a typo
+    if (!env[userKey]) continue;                  // empty string, skip
+    const suggestion = suggestNearest(userKey, [...canonical], /* maxDistance */ 3);
+    if (suggestion && suggestion !== userKey) {
+      // False-positive guard (per plan D13): suggested canonical not ALSO set.
+      if (!env[suggestion]) {
+        out.push({ userSet: userKey, suggested: suggestion });
+      }
+    }
+  }
+  return out;
+}
+
+/** Emit the fail-loud "no embedding provider" message + paste-ready setup. */
+function printNoEmbeddingProviderHint(typos: Array<{ userSet: string; suggested: string }>): void {
+  console.error('\nNo embedding provider configured. Set one of:');
+  console.error('  export OPENAI_API_KEY=sk-…        # openai:text-embedding-3-large (1536d)');
+  console.error('  export ZEROENTROPY_API_KEY=ze-…   # zeroentropyai:zembed-1 (2560d, Matryoshka)');
+  console.error('  export VOYAGE_API_KEY=pa-…        # voyage:voyage-4-large (2048d, Eva default)');
+  console.error('Then re-run: gbrain init --pglite');
+  console.error('');
+  console.error('Or pick explicitly:');
+  console.error('  gbrain init --pglite --embedding-model openai:text-embedding-3-large');
+  console.error('');
+  console.error('Or defer setup: gbrain init --pglite --no-embedding');
+  console.error('  (you can configure later with `gbrain config set embedding_model <id>`)');
+  // D13: surface near-miss env vars (e.g. OPENAPI_API_KEY → OPENAI_API_KEY).
+  if (typos.length > 0) {
+    console.error('');
+    for (const t of typos) {
+      console.error(`Note: detected ${t.userSet}; did you mean ${t.suggested}?`);
+    }
+  }
+}
+
+async function resolveEmbeddingByEnv(out: ResolvedAIOptions, nonInteractive: boolean): Promise<void> {
+  const ready = await groupReadyByProvider('embedding');
+  const isTTY = !nonInteractive && !!process.stdin.isTTY;
+
+  if (ready.length === 1) {
+    const r = ready[0].recipe;
+    const tp = r.touchpoints.embedding!;
+    if (Array.isArray(tp.models) && tp.models.length > 0) {
+      const model = tp.models[0];
+      const fullModel = `${r.id}:${model}`;
+      // When the resolved provider matches the canonical default model
+      // (DEFAULT_EMBEDDING_MODEL), use the gateway's
+      // DEFAULT_EMBEDDING_DIMENSIONS instead of the recipe's `default_dims`
+      // (which is the recipe's "largest sensible" tier). This keeps
+      // fresh-install schema width aligned with the v0.37.11.0 system
+      // default — for ZE that means 1280 (the Matryoshka step closest to
+      // legacy OpenAI 1536), not the recipe's 2560.
+      const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } =
+        await import('../core/ai/defaults.ts');
+      const dims = fullModel === DEFAULT_EMBEDDING_MODEL
+        ? DEFAULT_EMBEDDING_DIMENSIONS
+        : tp.default_dims;
+      out.embedding_model = fullModel;
+      out.embedding_dimensions = dims;
+      console.error(
+        `Detected ${r.auth_env?.required?.[0] ?? r.id} env var. ` +
+        `Using ${fullModel} (${dims}d). ` +
+        `Override with --embedding-model.`,
+      );
+      return;
+    }
+  }
+
+  // Zero or multi — pick or fail loud.
+  if (ready.length === 0) {
+    if (!isTTY) {
+      const typos = await findEnvKeyTypos();
+      printNoEmbeddingProviderHint(typos);
+      process.exit(1);
+    }
+    // TTY → picker; on null (user aborted) still fail loud.
+    const { pickProvider } = await import('./init-provider-picker.ts');
+    const picked = await pickProvider({ touchpoint: 'embedding', env: process.env, isTTY: true });
+    if (!picked) {
+      const typos = await findEnvKeyTypos();
+      printNoEmbeddingProviderHint(typos);
+      process.exit(1);
+    }
+    out.embedding_model = picked.fullModel;
+    out.embedding_dimensions = picked.dim;
+    return;
+  }
+
+  // ready.length > 1 — picker (TTY) or fail-loud (non-TTY) per D2/D3.
+  if (!isTTY) {
+    console.error(`Multiple embedding providers env-ready: ${ready.map(p => p.recipeId).join(', ')}.`);
+    console.error(`Disambiguate by passing --embedding-model <provider>:<model>, or unset extra env vars.`);
+    process.exit(1);
+  }
+  const { pickProvider } = await import('./init-provider-picker.ts');
+  const picked = await pickProvider({ touchpoint: 'embedding', env: process.env, isTTY: true });
+  if (!picked) {
+    console.error('Init aborted: no embedding provider picked.');
+    process.exit(1);
+  }
+  out.embedding_model = picked.fullModel;
+  out.embedding_dimensions = picked.dim;
+}
+
+async function resolveExpansionByEnv(out: ResolvedAIOptions): Promise<void> {
+  const ready = await groupReadyByProvider('expansion');
+  // Per D10: chat/expansion fall through to gateway default when ambiguous.
+  if (ready.length === 1) {
+    const r = ready[0].recipe;
+    const tp = r.touchpoints.expansion!;
+    if (Array.isArray(tp.models) && tp.models.length > 0) {
+      out.expansion_model = `${r.id}:${tp.models[0]}`;
+      console.error(`Detected ${r.auth_env?.required?.[0] ?? r.id} env var. Using ${out.expansion_model} for expansion.`);
+    }
+  }
+  // 0 or >1 → silent: gateway default (`anthropic:claude-haiku-4-5-…`) wins
+  // and falls back gracefully at call time when key isn't set.
+}
+
+async function resolveChatByEnv(out: ResolvedAIOptions): Promise<void> {
+  const ready = await groupReadyByProvider('chat');
+  if (ready.length === 1) {
+    const r = ready[0].recipe;
+    const tp = r.touchpoints.chat!;
+    if (Array.isArray(tp.models) && tp.models.length > 0) {
+      out.chat_model = `${r.id}:${tp.models[0]}`;
+      console.error(`Detected ${r.auth_env?.required?.[0] ?? r.id} env var. Using ${out.chat_model} for chat.`);
+    }
+  }
+  // 0 or >1 → silent: gateway default (`anthropic:claude-sonnet-4-6`) wins.
+  // The subagent enforcement at minions/queue.ts already routes subagent jobs
+  // to Anthropic regardless of the chat_model setting (D7 caveat fires from
+  // T6's initPGLite post-config branch when chat_model is non-Anthropic and
+  // ANTHROPIC_API_KEY is missing).
 }
 
 /**
@@ -220,19 +492,6 @@ async function resolveAIOptions(
  * to bump an existing brain's schema to the latest version without
  * clobbering the user's chosen engine.
  */
-function configureGatewayFromConfig(config: GBrainConfig): void {
-  configureGateway({
-    embedding_model: config.embedding_model,
-    embedding_dimensions: config.embedding_dimensions,
-    expansion_model: config.expansion_model,
-    chat_model: config.chat_model,
-    chat_fallback_chain: config.chat_fallback_chain,
-    base_urls: config.provider_base_urls,
-    provider_auth: config.provider_auth,
-    env: loadGbrainEnv(),
-  });
-}
-
 async function initMigrateOnly(opts: { jsonOutput: boolean }) {
   const config = loadConfig();
   if (!config) {
@@ -245,7 +504,19 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
     process.exit(1);
   }
 
-  configureGatewayFromConfig(config);
+  // B.3: configureGateway BEFORE initSchema even on the migrate-only path,
+  // so a schema bump on a brain whose file config is missing the embedding
+  // fields doesn't fall through to stale hardcoded fallbacks. Reads
+  // existing config (which loadConfig already merged with env) and
+  // propagates it into the gateway.
+  const { configureGateway: configureGw } = await import('../core/ai/gateway.ts');
+  configureGw({
+    embedding_model: config.embedding_model,
+    embedding_dimensions: config.embedding_dimensions,
+    expansion_model: config.expansion_model,
+    chat_model: config.chat_model,
+    env: { ...process.env },
+  });
 
   const engine = await createEngine(toEngineConfig(config));
   try {
@@ -399,6 +670,7 @@ async function initRemoteMcp(opts: {
       mode: 'thin-client',
       issuer_url: config.remote_mcp!.issuer_url,
       mcp_url: config.remote_mcp!.mcp_url,
+      oauth_client_id: config.remote_mcp!.oauth_client_id,
       oauth_secret_in_config: 'oauth_client_secret' in config.remote_mcp!,
     }));
   } else {
@@ -414,57 +686,218 @@ async function initRemoteMcp(opts: {
   }
 }
 
+/**
+ * Configure the AI gateway with the merged precedence
+ * `CLI flags > env > existing file > gateway internal defaults`, then read
+ * back the resolved values so the caller can both print them and persist
+ * them to config.json.
+ *
+ * v0.37 fix wave (Lane B.1/B.2/B.3): pre-fix, the gateway was only configured
+ * when a flag was passed. Bare `gbrain init --pglite` left the gateway
+ * unconfigured and engine.initSchema() fell through to stale OpenAI/1536
+ * defaults — schema sized to 1536 while the ZE default emitted 1280. Now
+ * the gateway is ALWAYS configured before initSchema; the schema matches
+ * the resolved provider/dim out of the box.
+ */
+async function configureGatewayWithMergedPrecedence(
+  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string },
+): Promise<{ embedding_model: string; embedding_dimensions: number; expansion_model: string; chat_model: string }> {
+  const existingFile = loadConfigFileOnly() ?? ({} as GBrainConfig);
+  // loadConfig() merges env on top of file — perfect for the gateway path,
+  // where env should win over a stale file. NOT used for the save path
+  // (see B.4), which uses loadConfigFileOnly so transient env state never
+  // pollutes config.json.
+  const env = loadGbrainEnv();
+  const envOverlay = loadConfig(env) ?? ({} as GBrainConfig);
+
+  const merged: GBrainConfig = {
+    ...existingFile,
+    ...envOverlay,
+    embedding_model: aiOpts?.embedding_model ?? envOverlay.embedding_model ?? existingFile.embedding_model,
+    embedding_dimensions: aiOpts?.embedding_dimensions ?? envOverlay.embedding_dimensions ?? existingFile.embedding_dimensions,
+    expansion_model: aiOpts?.expansion_model ?? envOverlay.expansion_model ?? existingFile.expansion_model,
+    chat_model: aiOpts?.chat_model ?? envOverlay.chat_model ?? existingFile.chat_model,
+  } as GBrainConfig;
+
+  const { configureGateway, getEmbeddingModel, getEmbeddingDimensions, getExpansionModel, getChatModel } = await import('../core/ai/gateway.ts');
+  configureGateway(buildInitGatewayConfig(merged, env));
+
+  // Read back resolved values — gateway applies internal defaults for unset
+  // fields, so these are the values that actually shaped the schema.
+  return {
+    embedding_model: getEmbeddingModel(),
+    embedding_dimensions: getEmbeddingDimensions(),
+    expansion_model: getExpansionModel(),
+    chat_model: getChatModel(),
+  };
+}
+
+function buildInitGatewayConfig(c: Partial<GBrainConfig>, env: Record<string, string | undefined> = loadGbrainEnv()) {
+  const envFromConfig: Record<string, string> = {};
+  if (c.openai_api_key) envFromConfig.OPENAI_API_KEY = c.openai_api_key;
+  if (c.anthropic_api_key) envFromConfig.ANTHROPIC_API_KEY = c.anthropic_api_key;
+  if (c.voyage_api_key) envFromConfig.VOYAGE_API_KEY = c.voyage_api_key;
+  if (c.zeroentropy_api_key) envFromConfig.ZEROENTROPY_API_KEY = c.zeroentropy_api_key;
+
+  const envBaseUrls: Record<string, string> = {};
+  if (env.LLAMA_SERVER_BASE_URL) envBaseUrls['llama-server'] = env.LLAMA_SERVER_BASE_URL;
+  if (env.OLLAMA_BASE_URL) envBaseUrls['ollama'] = env.OLLAMA_BASE_URL;
+  if (env.LMSTUDIO_BASE_URL) envBaseUrls['lmstudio'] = env.LMSTUDIO_BASE_URL;
+  if (env.LITELLM_BASE_URL) envBaseUrls['litellm'] = env.LITELLM_BASE_URL;
+  if (env.OPENROUTER_BASE_URL) envBaseUrls['openrouter'] = env.OPENROUTER_BASE_URL;
+
+  return {
+    embedding_model: c.embedding_model,
+    embedding_dimensions: c.embedding_dimensions,
+    embedding_multimodal_model: c.embedding_multimodal_model,
+    expansion_model: c.expansion_model,
+    chat_model: c.chat_model,
+    chat_fallback_chain: c.chat_fallback_chain,
+    base_urls: { ...envBaseUrls, ...(c.provider_base_urls ?? {}) },
+    provider_auth: c.provider_auth,
+    env: { ...envFromConfig, ...env },
+  };
+}
+
+/**
+ * Print the resolved AI choice + a ZE setup hint when applicable.
+ */
+function printResolvedAIChoice(
+  resolved: { embedding_model: string; embedding_dimensions: number; expansion_model: string; chat_model: string },
+  aiOpts?: { embedding_model?: string },
+) {
+  const explicit = aiOpts?.embedding_model != null;
+  const label = explicit ? '' : ' [default]';
+  console.log(`  Embedding: ${resolved.embedding_model} (${resolved.embedding_dimensions}d)${label}`);
+  console.log(`  Expansion: ${resolved.expansion_model}`);
+  console.log(`  Chat:      ${resolved.chat_model}`);
+
+  // ZE setup hint: if resolved provider is ZE and no ZE key is set in env
+  // OR in the file plane, surface the setup gap at init time instead of
+  // letting the first embed call blow up. After Lane C, file-plane
+  // zeroentropy_api_key propagates through buildGatewayConfig.
+  if (resolved.embedding_model.startsWith('zeroentropyai:')) {
+    const fileCfg = loadConfigFileOnly();
+    const env = loadGbrainEnv();
+    if (!env.ZEROENTROPY_API_KEY && !fileCfg?.zeroentropy_api_key) {
+      console.warn('');
+      console.warn('  Heads up: ZEROENTROPY_API_KEY is not set.');
+      console.warn('  Set it before first embed:');
+      console.warn('    export ZEROENTROPY_API_KEY=...');
+      console.warn('  Or add to ~/.gbrain/config.json:');
+      console.warn('    "zeroentropy_api_key": "..."');
+      console.warn('  Or pick a different provider:');
+      console.warn('    gbrain init --pglite --embedding-model openai:text-embedding-3-large --embedding-dimensions 1536');
+    }
+  }
+}
+
 async function initPGLite(opts: {
   jsonOutput: boolean;
   apiKey: string | null;
   customPath: string | null;
-  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string };
+  aiOpts?: ResolvedAIOptions;
 }) {
   const dbPath = opts.customPath || gbrainPath('brain.pglite');
   console.log(`Setting up local brain with PGLite (no server needed)...`);
-  const existingConfig = loadConfig();
 
-  const mergedConfig: GBrainConfig = {
-    ...(existingConfig ?? { engine: 'pglite', database_path: dbPath }),
-    engine: 'pglite',
-    database_path: dbPath,
-    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
-    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
-    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
-    ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
-  };
+  // v0.37.10.0 T6 (D11): preflight schema dim BEFORE any DB write or schema
+  // creation. After T5's env detection runs, opts.aiOpts has either an
+  // embedding_model resolved (auto-pick / picker / explicit flag) OR
+  // noEmbedding=true (D9 opt-in). Either way we MUST agree with the
+  // gateway's resolved dim by construction — preflight validates that.
+  let resolvedDim: number | undefined;
+  let resolvedModel: string | undefined;
+  if (opts.aiOpts?.noEmbedding) {
+    // D9 deferred-setup mode: skip preflight, no model/dim resolved.
+    console.log(`  --no-embedding: deferred setup — configure with \`gbrain config set embedding_model <id>\` before import`);
+  } else if (opts.aiOpts?.embedding_model) {
+    const { resolveSchemaEmbeddingDim } = await import('../core/embedding-dim-check.ts');
+    const pre = resolveSchemaEmbeddingDim({
+      embedding_model: opts.aiOpts.embedding_model,
+      embedding_dimensions: opts.aiOpts.embedding_dimensions,
+    });
+    if (!pre.ok) {
+      console.error(`\nRefusing to init: ${pre.error}\n`);
+      if (opts.jsonOutput) {
+        console.log(JSON.stringify({ status: 'error', reason: 'preflight_failed', error: pre.error }));
+      }
+      process.exit(1);
+    }
+    resolvedDim = pre.dim;
+    resolvedModel = pre.model;
+  }
+  // If neither --no-embedding nor an embedding_model is resolved, resolveAIOptions
+  // already exited 1 with the fail-loud setup hint (T5). Reaching here without
+  // either means we have a user-passed combination the previous step accepted —
+  // typically `--embedding-model` flag without env detection running.
 
-  // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (mergedConfig.embedding_model || mergedConfig.chat_model) {
-    configureGatewayFromConfig(mergedConfig);
-    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
-    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
-    if (mergedConfig.chat_model) console.log(`  Chat: ${mergedConfig.chat_model}`);
+  // v0.37.10.0 T6 + v0.37.11.0 Lane B.1: ALWAYS configureGateway BEFORE
+  // initSchema. Schema substitution at pglite-schema.ts:833 and the runtime
+  // gateway share one source of truth. Resolution precedence locked in
+  // resolveAIOptions above: CLI flags > env vars > existing file > gateway
+  // defaults.
+  const { configureGateway } = await import('../core/ai/gateway.ts');
+  const env = loadGbrainEnv();
+  const gatewayFile = loadConfig(env) ?? loadConfigFileOnly() ?? ({} as GBrainConfig);
+  configureGateway(buildInitGatewayConfig({
+    ...gatewayFile,
+    embedding_model: resolvedModel ?? opts.aiOpts?.embedding_model,
+    embedding_dimensions: resolvedDim ?? opts.aiOpts?.embedding_dimensions,
+    expansion_model: opts.aiOpts?.expansion_model,
+    chat_model: opts.aiOpts?.chat_model,
+  }, env));
+  if (resolvedModel) console.log(`  Embedding: ${resolvedModel} (${resolvedDim}d)`);
+  if (opts.aiOpts?.expansion_model) console.log(`  Expansion: ${opts.aiOpts.expansion_model}`);
+  if (opts.aiOpts?.chat_model) console.log(`  Chat: ${opts.aiOpts.chat_model}`);
+
+  // v0.37.11.0 Lane C.3: surface ZE setup gap inline at init time when the
+  // resolved provider is ZeroEntropy and neither env nor file-plane key is
+  // set. Beats "first embed call blows up four minutes later" UX.
+  if (resolvedModel?.startsWith('zeroentropyai:')) {
+    const fileCfg = loadConfigFileOnly();
+    const env = loadGbrainEnv();
+    if (!env.ZEROENTROPY_API_KEY && !fileCfg?.zeroentropy_api_key) {
+      console.warn('');
+      console.warn('  Heads up: ZEROENTROPY_API_KEY is not set.');
+      console.warn('  Set it before first embed:');
+      console.warn('    export ZEROENTROPY_API_KEY=...');
+      console.warn('  Or add to ~/.gbrain/config.json:');
+      console.warn('    "zeroentropy_api_key": "..."');
+      console.warn('  Or pick a different provider:');
+      console.warn('    gbrain init --pglite --embedding-model openai:text-embedding-3-large --embedding-dimensions 1536');
+    }
   }
 
   const engine = await createEngine({ engine: 'pglite' });
   try {
     await engine.connect({ database_path: dbPath, engine: 'pglite' });
 
-    // v0.28.5 (A4): refuse to silently re-template an existing brain with a
-    // mismatched embedding dimension. Loud failure beats the v0.27 silent-
-    // corruption pattern that surfaced as #673.
-    if (opts.aiOpts?.embedding_dimensions) {
+    // v0.28.5 (A4) + v0.37.11.0 Lane B.5: refuse to silently re-template an
+    // existing brain with a mismatched embedding dimension. Catches both the
+    // explicit-flag case (v0.28.5) AND the bare-init case where a user with
+    // a 1536 brain runs `gbrain init --pglite` after upgrading to v0.36+
+    // and would silently end up with runtime ZE/1280 against a 1536 column
+    // (Lane B.5). Fresh-install case is now structurally impossible after
+    // v0.37.10.0 T6's preflight.
+    if (resolvedDim) {
       const { readContentChunksEmbeddingDim, embeddingMismatchMessage } = await import('../core/embedding-dim-check.ts');
       const existing = await readContentChunksEmbeddingDim(engine);
-      if (existing.exists && existing.dims !== null && existing.dims !== opts.aiOpts.embedding_dimensions) {
+      if (existing.exists && existing.dims !== null && existing.dims !== resolvedDim) {
         console.error('\n' + embeddingMismatchMessage({
           currentDims: existing.dims,
-          requestedDims: opts.aiOpts.embedding_dimensions,
-          requestedModel: opts.aiOpts.embedding_model,
+          requestedDims: resolvedDim,
+          requestedModel: resolvedModel,
           source: 'init',
+          engineKind: 'pglite',
+          databasePath: dbPath,
         }) + '\n');
         if (opts.jsonOutput) {
           console.log(JSON.stringify({
             status: 'error',
             reason: 'embedding_dim_mismatch',
             current_dims: existing.dims,
-            requested_dims: opts.aiOpts.embedding_dimensions,
+            requested_dims: resolvedDim,
           }));
         }
         process.exit(1);
@@ -473,12 +906,59 @@ async function initPGLite(opts: {
 
     await engine.initSchema();
 
+    // v0.37.10.0 T6 (D11): post-initSchema invariant assertion. After preflight
+    // + always-configureGateway, this is structurally guaranteed to pass —
+    // kept as a regression guardrail so any future schema-substitution drift
+    // fails loud here, not at first embed.
+    if (resolvedDim) {
+      const { readContentChunksEmbeddingDim, embeddingMismatchMessage } = await import('../core/embedding-dim-check.ts');
+      const after = await readContentChunksEmbeddingDim(engine);
+      if (after.exists && after.dims !== null && after.dims !== resolvedDim) {
+        console.error('\nUNEXPECTED: post-initSchema invariant assertion failed.');
+        console.error('  This is a bug. Please file an issue with the output of `gbrain doctor`.\n');
+        console.error(embeddingMismatchMessage({
+          currentDims: after.dims,
+          requestedDims: resolvedDim,
+          requestedModel: resolvedModel,
+          source: 'init',
+          engineKind: 'pglite',
+          databasePath: dbPath,
+        }));
+        process.exit(1);
+      }
+    }
+
+    // v0.37.10.0 T7 (D9) + v0.37.11.0 Lane B.4: atomic embedding-config
+    // persistence on top of the existing file-plane config (preserves
+    // user-set fields like zeroentropy_api_key, chat_model, expansion_model).
+    // Either the deferred-setup sentinel (`embedding_disabled: true`) OR the
+    // resolved (model, dimensions) tuple. Never a partial state. Precedence:
+    // CLI flags this invocation > existing file plane > resolved defaults.
+    // Use loadConfigFileOnly() — loadConfig() would poison config.json with
+    // any DATABASE_URL the current process happens to have set (CDX2-7).
+    const existingFile = loadConfigFileOnly() ?? ({} as GBrainConfig);
     const config: GBrainConfig = {
-      ...mergedConfig,
+      ...existingFile,
+      engine: 'pglite',
+      database_path: dbPath,
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
+      ...(opts.aiOpts?.noEmbedding
+        ? { embedding_disabled: true }
+        : (resolvedModel && resolvedDim)
+          ? { embedding_model: resolvedModel, embedding_dimensions: resolvedDim }
+          : {}),
+      ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+      ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
     };
     saveConfig(config);
-    recordFreshInstallMigrationBaseline(existingConfig === null);
+
+    // T6 (D7): post-init subagent-Anthropic caveat. Fires for both auto-pick
+    // and picker paths so users see the implication of running on a chat
+    // provider that can't drive the subagent loop.
+    if (opts.aiOpts?.chat_model && !opts.aiOpts.chat_model.startsWith('anthropic:') && !process.env.ANTHROPIC_API_KEY) {
+      const { printSubagentAnthropicCaveat } = await import('./init-provider-picker.ts');
+      printSubagentAnthropicCaveat((s) => process.stderr.write(s));
+    }
 
     // v0.32.3 search-lite install-time mode picker. Runs AFTER initSchema so
     // DB config writes are valid. Idempotent: skipped on re-init if already set.
@@ -495,18 +975,19 @@ async function initPGLite(opts: {
       console.log(`${stats.page_count} pages. Engine: PGLite (local Postgres).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
-        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
-        console.log('  gbrain migrate --to supabase            (copy into a fresh Postgres brain)');
-        console.log('  cp ~/.gbrain/brain.pglite ~/.gbrain/brain.pglite.bak   (quick local backup)');
-        console.log('Then re-run `gbrain init --pglite --model <provider>` on an empty brain.');
+        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
+        console.log('  gbrain extract links --source db        (typed link backfill)');
+        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
+        console.log('  gbrain stats                            (verify links > 0)');
       } else {
         console.log('Next: gbrain import <dir>');
       }
       console.log('');
       console.log('When you outgrow local: gbrain migrate --to supabase');
       reportModStatus();
-      await printPostInstallAdvisory();
+      const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
+      const { VERSION } = await import('../version.ts');
+      printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -517,27 +998,70 @@ async function initPostgres(opts: {
   databaseUrl: string;
   jsonOutput: boolean;
   apiKey: string | null;
-  aiOpts?: { embedding_model?: string; embedding_dimensions?: number; expansion_model?: string; chat_model?: string };
+  aiOpts?: ResolvedAIOptions;
 }) {
   const { databaseUrl } = opts;
-  const existingConfig = loadConfig();
 
-  const mergedConfig: GBrainConfig = {
-    ...(existingConfig ?? { engine: 'postgres', database_url: databaseUrl }),
-    engine: 'postgres',
-    database_url: databaseUrl,
-    ...(opts.aiOpts?.embedding_model ? { embedding_model: opts.aiOpts.embedding_model } : {}),
-    ...(opts.aiOpts?.embedding_dimensions ? { embedding_dimensions: opts.aiOpts.embedding_dimensions } : {}),
-    ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
-    ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
-  };
+  // v0.37.10.0 T6 (D11) + v0.37.11.0 Lane B.2: ALWAYS configure gateway BEFORE
+  // initSchema. Same preflight contract as PGLite. Refuse to call initSchema
+  // until the gateway-resolved dim is validated. Schema substitution in
+  // src/schema.sql is currently a static `vector(1536)` for Postgres (unlike
+  // PGLite's templated dim), so a Voyage/ZE-configured Postgres brain will
+  // still need a future schema rewrite path — preflight makes the
+  // not-yet-supported case fail loud rather than silently produce a stuck
+  // 1536d column.
+  let resolvedDim: number | undefined;
+  let resolvedModel: string | undefined;
+  if (opts.aiOpts?.noEmbedding) {
+    console.log(`  --no-embedding: deferred setup — configure with \`gbrain config set embedding_model <id>\` before import`);
+  } else if (opts.aiOpts?.embedding_model) {
+    const { resolveSchemaEmbeddingDim } = await import('../core/embedding-dim-check.ts');
+    const pre = resolveSchemaEmbeddingDim({
+      embedding_model: opts.aiOpts.embedding_model,
+      embedding_dimensions: opts.aiOpts.embedding_dimensions,
+    });
+    if (!pre.ok) {
+      console.error(`\nRefusing to init: ${pre.error}\n`);
+      if (opts.jsonOutput) {
+        console.log(JSON.stringify({ status: 'error', reason: 'preflight_failed', error: pre.error }));
+      }
+      process.exit(1);
+    }
+    resolvedDim = pre.dim;
+    resolvedModel = pre.model;
+  }
 
-  // Configure AI gateway BEFORE initSchema so the vector column uses the right dim.
-  if (mergedConfig.embedding_model || mergedConfig.chat_model) {
-    configureGatewayFromConfig(mergedConfig);
-    console.log(`  Embedding: ${mergedConfig.embedding_model} (${mergedConfig.embedding_dimensions ?? '?'}d)`);
-    if (mergedConfig.expansion_model) console.log(`  Expansion: ${mergedConfig.expansion_model}`);
-    if (mergedConfig.chat_model) console.log(`  Chat: ${mergedConfig.chat_model}`);
+  // T6: unconditional configureGateway BEFORE initSchema.
+  const { configureGateway } = await import('../core/ai/gateway.ts');
+  const env = loadGbrainEnv();
+  const gatewayFile = loadConfig(env) ?? loadConfigFileOnly() ?? ({} as GBrainConfig);
+  configureGateway(buildInitGatewayConfig({
+    ...gatewayFile,
+    embedding_model: resolvedModel ?? opts.aiOpts?.embedding_model,
+    embedding_dimensions: resolvedDim ?? opts.aiOpts?.embedding_dimensions,
+    expansion_model: opts.aiOpts?.expansion_model,
+    chat_model: opts.aiOpts?.chat_model,
+  }, env));
+  if (resolvedModel) console.log(`  Embedding: ${resolvedModel} (${resolvedDim}d)`);
+  if (opts.aiOpts?.expansion_model) console.log(`  Expansion: ${opts.aiOpts.expansion_model}`);
+  if (opts.aiOpts?.chat_model) console.log(`  Chat: ${opts.aiOpts.chat_model}`);
+
+  // v0.37.11.0 Lane C.3: surface ZE setup gap inline at init time when the
+  // resolved provider is ZeroEntropy and neither env nor file-plane key is
+  // set. Beats "first embed call blows up four minutes later" UX.
+  if (resolvedModel?.startsWith('zeroentropyai:')) {
+    const fileCfg = loadConfigFileOnly();
+    const env = loadGbrainEnv();
+    if (!env.ZEROENTROPY_API_KEY && !fileCfg?.zeroentropy_api_key) {
+      console.warn('');
+      console.warn('  Heads up: ZEROENTROPY_API_KEY is not set.');
+      console.warn('  Set it before first embed:');
+      console.warn('    export ZEROENTROPY_API_KEY=...');
+      console.warn('  Or add to ~/.gbrain/config.json:');
+      console.warn('    "zeroentropy_api_key": "..."');
+      console.warn('  Or pick a different provider:');
+      console.warn('    gbrain init --pglite --embedding-model openai:text-embedding-3-large --embedding-dimensions 1536');
+    }
   }
 
   // Detect Supabase direct connection URLs and warn about IPv6
@@ -585,24 +1109,28 @@ async function initPostgres(opts: {
       // Non-fatal
     }
 
-    // v0.28.5 (A4): refuse to silently re-template an existing brain with a
-    // mismatched embedding dimension (mirror of the PGLite path above).
-    if (opts.aiOpts?.embedding_dimensions) {
+    // v0.28.5 (A4) + v0.37.11.0 Lane B.5: refuse to silently re-template an
+    // existing brain with a mismatched embedding dimension. Mirror of the
+    // PGLite path above. Fires even when the user didn't pass
+    // `--embedding-dimensions` explicitly so the Lane B.5 bare-init case is
+    // covered too.
+    if (resolvedDim) {
       const { readContentChunksEmbeddingDim, embeddingMismatchMessage } = await import('../core/embedding-dim-check.ts');
       const existing = await readContentChunksEmbeddingDim(engine);
-      if (existing.exists && existing.dims !== null && existing.dims !== opts.aiOpts.embedding_dimensions) {
+      if (existing.exists && existing.dims !== null && existing.dims !== resolvedDim) {
         console.error('\n' + embeddingMismatchMessage({
           currentDims: existing.dims,
-          requestedDims: opts.aiOpts.embedding_dimensions,
-          requestedModel: opts.aiOpts.embedding_model,
+          requestedDims: resolvedDim,
+          requestedModel: resolvedModel,
           source: 'init',
+          engineKind: 'postgres',
         }) + '\n');
         if (opts.jsonOutput) {
           console.log(JSON.stringify({
             status: 'error',
             reason: 'embedding_dim_mismatch',
             current_dims: existing.dims,
-            requested_dims: opts.aiOpts.embedding_dimensions,
+            requested_dims: resolvedDim,
           }));
         }
         process.exit(1);
@@ -612,13 +1140,50 @@ async function initPostgres(opts: {
     console.log('Running schema migration...');
     await engine.initSchema();
 
+    // v0.37.10.0 T6 (D11): post-initSchema invariant assertion guardrail.
+    if (resolvedDim) {
+      const { readContentChunksEmbeddingDim, embeddingMismatchMessage } = await import('../core/embedding-dim-check.ts');
+      const after = await readContentChunksEmbeddingDim(engine);
+      if (after.exists && after.dims !== null && after.dims !== resolvedDim) {
+        console.error('\nUNEXPECTED: post-initSchema invariant assertion failed.');
+        console.error('  This is a bug. Please file an issue with the output of `gbrain doctor`.\n');
+        console.error(embeddingMismatchMessage({
+          currentDims: after.dims,
+          requestedDims: resolvedDim,
+          requestedModel: resolvedModel,
+          source: 'init',
+          engineKind: 'postgres',
+        }));
+        process.exit(1);
+      }
+    }
+
+    // v0.37.10.0 T7 (D9) + v0.37.11.0 Lane B.4 (Postgres mirror): atomic
+    // embedding-config persistence on top of the existing file-plane config.
+    // Same precedence + same merge contract as the PGLite path above.
+    const existingFile = loadConfigFileOnly() ?? ({} as GBrainConfig);
     const config: GBrainConfig = {
-      ...mergedConfig,
+      ...existingFile,
+      engine: 'postgres',
+      database_url: databaseUrl,
+      database_path: undefined, // clear any stale PGLite path
       ...(opts.apiKey ? { openai_api_key: opts.apiKey } : {}),
+      ...(opts.aiOpts?.noEmbedding
+        ? { embedding_disabled: true }
+        : (resolvedModel && resolvedDim)
+          ? { embedding_model: resolvedModel, embedding_dimensions: resolvedDim }
+          : {}),
+      ...(opts.aiOpts?.expansion_model ? { expansion_model: opts.aiOpts.expansion_model } : {}),
+      ...(opts.aiOpts?.chat_model ? { chat_model: opts.aiOpts.chat_model } : {}),
     };
     saveConfig(config);
-    recordFreshInstallMigrationBaseline(existingConfig === null);
     console.log('Config saved to ~/.gbrain/config.json');
+
+    // T6 (D7): post-init subagent-Anthropic caveat.
+    if (opts.aiOpts?.chat_model && !opts.aiOpts.chat_model.startsWith('anthropic:') && !process.env.ANTHROPIC_API_KEY) {
+      const { printSubagentAnthropicCaveat } = await import('./init-provider-picker.ts');
+      printSubagentAnthropicCaveat((s) => process.stderr.write(s));
+    }
 
     // v0.32.3 search-lite install-time mode picker. Same shape as the
     // PGLite path above — runs AFTER initSchema, idempotent on re-init.
@@ -633,31 +1198,20 @@ async function initPostgres(opts: {
       console.log(`\nBrain ready. ${stats.page_count} pages. Engine: Postgres (Supabase).`);
       if (stats.page_count > 0) {
         console.log('');
-        console.log('Existing brain detected. Fresh init is the supported production path for provider-base setup.');
-        console.log('Before switching providers or dimensions, preserve this brain explicitly:');
-        console.log('  gbrain migrate --to pglite --force --path ~/.gbrain/brain.pglite   (copy into a fresh local brain)');
-        console.log('  gbrain export --dir ./gbrain-export     (portable markdown export)');
-        console.log('Then point init at a clean Postgres target and re-import if needed.');
+        console.log('Existing brain detected. To wire up the v0.10.3 knowledge graph:');
+        console.log('  gbrain extract links --source db        (typed link backfill)');
+        console.log('  gbrain extract timeline --source db     (structured timeline backfill)');
+        console.log('  gbrain stats                            (verify links > 0)');
       } else {
         console.log('Next: gbrain import <dir>');
       }
       reportModStatus();
-      await printPostInstallAdvisory();
+      const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
+      const { VERSION } = await import('../version.ts');
+      printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
     }
   } finally {
     try { await engine.disconnect(); } catch { /* best-effort */ }
-  }
-}
-
-function recordFreshInstallMigrationBaseline(isFreshInstall: boolean): void {
-  if (!isFreshInstall) return;
-  if (loadCompletedMigrations().length > 0) return;
-  for (const migration of migrations) {
-    appendCompletedMigration({
-      version: migration.version,
-      status: 'complete',
-      fresh_install_baseline: true,
-    });
   }
 }
 
@@ -878,14 +1432,4 @@ export function reportModStatus(): void {
   console.log('Resolver: skills/RESOLVER.md');
   console.log('Soul audit: run `gbrain soul-audit` to customize agent identity');
   console.log('');
-}
-
-async function printPostInstallAdvisory(): Promise<void> {
-  try {
-    const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
-    const { VERSION } = await import('../version.ts');
-    printAdvisoryIfRecommended({ version: VERSION, context: 'init' });
-  } catch (e) {
-    console.error(`[warn] post-install advisory skipped: ${e instanceof Error ? e.message : String(e)}`);
-  }
 }

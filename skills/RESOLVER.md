@@ -17,6 +17,8 @@ This is the dispatcher. Skills are the implementation. **Read the skill file bef
 | "Who knows who", "relationship between", "connections", "graph query" | `skills/query/SKILL.md` (use graph-query) |
 | Creating/enriching a person or company page | `skills/enrich/SKILL.md` |
 | Where does a new file go? Filing rules | `skills/repo-architecture/SKILL.md` |
+| "where does this brain page go", "file this in the brain", "brain taxonomist", "taxonomy check", "refile brain page", "which directory does this page go" | `skills/brain-taxonomist/SKILL.md` |
+| "EIIRP", "everything in its right place", "store this research", "put this in the brain", "make this re-doable", "DRY this up", "file all of this", "organize all of this work", "archive this research thread" | `skills/eiirp/SKILL.md` |
 | Fix broken citations in brain pages | `skills/citation-fixer/SKILL.md` |
 | "citation audit", "check citations", "fix citations" | `skills/citation-fixer/SKILL.md` (focused fix). For broader brain health, chain into `skills/maintain/SKILL.md` |
 | "Research", "track", "extract from email", "investor updates", "donations" | `skills/data-research/SKILL.md` |
@@ -29,6 +31,7 @@ This is the dispatcher. Skills are the implementation. **Read the skill file bef
 
 | Trigger | Skill |
 |---------|-------|
+| "capture this", "save this thought", "remember this", "drop this in the inbox", "save to brain" | `skills/capture/SKILL.md` |
 | User shares a link, article, tweet, or idea | `skills/idea-ingest/SKILL.md` |
 | "watch this video", "process this YouTube link", "ingest this PDF", "save this podcast", "process this book", "summarize this book", "PDF book", "ingest it into my brain", "what's in this screenshot", "check out this repo" | `skills/media-ingest/SKILL.md` |
 | Meeting transcript received | `skills/meeting-ingestion/SKILL.md` |

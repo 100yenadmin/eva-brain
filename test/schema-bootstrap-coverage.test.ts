@@ -129,6 +129,22 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   { kind: 'column', table: 'sources', column: 'archived' },
   { kind: 'column', table: 'sources', column: 'archived_at' },
   { kind: 'column', table: 'sources', column: 'archive_expires_at' },
+  // v0.37.0 (v79) — forward-referenced by `CREATE INDEX
+  // pages_last_retrieved_at_idx ON pages (last_retrieved_at)`. Pre-v79 brains
+  // have pages without this column; bootstrap adds it before SCHEMA_SQL
+  // replay creates the index.
+  { kind: 'column', table: 'pages', column: 'last_retrieved_at' },
+  // v0.38.0 (v81) — pages_provenance_columns adds four nullable columns
+  // (ingested_via, ingested_at, source_uri, source_kind) to track WHERE
+  // every page came from (capture-cli, webhook, put_page, dream, etc.).
+  // No SCHEMA_SQL index/FK references them today, but bootstrap probes
+  // are added defense-in-depth so future schema work that does reference
+  // them doesn't wedge pre-v81 brains. Renumbered v80→v81 during master
+  // merge with v0.37.2.0 takes_unresolvable_quality hotfix.
+  { kind: 'column', table: 'pages', column: 'ingested_via' },
+  { kind: 'column', table: 'pages', column: 'ingested_at' },
+  { kind: 'column', table: 'pages', column: 'source_uri' },
+  { kind: 'column', table: 'pages', column: 'source_kind' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {
@@ -648,6 +664,23 @@ const COLUMN_EXEMPTIONS = new Set<string>([
   'facts.claim_value',
   'facts.claim_unit',
   'facts.claim_period',
+  // v0.40.2.0 (migration v89) — event_type column. Same precedent as
+  // facts.claim_metric et al: no forward-reference index in
+  // PGLITE_SCHEMA_SQL, no downstream filter breaks on old brains
+  // (existing callers — founder-scorecard, eval-trajectory,
+  // gbrain think trajectory injection — all defensively skip
+  // NULL-metric rows in per-metric math, so event_type=NULL on old
+  // brains is invisible to them). Migration is column-only, no FK,
+  // no index — bootstrap probe would be pure overhead.
+  'facts.event_type',
+  // v0.39.1.0 (migration v88) — schema-pack provenance per-source captured as
+  // inline canonical closure snapshot on every eval_candidates row. NULL by
+  // default; no index in PGLITE_SCHEMA_SQL references it. Migration handles
+  // both fresh installs and pre-existing brains via ADD COLUMN IF NOT EXISTS.
+  // Schema-pack codegen (scripts/generate-gbrain-base.ts) consumes the value
+  // only via the eval-replay CLI, not via SQL filters that would force a
+  // bootstrap probe.
+  'eval_candidates.schema_pack_per_source',
 ]);
 
 test('every ALTER TABLE ADD COLUMN in MIGRATIONS is covered by applyForwardReferenceBootstrap (column-only class)', async () => {
