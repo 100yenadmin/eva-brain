@@ -68,6 +68,10 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/--with-openclaw\b/);
     expect(script).toMatch(/--with-codex-plugin\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
+    expect(script).toMatch(/pgrep\s+-f\s+'\[g\]brain serve'/);
+    expect(script).toMatch(/pgrep\s+-f\s+'\[l\]aunch-gbrain-serve\\\.mjs'/);
+    expect(script).toMatch(/kill\s+-KILL\s+\$pids/);
+    expect(script).toMatch(/Stale gbrain serve\/plugin launcher processes remain after cleanup/);
     expect(script).toMatch(/switch\s+--detach\s+FETCH_HEAD/);
     expect(script).toMatch(/GBRAIN_ROOT="\$\{GBRAIN_HOME:-\$HOME\}"/);
     expect(script).toMatch(/GBRAIN_DIR="\$GBRAIN_ROOT\/\.gbrain"/);
@@ -130,6 +134,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(codexPlugin.repository).toContain('electricsheephq/eva-brain');
     expect(codexPlugin.skills).toBe('./skills/');
     expect(codexPlugin.mcpServers).toBe('./.mcp.json');
+    expect(readFileSync(join(root, 'scripts/codex-gbrain-smoke.mjs'), 'utf8')).toContain('collectCacheVersions');
   });
 
   test('Codex plugin is not an OpenClaw plugin child by accident', () => {
@@ -248,6 +253,12 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(entry.policy.installation).toBe('AVAILABLE');
     expect(entry.policy.authentication).toBe('ON_INSTALL');
 
+    const codexConfig = readFileSync(join(home, '.codex/config.toml'), 'utf8');
+    expect(codexConfig).toContain('[marketplaces.local-workspace]');
+    expect(codexConfig).toContain(`source = ${JSON.stringify(home)}`);
+    expect(codexConfig).toContain('[plugins."gbrain-codex@local-workspace"]');
+    expect(codexConfig).toContain('enabled = true');
+
     const rehearsal = Bun.spawnSync({
       cmd: ['node', join(pluginDir, 'scripts/rehearsal.mjs')],
       cwd: root,
@@ -261,6 +272,26 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(rehearsal.exitCode).toBe(0);
     expect(JSON.parse(rehearsal.stdout.toString()).ok).toBe(true);
   }, 15000);
+
+  test('Codex installer clears stale cached gbrain-codex plugin versions', () => {
+    const home = tempHome();
+    const stalePluginDir = join(home, '.codex/plugins/cache/local-workspace/gbrain-codex/0.30.0/.codex-plugin');
+    mkdirSync(stalePluginDir, { recursive: true });
+    writeFileSync(join(stalePluginDir, 'plugin.json'), JSON.stringify({ name: 'gbrain-codex', version: '0.30.0' }));
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/install-codex-plugin.mjs', '--home', home, '--repo-dir', root],
+      cwd: root,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'))).toBe(false);
+
+    const stdout = JSON.parse(result.stdout.toString());
+    expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
+    expect(result.stderr.toString()).toContain('expected: 0.40.2.1');
+  });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
     const home = tempHome();

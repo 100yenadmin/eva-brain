@@ -44,8 +44,9 @@ node scripts/install-codex-plugin.mjs
 Then restart Codex Desktop.
 
 The installer creates `~/plugins/gbrain-codex`, links this package plus the
-repo's current `skills/` tree, and updates
-`~/.agents/plugins/marketplace.json`.
+repo's current `skills/` tree, updates the local Codex marketplace/config, and
+clears stale cached `gbrain-codex` plugin entries so Codex reloads the current
+version after restart.
 
 For the full public install path, including the CLI and optional host plugins:
 
@@ -76,6 +77,18 @@ The rehearsal script creates a temp `GBRAIN_HOME`, initializes PGLite with
 deferred embeddings so no provider API key is required, connects to the plugin
 over stdio MCP, checks `tools/list`, and exercises `put_page`, `get_page`,
 `search`, `query`, `sync_brain`, and the `whoami` fail-closed path.
+
+After installing into Codex Desktop, run the configured-machine smoke:
+
+```bash
+node scripts/codex-gbrain-smoke.mjs
+```
+
+If stale `gbrain serve` processes are present, refresh with:
+
+```bash
+scripts/update-local-install.sh --with-codex-plugin --stop-stale-serve
+```
 
 ## Safety Boundary
 

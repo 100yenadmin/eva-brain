@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
+const CODEX_MARKETPLACE_NAME = 'local-workspace';
+const CODEX_PLUGIN_NAME = 'gbrain-codex';
+const CODEX_PLUGIN_ID = `${CODEX_PLUGIN_NAME}@${CODEX_MARKETPLACE_NAME}`;
 
 function usage() {
   process.stdout.write(`Usage: node scripts/install-codex-plugin.mjs [options]
@@ -73,7 +76,10 @@ function assertRepoShape(repoDir) {
   if (parsed.name !== 'gbrain-codex') {
     throw new Error(`Unexpected Codex plugin name in ${manifest}: ${parsed.name}`);
   }
-  return { pluginRoot, manifest, mcp, skills };
+  if (!parsed.version) {
+    throw new Error(`Codex plugin manifest is missing version: ${manifest}`);
+  }
+  return { pluginRoot, manifest, mcp, skills, version: parsed.version };
 }
 
 function safeRemovePluginDir(pluginDir, force) {
@@ -163,14 +169,109 @@ function updateMarketplace(opts) {
   return path;
 }
 
+function tomlValue(value) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return JSON.stringify(String(value));
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function upsertTomlTable(contents, tableName, values) {
+  const header = `[${tableName}]`;
+  const lines = contents ? contents.replace(/\r\n/g, '\n').split('\n') : [];
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+  let start = lines.findIndex(line => line.trim() === header);
+  if (start === -1) {
+    if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('');
+    lines.push(header);
+    start = lines.length - 1;
+  }
+
+  let end = start + 1;
+  while (end < lines.length && !/^\s*\[[^\]]+\]\s*$/.test(lines[end])) end += 1;
+
+  const block = lines.slice(start + 1, end);
+  for (const [key, value] of Object.entries(values)) {
+    const rendered = `${key} = ${tomlValue(value)}`;
+    const keyPattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=`);
+    const idx = block.findIndex(line => keyPattern.test(line));
+    if (idx >= 0) block[idx] = rendered;
+    else block.push(rendered);
+  }
+
+  lines.splice(start + 1, end - start - 1, ...block);
+  return `${lines.join('\n')}\n`;
+}
+
+function updateCodexConfig(opts) {
+  const path = join(opts.home, '.codex', 'config.toml');
+  runStep(opts, `Updating Codex config ${path}`, () => {
+    mkdirSync(dirname(path), { recursive: true });
+    let contents = existsSync(path) ? readFileSync(path, 'utf8') : '';
+    contents = upsertTomlTable(contents, `marketplaces.${CODEX_MARKETPLACE_NAME}`, {
+      last_updated: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      source_type: 'local',
+      source: opts.home,
+    });
+    contents = upsertTomlTable(contents, `plugins."${CODEX_PLUGIN_ID}"`, {
+      enabled: true,
+    });
+    writeFileSync(path, contents);
+  });
+  return path;
+}
+
+function cachedVersions(pluginCacheDir) {
+  try {
+    return readdirSync(pluginCacheDir, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function refreshCodexCache(opts, expectedVersion) {
+  const cacheRoot = join(opts.home, '.codex', 'plugins', 'cache');
+  if (!existsSync(cacheRoot)) {
+    log(`Codex plugin cache not found at ${cacheRoot}; nothing to refresh.`);
+    return [];
+  }
+
+  const removed = [];
+  for (const marketplace of readdirSync(cacheRoot, { withFileTypes: true })) {
+    if (!marketplace.isDirectory()) continue;
+    const pluginCacheDir = join(cacheRoot, marketplace.name, CODEX_PLUGIN_NAME);
+    if (!existsSync(pluginCacheDir)) continue;
+    const versions = cachedVersions(pluginCacheDir);
+    const summary = versions.length > 0 ? versions.join(', ') : 'unknown cached version';
+    runStep(
+      opts,
+      `Refreshing Codex cache ${pluginCacheDir} (cached: ${summary}; expected: ${expectedVersion})`,
+      () => rmSync(pluginCacheDir, { recursive: true, force: true }),
+    );
+    removed.push(pluginCacheDir);
+  }
+  if (removed.length === 0) {
+    log(`No cached ${CODEX_PLUGIN_NAME} plugin entries found under ${cacheRoot}.`);
+  }
+  return removed;
+}
+
 export function installCodexPlugin(argv = process.argv.slice(2)) {
   const opts = parseArgs(argv);
   const paths = assertRepoShape(opts.repoDir);
   const pluginDir = installPluginTree(opts, paths);
   const market = updateMarketplace(opts);
+  const codexConfig = updateCodexConfig(opts);
+  const refreshedCaches = refreshCodexCache(opts, paths.version);
   const rel = relative(opts.home, pluginDir) || pluginDir;
   log(`Installed ${rel}; restart Codex Desktop to reload plugins.`);
-  return { pluginDir, marketplace: market, dryRun: opts.dryRun };
+  return { pluginDir, marketplace: market, codexConfig, refreshedCaches, dryRun: opts.dryRun };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {

@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.40.2.0",
+  "version": "0.40.2.1",
   "description": "Postgres-native personal knowledge brain with hybrid RAG search",
   "repository": {
     "type": "git",
@@ -65,6 +65,7 @@
     "ci:select-e2e": "bun run scripts/select-e2e.ts",
     "install:codex-plugin": "node scripts/install-codex-plugin.mjs",
     "rehearse:codex-plugin": "node plugins/gbrain-codex/scripts/rehearsal.mjs",
+    "smoke:codex-gbrain": "node scripts/codex-gbrain-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "check:jsonb": "scripts/check-jsonb-pattern.sh",
     "check:source-id-projection": "scripts/check-source-id-projection.sh",

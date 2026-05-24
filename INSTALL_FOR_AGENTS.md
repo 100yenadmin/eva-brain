@@ -222,8 +222,9 @@ node scripts/install-codex-plugin.mjs
 ```
 
 Then restart Codex Desktop. The installer creates `~/plugins/gbrain-codex`,
-links the repo-owned plugin package plus the current repo `skills/` tree, and
-updates `~/.agents/plugins/marketplace.json`.
+links the repo-owned plugin package plus the current repo `skills/` tree,
+updates the local Codex marketplace/config, and clears stale cached
+`gbrain-codex` plugin entries.
 
 The plugin is a thin MCP adapter over the local `gbrain` CLI. It does not embed
 a second brain runtime. If Codex cannot see `gbrain` on the GUI PATH, set
@@ -232,6 +233,13 @@ a second brain runtime. If Codex cannot see `gbrain` on the GUI PATH, set
 What is different from normal GBrain: normal GBrain can already be configured as
 an MCP server manually. The Codex plugin packages that MCP launch path in a
 repo-owned plugin directory so agents can install it repeatably with one script.
+
+To verify the installed Codex path and catch stale plugin cache/serve-process
+drift:
+
+```bash
+node scripts/codex-gbrain-smoke.mjs
+```
 
 ## Step 3.7: Install The OpenClaw Support KB
 
