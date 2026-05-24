@@ -170,10 +170,47 @@ stop_stale_serve_if_requested() {
   if [ "$STOP_STALE_SERVE" != "true" ]; then
     return
   fi
-  if pgrep -f 'gbrain serve' >/dev/null 2>&1; then
-    log "Stopping stale gbrain serve processes before local PGLite work"
-    run pkill -f 'gbrain serve'
+
+  local pids
+  pids="$(
+    {
+      pgrep -f '[g]brain serve' || true
+      pgrep -f '[l]aunch-gbrain-serve\.mjs' || true
+    } | sort -u
+  )"
+
+  if [ -z "$pids" ]; then
+    return
+  fi
+
+  log "Stopping stale gbrain serve/plugin launcher processes before local PGLite work: $(printf '%s' "$pids" | tr '\n' ' ')"
+  run kill $pids
+  if [ "$DRY_RUN" = "true" ]; then
+    log "Dry-run: skipping stale gbrain serve cleanup verification"
+    return
+  fi
+  sleep 1
+
+  pids="$(
+    {
+      pgrep -f '[g]brain serve' || true
+      pgrep -f '[l]aunch-gbrain-serve\.mjs' || true
+    } | sort -u
+  )"
+  if [ -n "$pids" ]; then
+    log "Escalating stale gbrain serve cleanup with SIGKILL: $(printf '%s' "$pids" | tr '\n' ' ')"
+    run kill -KILL $pids
     sleep 1
+  fi
+
+  pids="$(
+    {
+      pgrep -f '[g]brain serve' || true
+      pgrep -f '[l]aunch-gbrain-serve\.mjs' || true
+    } | sort -u
+  )"
+  if [ -n "$pids" ]; then
+    die "Stale gbrain serve/plugin launcher processes remain after cleanup: $(printf '%s' "$pids" | tr '\n' ' ')"
   fi
 }
 
