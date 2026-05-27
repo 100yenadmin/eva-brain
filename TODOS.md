@@ -45,7 +45,6 @@
   takes_count). Today the MCP run_onboard op runs these server-side via
   runAllOnboardChecks; doctor-remote.ts would surface them on the thin-client
   dashboard for operators who only hit the brain via MCP.
-=======
 ## v0.41.17.0 `--workers N` cathedral follow-ups (v0.41.18+)
 
 These were filed during the ship of `garrytan/dar-es-salaam-v1`
