@@ -250,3 +250,31 @@ describe('sources federate / unfederate', () => {
     expect(parsed.federated).toBe(false);
   });
 });
+
+describe('sources cycle-freshness', () => {
+  test('off stores config.cycle_freshness=false and preserves existing keys', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
+        { id: 'kb', name: 'kb', local_path: '/tmp/kb', last_commit: null, last_sync_at: null, config: '{"federated":true}', created_at: new Date() },
+      ],
+    });
+    await runSources(engine, ['cycle-freshness', 'kb', 'off']);
+    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
+    const parsed = JSON.parse(upd!.params[0] as string);
+    expect(parsed.federated).toBe(true);
+    expect(parsed.cycle_freshness).toBe(false);
+  });
+
+  test('on removes config.cycle_freshness and preserves existing keys', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
+        { id: 'kb', name: 'kb', local_path: '/tmp/kb', last_commit: null, last_sync_at: null, config: '{"federated":true,"cycle_freshness":false}', created_at: new Date() },
+      ],
+    });
+    await runSources(engine, ['cycle-freshness', 'kb', 'on']);
+    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
+    const parsed = JSON.parse(upd!.params[0] as string);
+    expect(parsed.federated).toBe(true);
+    expect(parsed).not.toHaveProperty('cycle_freshness');
+  });
+});
