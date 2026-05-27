@@ -1,4 +1,16 @@
 /**
+ * v0.41.13.0 T15 retrofit note: book-mirror is fan-out-to-MinionQueue,
+ * not a batch loop the `src/core/progressive-batch/` primitive naturally
+ * fits. The site already has explicit cost-confirmation (`--yes`),
+ * per-chapter idempotency (`idempotency_key`), and Minion-queue-level
+ * cost telemetry (each subagent child carries its own BudgetTracker).
+ * Wrapping the SUBMISSION loop in the primitive would add ceremony with
+ * no observable operator value (the children run async in a separate
+ * queue, so the primitive's stage-report wouldn't reflect actual work).
+ * The cleaner retrofit is a v0.41.14.0+ design pass that integrates
+ * per-child-job progress into the primitive's audit JSONL — that's
+ * filed in TODOS.md.
+ *
  * `gbrain book-mirror` — flagship of the v0.25.1 skills wave.
  *
  * Takes pre-extracted chapter text + context, fans out N read-only Opus
@@ -29,7 +41,6 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
 import type { BrainEngine } from '../core/engine.ts';
 import { MinionQueue } from '../core/minions/queue.ts';
 import { waitForCompletion, TimeoutError } from '../core/minions/wait-for-completion.ts';
@@ -55,7 +66,6 @@ interface BookMirrorFlags {
   noConfirm: boolean;
   follow: boolean;
   dryRun: boolean;
-  progressJson: boolean;
 }
 
 interface ChapterEntry {
@@ -91,19 +101,6 @@ function parseFlags(args: string[]): BookMirrorFlags {
   const model = parseFlag(args, '--model') ?? 'claude-opus-4-7';
   const maxTurnsStr = parseFlag(args, '--max-turns');
   const timeoutMsStr = parseFlag(args, '--timeout-ms');
-  const parsePositiveInt = (raw: string | undefined, flag: string): number | undefined => {
-    if (raw === undefined) return undefined;
-    if (!/^[1-9]\d*$/.test(raw)) {
-      throw new Error(`${flag} must be a positive integer`);
-    }
-    const value = Number(raw);
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error(`${flag} must be a positive integer`);
-    }
-    return value;
-  };
-  const maxTurns = parsePositiveInt(maxTurnsStr, '--max-turns') ?? DEFAULT_MAX_TURNS;
-  const timeoutMs = parsePositiveInt(timeoutMsStr, '--timeout-ms');
 
   return {
     chaptersDir,
@@ -112,12 +109,11 @@ function parseFlags(args: string[]): BookMirrorFlags {
     title,
     author,
     model,
-    maxTurns,
-    timeoutMs,
+    maxTurns: maxTurnsStr ? parseInt(maxTurnsStr, 10) : DEFAULT_MAX_TURNS,
+    timeoutMs: timeoutMsStr ? parseInt(timeoutMsStr, 10) : undefined,
     noConfirm: hasFlag(args, '--no-confirm') || hasFlag(args, '--yes'),
     follow: process.stdout.isTTY === true && !hasFlag(args, '--no-follow'),
     dryRun: hasFlag(args, '--dry-run'),
-    progressJson: hasFlag(args, '--progress-json'),
   };
 }
 
@@ -150,7 +146,6 @@ OPTIONAL
   --timeout-ms <n>          Per-chapter wall-clock timeout.
   --no-confirm / --yes      Skip the cost-estimate confirmation prompt.
   --no-follow               Submit and exit; don't tail children.
-  --progress-json           Emit machine-readable JSON to stdout.
   --dry-run                 Validate inputs + print plan; submit nothing.
 
 TRUST CONTRACT (read this)
@@ -254,7 +249,6 @@ function buildChapterPrompt(
   bookTitle: string,
   bookAuthor: string | undefined,
   contextPack: string | undefined,
-  maxTurns: number,
 ): string {
   const authorLine = bookAuthor ? ` by ${bookAuthor}` : '';
   const contextSection = contextPack
@@ -297,7 +291,7 @@ Return ONLY a single markdown section in this exact shape:
 - Never generic ("This might apply if you've ever felt..."). Never sycophantic. Never preach.
 - Use \`<br><br>\` for paragraph breaks inside table cells, not literal newlines.
 
-You have ${maxTurns} turns and read-only tools (get_page, search). You CANNOT call put_page — your output is the markdown text in your final message. The CLI assembles all chapters and writes the brain page.
+You have ${DEFAULT_MAX_TURNS} turns and read-only tools (get_page, search). You CANNOT call put_page — your output is the markdown text in your final message. The CLI assembles all chapters and writes the brain page.
 
 When done, your final message should contain ONLY the \`## Chapter ${chapter.index}: ...\` section above. No preamble, no postscript, no commentary.`;
 }
@@ -310,17 +304,16 @@ function buildAssembledPage(opts: {
   chapterAnalyses: Array<{ index: number; result: string; failed: boolean; error?: string }>;
 }): string {
   const today = new Date().toISOString().split('T')[0];
-  const yamlScalar = (value: string): string => JSON.stringify(value);
-  const authorLine = opts.author ? `\nauthor: ${yamlScalar(opts.author)}` : '';
+  const authorLine = opts.author ? `\nauthor: "${opts.author}"` : '';
   const contextSummary = opts.contextPack
     ? opts.contextPack.split('\n').slice(0, 3).join(' ').slice(0, 200)
     : 'No reader-context pack supplied.';
 
   const frontmatter = `---
-title: ${yamlScalar(`${opts.title} — Personalized`)}
+title: "${opts.title} — Personalized"
 type: book-analysis${authorLine}
 date: ${today}
-context: ${yamlScalar(contextSummary)}
+context: "${contextSummary.replace(/"/g, '\\"')}"
 tags: [book, personalized, two-column]
 ---`;
 
@@ -355,13 +348,7 @@ This page was generated by \`gbrain book-mirror\`. Each chapter analysis came fr
 // ── main entry ─────────────────────────────────────────────
 
 export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Promise<void> {
-  let flags: BookMirrorFlags;
-  try {
-    flags = parseFlags(args);
-  } catch (e) {
-    console.error(`gbrain book-mirror: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(2);
-  }
+  const flags = parseFlags(args);
 
   if (!flags.chaptersDir) {
     console.error('gbrain book-mirror: --chapters-dir is required. Run with --help.');
@@ -371,8 +358,12 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     console.error('gbrain book-mirror: --slug is required. Run with --help.');
     process.exit(2);
   }
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(flags.slug)) {
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(flags.slug)) {
     console.error(`gbrain book-mirror: invalid --slug "${flags.slug}". Use kebab-case (a-z, 0-9, hyphens).`);
+    process.exit(2);
+  }
+  if (flags.contextFile && !fs.existsSync(flags.contextFile)) {
+    console.error(`gbrain book-mirror: --context-file not found: ${flags.contextFile}`);
     process.exit(2);
   }
 
@@ -385,18 +376,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     process.exit(2);
   }
 
-  const contextPack = (() => {
-    if (!flags.contextFile) return undefined;
-    try {
-      const stat = fs.statSync(flags.contextFile);
-      if (!stat.isFile()) throw new Error(`--context-file is not a file: ${flags.contextFile}`);
-      return fs.readFileSync(flags.contextFile, 'utf8');
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error(`gbrain book-mirror: ${message}`);
-      process.exit(2);
-    }
-  })();
+  const contextPack = flags.contextFile ? fs.readFileSync(flags.contextFile, 'utf8') : undefined;
   const bookTitle = flags.title ?? flags.slug;
   const targetSlug = `media/books/${flags.slug}-personalized`;
 
@@ -433,7 +413,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   const childIds: number[] = [];
   for (const ch of chapters) {
     const data: SubagentHandlerData = {
-      prompt: buildChapterPrompt(ch, chapters.length, bookTitle, flags.author, contextPack, flags.maxTurns),
+      prompt: buildChapterPrompt(ch, chapters.length, bookTitle, flags.author, contextPack),
       model: flags.model,
       max_turns: flags.maxTurns,
       // CODEX HIGH-1 FIX: read-only tool allowlist. Subagents cannot call
@@ -442,18 +422,9 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     };
     const submitOpts: Partial<MinionJobInput> = {
       max_stalled: 3,
-      idempotency_key: `book-mirror:${flags.slug}:ch-${ch.index}:` +
-        createHash('sha256')
-          .update(JSON.stringify({
-            text: ch.text,
-            contextPack,
-            bookTitle,
-            bookAuthor: flags.author,
-            model: flags.model,
-            maxTurns: flags.maxTurns,
-            timeoutMs: flags.timeoutMs,
-          }))
-          .digest('hex'),
+      // Loose idempotency: same chapter file + slug → same idempotency key,
+      // so re-running the CLI on identical input dedups against the queue.
+      idempotency_key: `book-mirror:${flags.slug}:ch-${ch.index}`,
     };
     if (flags.timeoutMs) submitOpts.timeout_ms = flags.timeoutMs;
     const job = await queue.add(
@@ -470,9 +441,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   );
 
   if (!flags.follow) {
-    if (flags.progressJson) {
-      process.stdout.write(JSON.stringify({ child_ids: childIds, slug: targetSlug }) + '\n');
-    }
+    process.stdout.write(JSON.stringify({ child_ids: childIds, slug: targetSlug }) + '\n');
     process.stderr.write(
       `gbrain book-mirror: detached. Run \`gbrain jobs get <id>\` per child, then re-run with same args once all are complete.\n`
     );
@@ -493,18 +462,8 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
       });
       if (job.status === 'completed' && job.result && typeof job.result === 'object') {
         const result = (job.result as { result?: string }).result ?? '';
-        if (result.trim().length > 0) {
-          analyses.push({ index: chapterIndex, result, failed: false });
-          process.stderr.write(`  chapter ${chapterIndex}: complete (job ${childId})\n`);
-        } else {
-          analyses.push({
-            index: chapterIndex,
-            result: '',
-            failed: true,
-            error: `job ${childId} returned empty result`,
-          });
-          process.stderr.write(`  chapter ${chapterIndex}: FAILED (job ${childId} returned empty result)\n`);
-        }
+        analyses.push({ index: chapterIndex, result, failed: false });
+        process.stderr.write(`  chapter ${chapterIndex}: complete (job ${childId})\n`);
       } else {
         analyses.push({
           index: chapterIndex,
@@ -554,7 +513,7 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
     {
       engine,
       config: loadConfig() || { engine: 'postgres' },
-      logger: { info: console.error, warn: console.warn, error: console.error },
+      logger: { info: console.log, warn: console.warn, error: console.error },
       dryRun: false,
       remote: false,             // local CLI caller — operator trust path
       cliOpts: getCliOptions(),
@@ -569,17 +528,12 @@ export async function runBookMirrorCmd(engine: BrainEngine, args: string[]): Pro
   );
 
   process.stderr.write(`\nwrote: ${targetSlug} (${chapters.length} chapter sections, ${assembled.length} bytes)\n`);
-  const output = {
+  process.stdout.write(JSON.stringify({
     slug: targetSlug,
     chapters_total: chapters.length,
     chapters_completed: completed,
     chapters_failed: failed,
-  };
-  if (flags.progressJson) {
-    process.stdout.write(JSON.stringify(output) + '\n');
-  } else {
-    process.stderr.write(`summary: ${JSON.stringify(output)}\n`);
-  }
+  }) + '\n');
 
   if (failed > 0) {
     process.stderr.write(

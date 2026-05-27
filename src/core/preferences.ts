@@ -13,17 +13,6 @@ import { join } from 'path';
 import { homedir } from 'os';
 
 function home(): string {
-  const override = process.env.GBRAIN_HOME;
-  if (override && override.trim()) {
-    const trimmed = override.trim();
-    if (!trimmed.startsWith('/')) {
-      throw new Error(`GBRAIN_HOME must be an absolute path; got: ${trimmed}`);
-    }
-    if (trimmed.split('/').includes('..')) {
-      throw new Error(`GBRAIN_HOME must not contain '..' segments; got: ${trimmed}`);
-    }
-    return trimmed;
-  }
   // `os.homedir()` in Bun caches its initial value and ignores later
   // `process.env.HOME` mutations, which breaks test isolation and any
   // workflow that needs to run against a specific $HOME (CI, scripted installs).
@@ -37,16 +26,22 @@ function home(): string {
 }
 
 /**
- * GBRAIN_HOME-aware override for the .gbrain directory. GBRAIN_HOME follows
- * the central config convention: it is a parent directory, and `.gbrain` is
- * appended here. When unset, falls back to `<home>/.gbrain` so legacy callers
- * and the doctor's filesystem-only checks keep working.
+ * GBRAIN_HOME-aware override for the .gbrain directory. When the env var
+ * is set, this returns it directly (so the directory is GBRAIN_HOME itself,
+ * matching the convention `src/core/config.ts:gbrainPath` enforces).
+ * When unset, falls back to `<home>/.gbrain` so legacy callers and the
+ * doctor's filesystem-only checks keep working.
  *
  * Without this, `~/.gbrain/migrations/completed.jsonl` is the only path
  * doctor reads on filesystem checks — the test isolation contract that
  * `gbrainPath()` provides for everywhere else doesn't extend here.
  */
 function gbrainDir(): string {
+  const override = process.env.GBRAIN_HOME;
+  if (override) {
+    const trimmed = override.trim();
+    if (trimmed) return trimmed;
+  }
   return join(home(), '.gbrain');
 }
 

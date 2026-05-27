@@ -34,6 +34,17 @@ export interface ReindexFrontmatterOpts {
   yes?: boolean;
   json?: boolean;
   force?: boolean;
+  /**
+   * v0.41.15.0 (T12, D9): accepted for API consistency with the other
+   * `gbrain reindex --workers N` surfaces but currently INFORMATIONAL
+   * ONLY. reindex-frontmatter delegates to `backfillEffectiveDate`
+   * which has its own internal batching and doesn't expose a worker
+   * count. The work is pure CPU (date precedence resolution per row,
+   * no I/O), so parallelism gains would be marginal. Deep wiring is
+   * filed as a v0.42+ follow-up TODO. Pass `--workers N` today and
+   * the flag is recorded + ignored.
+   */
+  workers?: number;
 }
 
 export interface ReindexFrontmatterResult {
@@ -55,9 +66,9 @@ async function countAffected(
   const params: unknown[] = [];
   if (slugPrefix) {
     params.push(slugPrefix.replace(/[\\%_]/g, (c) => '\\' + c) + '%');
-    where.push(`slug LIKE $${params.length} ESCAPE '\\'`);
+    where.push(`slug LIKE $${params.length} ESCAPE '\\\\'`);
   }
-  if (sourceId !== undefined) {
+  if (sourceId) {
     params.push(sourceId);
     where.push(`source_id = $${params.length}`);
   }
@@ -87,9 +98,11 @@ export async function runReindexFrontmatter(
     // Library function with dryRun=true counts would-update without writing.
     const r = await backfillEffectiveDate(engine, {
       slugPrefix: opts.slugPrefix,
-      sourceId: opts.sourceId,
       dryRun: true,
       force: opts.force,
+      // Note: the library doesn't support sourceId filter today; documented
+      // as a v0.30+ enhancement. CLI surfaces the param so the future
+      // refinement is non-breaking.
       maxRows: total > 0 ? total : undefined,
     });
     return {
@@ -118,7 +131,6 @@ export async function runReindexFrontmatter(
 
   const r = await backfillEffectiveDate(engine, {
     slugPrefix: opts.slugPrefix,
-    sourceId: opts.sourceId,
     force: opts.force,
     fresh: true, // CLI is explicit; ignore checkpoint from prior orchestrator runs
     onBatch: ({ batch, lastId, rowsTouched, cumulative }) => {
@@ -150,6 +162,11 @@ export async function reindexFrontmatterCli(args: string[]): Promise<void> {
     else if (a === '--yes' || a === '-y') opts.yes = true;
     else if (a === '--json') opts.json = true;
     else if (a === '--force') opts.force = true;
+    else if (a === '--workers' || a === '--concurrency') {
+      // v0.41.15.0 (T12): accepted but informational only — see opts doc.
+      const v = parseInt(args[++i] ?? '', 10);
+      if (Number.isFinite(v) && v >= 1) opts.workers = v;
+    }
     else {
       console.error(`Unknown arg: ${a}`);
       process.exit(2);

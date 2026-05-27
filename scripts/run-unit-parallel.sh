@@ -23,7 +23,7 @@
 
 set -uo pipefail
 
-cd "$(dirname "$0")/.." || { echo "ERROR: failed to cd to repo root" >&2; exit 2; }
+cd "$(dirname "$0")/.."
 
 # ──────────────────────────────────────────────────────────────────────────
 # CPU detection: Apple Silicon perf cores → Mac total physical → nproc → 4.
@@ -45,19 +45,9 @@ MAX_CONCURRENCY_OVERRIDE=""
 DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --shards)
-      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
-        echo "ERROR: --shards requires a positive integer value" >&2
-        exit 2
-      fi
-      SHARDS_OVERRIDE="$2"; shift 2 ;;
+    --shards) SHARDS_OVERRIDE="$2"; shift 2 ;;
     --shards=*) SHARDS_OVERRIDE="${1#*=}"; shift ;;
-    --max-concurrency)
-      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
-        echo "ERROR: --max-concurrency requires a positive integer value" >&2
-        exit 2
-      fi
-      MAX_CONCURRENCY_OVERRIDE="$2"; shift 2 ;;
+    --max-concurrency) MAX_CONCURRENCY_OVERRIDE="$2"; shift 2 ;;
     --max-concurrency=*) MAX_CONCURRENCY_OVERRIDE="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
@@ -68,10 +58,27 @@ N="${SHARDS_OVERRIDE:-${SHARDS:-$(detect_cpus)}}"
 if ! printf '%s' "$N" | grep -qE '^[0-9]+$' || [ "$N" -lt 1 ]; then
   echo "ERROR: invalid shard count: $N" >&2; exit 2
 fi
+# v0.40.10 flake-hardening: clamp default to 4 (was 8) to match CI's
+# test-shard.sh fan-out. At 8-shard parallel on Apple Silicon we observed
+# shard 5 SIGKILL during source-health.test.ts's PGLite migration replay —
+# 8 parallel PGLite WASM inits contend severely on the lockfile, and the
+# 92-migration replay × 8 simultaneous can wedge past even 900s. CI uses
+# 4 and is stable. Trade ~2x wallclock for reliability + parity with CI's
+# fan-out. Override via --shards N or SHARDS=N (still capped at 8).
 [ "$N" -gt 8 ] && N=8
+if [ -z "${SHARDS_OVERRIDE:-}" ] && [ -z "${SHARDS:-}" ] && [ "$N" -gt 4 ]; then
+  N=4
+fi
 
 INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${GBRAIN_TEST_MAX_CONCURRENCY:-4}}"
-SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-600}"
+# v0.40.10 flake-hardening: bump per-shard cap 600 → 1500 (was 900). At
+# 4-shard default each shard runs 159 files / ~2420 tests with internal
+# wallclock 960-1020s. The 900s value (sized for 8-shard's ~80 files /
+# 1100 tests at 620-770s) false-killed shard 1 at 900s even though it
+# had completed in 968s. 1500s cap gives ~55% headroom over observed
+# 4-shard wallclock; real hangs still hit it. Override via
+# GBRAIN_TEST_SHARD_TIMEOUT=N.
+SHARD_TIMEOUT="${GBRAIN_TEST_SHARD_TIMEOUT:-1500}"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Output directories. Prefer workspace-local .context/, fall back to /tmp.
@@ -83,9 +90,9 @@ if mkdir -p .context/test-shards 2>/dev/null; then
   SUMMARY_FILE=".context/test-summary.txt"
 else
   LOG_DIR="/tmp/gbrain-test-shards-$$"
+  FAILURES_LOG="/tmp/gbrain-test-failures.log"
+  SUMMARY_FILE="/tmp/gbrain-test-summary.txt"
   mkdir -p "$LOG_DIR" || { echo "ERROR: cannot create log dir" >&2; exit 2; }
-  FAILURES_LOG="$LOG_DIR/test-failures.log"
-  SUMMARY_FILE="$LOG_DIR/test-summary.txt"
 fi
 # Clear from prior run.
 rm -f "$LOG_DIR"/shard-*.log "$LOG_DIR"/shard-*.exit "$LOG_DIR"/shard-*.wedged 2>/dev/null
@@ -132,25 +139,22 @@ for i in $(seq 1 "$N"); do
         bash scripts/run-unit-shard.sh --max-concurrency="$INTRA_CONC" \
         > "$SHARD_LOG" 2>&1 &
       pid=$!
-      timeout_flag="$LOG_DIR/shard-$i.wedged"
-      (
-        sleep "$SHARD_TIMEOUT"
-        if kill -0 "$pid" 2>/dev/null; then
-          echo "WEDGED" > "$timeout_flag"
-          kill -TERM "$pid" 2>/dev/null || true
+      ( sleep "$SHARD_TIMEOUT"
+        if kill -TERM "$pid" 2>/dev/null; then
+          echo "WEDGED" > "$LOG_DIR/shard-$i.wedged"
           sleep 5
-          kill -KILL "$pid" 2>/dev/null || true
+          kill -KILL "$pid" 2>/dev/null
         fi
       ) &
       cap_pid=$!
       wait "$pid" 2>/dev/null
-      test_rc=$?
+      shard_rc=$?
       kill "$cap_pid" 2>/dev/null
       wait "$cap_pid" 2>/dev/null
-      if [ -f "$timeout_flag" ]; then
+      if [ -f "$LOG_DIR/shard-$i.wedged" ]; then
         rc=124
       else
-        rc=$test_rc
+        rc=$shard_rc
       fi
     fi
     echo "$rc" > "$LOG_DIR/shard-$i.exit"
@@ -218,11 +222,22 @@ heartbeat() {
 }
 heartbeat &
 HB_PID=$!
-trap 'kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null' EXIT
+# v0.41.11.0 cleanup: pkill children FIRST, then kill heartbeat. If we
+# kill the heartbeat shell first, its current `sleep 10` is reparented
+# to init/launchd and pkill -P can no longer find it (orphan). Order:
+# children first while the parent PID is still findable, then parent.
+# Known bash quirk: SIGTERM to a shell sleeping inside `sleep` doesn't
+# propagate to the sleep child before the wait returns. Without this,
+# each invocation of this script leaks ONE orphan sleep; CI's "orphan
+# process cleanup" at end-of-job reports them as (unnamed) test failures.
+# Seen on the garrytan/port-pr-1406 PR, 2 CI runs in a row, 6 orphans
+# matching the 6 invocations in test/scripts/run-unit-parallel.test.ts.
+trap 'pkill -P "$HB_PID" 2>/dev/null; kill "$HB_PID" 2>/dev/null; wait "$HB_PID" 2>/dev/null' EXIT
 
 # Wait for every shard. Don't care about wait's exit code.
 for pid in "${SHARD_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 
+pkill -P "$HB_PID" 2>/dev/null
 kill "$HB_PID" 2>/dev/null
 wait "$HB_PID" 2>/dev/null
 trap - EXIT
@@ -313,14 +328,10 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
   bash scripts/run-serial-tests.sh > "$LOG_DIR/serial.log" 2>&1
   SERIAL_RC=$?
   cat "$LOG_DIR/serial.log"
-  s_pass=$(bun_summary_count "pass" "$LOG_DIR/serial.log")
-  s_fail=$(bun_summary_count "fail" "$LOG_DIR/serial.log")
-  s_skip=$(bun_summary_count "skip" "$LOG_DIR/serial.log")
-  TOTAL_PASS=$((TOTAL_PASS + s_pass))
-  TOTAL_FAILURES=$((TOTAL_FAILURES + s_fail))
-  TOTAL_SKIP=$((TOTAL_SKIP + s_skip))
   if [ "$SERIAL_RC" != "0" ]; then
     TOTAL_RC=1
+    s_fail=$(bun_summary_count "fail" "$LOG_DIR/serial.log")
+    TOTAL_FAILURES=$((TOTAL_FAILURES + s_fail))
     if [ "$s_fail" -gt 0 ]; then
       awk '
         /^\(fail\) / { in_block=1; print "--- shard serial: " $0; next }
@@ -338,7 +349,9 @@ if [ "$SERIAL_FILES_COUNT" -gt 0 ]; then
     fi
     echo "serial: rc=$SERIAL_RC fail=$s_fail" >> "$SUMMARY_FILE"
   else
-    echo "serial: pass=$s_pass skip=$s_skip rc=0" >> "$SUMMARY_FILE"
+    s_pass=$(bun_summary_count "pass" "$LOG_DIR/serial.log")
+    TOTAL_PASS=$((TOTAL_PASS + s_pass))
+    echo "serial: pass=$s_pass rc=0" >> "$SUMMARY_FILE"
   fi
 fi
 

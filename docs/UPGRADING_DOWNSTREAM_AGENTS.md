@@ -520,10 +520,7 @@ After `gbrain apply-migrations --yes` runs the v0.22.4 audit, your agent
 should read `~/.gbrain/migrations/pending-host-work.jsonl` (filter to
 `migration === "0.22.4"`) and walk each entry's `command` field. Each entry
 points to a per-source `gbrain frontmatter validate <source_path> --fix`
-command for malformed frontmatter — surface counts to the user, get explicit
-consent, then run. Missing frontmatter in otherwise valid Markdown is optional
-metadata coverage; do not add blanket `type: note` frontmatter just to clear an
-audit.
+command — surface counts to the user, get explicit consent, then run.
 
 The migration is **audit-only**. It never mutates brain content during
 `apply-migrations`. Your agent runs the fix command with user consent.
@@ -612,3 +609,4 @@ job + `inherit:` for `localOnly` admin ops (`sync`, `embed`, `dream`,
 | `shell: inherit entries must be non-empty strings` | Element was empty, non-string, or null. | Use snake_case config-key names. |
 | `shell: inherit name "<X>" must match [a-z][a-z0-9_]*` | Name failed snake_case regex (uppercase, leading underscore, etc.). | Use the config-key verbatim — `database_url`, not `DATABASE_URL`. |
 | `shell: inherit requested "<X>" but worker has no <X> configured` | Worker can't resolve the name from its `loadConfig()`. | Run `gbrain config set <X> <value>` on the worker host. |
+

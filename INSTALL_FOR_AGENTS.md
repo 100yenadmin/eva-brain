@@ -268,6 +268,18 @@ node scripts/status.mjs
 This installs the four OpenClaw support skills and registers the
 `openclaw-support-kb` GBrain source.
 
+Verify the source registry before claiming the brain is empty or healthy:
+
+```bash
+gbrain sources list --json
+gbrain search "OpenClaw" --limit 3 --source openclaw-support-kb
+node ~/eva-brain/scripts/eva-brain-health.mjs
+```
+
+Do not use `default` page count as the whole-brain health signal. A valid
+OpenClaw customer install may have `default: 0` while `openclaw-support-kb`
+contains the searchable support corpus.
+
 The user's markdown files (notes, docs, brain repo) are SEPARATE from this tool repo.
 Ask the user where their files are, or create a new brain repo:
 

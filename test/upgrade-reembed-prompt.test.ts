@@ -1,9 +1,9 @@
 /**
  * v0.32.7 CJK wave — post-upgrade chunker-bump cost prompt tests.
  *
- * Asserts the advisory fires with real-data estimates, honors the
- * GBRAIN_NO_REEMBED env override, never auto-runs reindex/embed, and falls
- * back to an "estimate unavailable" message for unknown embedding providers.
+ * Asserts the prompt fires with real-data estimates, honors the non-TTY
+ * skip-wait + GBRAIN_NO_REEMBED env overrides, and falls back to an
+ * "estimate unavailable" message for unknown embedding providers.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
@@ -13,7 +13,6 @@ import {
   formatReembedPrompt,
   runPostUpgradeReembedPrompt,
 } from '../src/core/post-upgrade-reembed.ts';
-import { resolvePostUpgradeEmbeddingModel } from '../src/commands/upgrade.ts';
 import { MARKDOWN_CHUNKER_VERSION } from '../src/core/chunkers/recursive.ts';
 
 let engine: PGLiteEngine;
@@ -65,13 +64,6 @@ describe('computeReembedEstimate (v0.32.7)', () => {
     expect(est.pricingKnown).toBe(false);
     expect(est.estimatedCostUsd).toBeNull();
   });
-
-  test('Voyage 4 Large default has verified pricing', async () => {
-    await seedPage('a', 'x'.repeat(3500));
-    const est = await computeReembedEstimate(engine, 'voyage:voyage-4-large');
-    expect(est.pricingKnown).toBe(true);
-    expect(est.estimatedCostUsd).toBeCloseTo(0.00012, 8);
-  });
 });
 
 describe('formatReembedPrompt (v0.32.7)', () => {
@@ -83,8 +75,7 @@ describe('formatReembedPrompt (v0.32.7)', () => {
     expect(line).toContain('100 markdown pages');
     expect(line).toContain('openai:text-embedding-3-large');
     expect(line).toContain('$0.03');
-    expect(line).toContain('CJK-heavy content may be higher');
-    expect(line).toContain('Upgrade will not run this automatically');
+    expect(line).toContain('Ctrl-C within 10s');
   });
 
   test('unknown provider says "estimate unavailable"', () => {
@@ -119,7 +110,7 @@ describe('runPostUpgradeReembedPrompt (v0.32.7)', () => {
     expect(writes.length).toBe(0);
   });
 
-  test('non-TTY prints estimate and manual command without automatic re-embed', async () => {
+  test('non-TTY proceeds without wait', async () => {
     await seedPage('a', 'body');
     const writes: string[] = [];
     const result = await runPostUpgradeReembedPrompt(engine, 'openai:text-embedding-3-large', {
@@ -128,11 +119,10 @@ describe('runPostUpgradeReembedPrompt (v0.32.7)', () => {
       write: (l) => writes.push(l),
       graceSeconds: 99, // would block forever if respected
     });
-    expect(result.proceeded).toBe(false);
-    expect(result.reason).toBe('manual_required');
-    expect(writes.length).toBe(2);
-    expect(writes[0]).toContain('Upgrade will not run this automatically');
-    expect(writes[1]).toContain('gbrain reindex --markdown --repo <brain-repo>');
+    expect(result.proceeded).toBe(true);
+    expect(result.reason).toBe('non_tty_proceeded');
+    expect(writes.length).toBe(1);
+    expect(writes[0]).toContain('Ctrl-C');
   });
 
   test('GBRAIN_NO_REEMBED=1 bails out with doctor-warning marker', async () => {
@@ -149,7 +139,7 @@ describe('runPostUpgradeReembedPrompt (v0.32.7)', () => {
     expect(writes.some(w => w.includes('GBRAIN_NO_REEMBED=1'))).toBe(true);
   });
 
-  test('GBRAIN_REEMBED_GRACE_SECONDS=0 remains advisory-only on TTY', async () => {
+  test('GBRAIN_REEMBED_GRACE_SECONDS=0 skips wait on TTY', async () => {
     await seedPage('a', 'body');
     const writes: string[] = [];
     const t0 = Date.now();
@@ -158,13 +148,12 @@ describe('runPostUpgradeReembedPrompt (v0.32.7)', () => {
       env: { GBRAIN_REEMBED_GRACE_SECONDS: '0' },
       write: (l) => writes.push(l),
     });
-    expect(result.proceeded).toBe(false);
-    expect(result.reason).toBe('manual_required');
+    expect(result.proceeded).toBe(true);
+    expect(result.reason).toBe('tty_proceeded');
     expect(Date.now() - t0).toBeLessThan(1000); // didn't actually wait
-    expect(writes.some(w => w.includes('gbrain reindex --markdown --repo <brain-repo>'))).toBe(true);
   });
 
-  test('unknown provider still prints advisory (degrades to "estimate unavailable")', async () => {
+  test('unknown provider still prompts + proceeds (degrades to "estimate unavailable")', async () => {
     await seedPage('a', 'body');
     const writes: string[] = [];
     const result = await runPostUpgradeReembedPrompt(engine, 'hunyuan:hunyuan-embedding-v1', {
@@ -172,19 +161,7 @@ describe('runPostUpgradeReembedPrompt (v0.32.7)', () => {
       env: {},
       write: (l) => writes.push(l),
     });
-    expect(result.proceeded).toBe(false);
-    expect(result.reason).toBe('manual_required');
+    expect(result.proceeded).toBe(true);
     expect(writes[0]).toContain('estimate unavailable');
-  });
-});
-
-describe('resolvePostUpgradeEmbeddingModel', () => {
-  test('uses the loaded config model instead of requiring gateway configuration', () => {
-    expect(resolvePostUpgradeEmbeddingModel({ embedding_model: 'voyage:voyage-4-large' })).toBe('voyage:voyage-4-large');
-  });
-
-  test('falls back to the default only when config has no model', () => {
-    expect(resolvePostUpgradeEmbeddingModel({})).toBe('openai:text-embedding-3-large');
-    expect(resolvePostUpgradeEmbeddingModel(null)).toBe('openai:text-embedding-3-large');
   });
 });

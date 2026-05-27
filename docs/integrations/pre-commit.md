@@ -97,7 +97,7 @@ agent writes a page         git commit                 doctor scan
                                                              ↓
                                                   `gbrain frontmatter validate
                                                    <source-path> --fix`
-                                                   (writes centralized backups)
+                                                   (writes .bak backups)
 ```
 
 The hook is the write-time gate; doctor is the audit gate; the CLI is the

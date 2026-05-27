@@ -211,5 +211,5 @@ export function renderMetricGlossaryMarkdown(): string {
   lines.push(`Every metric printed by any \`gbrain eval *\` or \`gbrain search stats\` command resolves through \`getMetricGloss()\` in \`src/core/eval/metric-glossary.ts\`. Adding a new metric to the glossary REQUIRES updating this doc; the CI guard catches drift.`);
   lines.push('');
 
-  return lines.join('\n').replace(/\n+$/, '\n');
+  return lines.join('\n') + '\n';
 }

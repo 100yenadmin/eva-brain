@@ -100,7 +100,7 @@ IFS='|' eval 'PATTERN="${PATTERN_PARTS[*]}"'
 
 # Find tool.
 if command -v rg >/dev/null 2>&1; then
-  matches="$(rg -niH --no-heading --glob '*.test.ts' "$PATTERN" test/ 2>/dev/null || true)"
+  matches="$(rg -niH --no-heading -t ts "$PATTERN" test/ 2>/dev/null || true)"
 elif command -v grep >/dev/null 2>&1; then
   matches="$(grep -rniE --include='*.test.ts' "$PATTERN" test/ 2>/dev/null || true)"
 else
@@ -124,46 +124,24 @@ while IFS= read -r line; do
   # rest is "lineno:content" — strip lineno.
   content="${rest#*:}"
 
-  line_allowed=1
-  for needle in "${BANNED_EMAILS[@]}"; do
-    if printf '%s\n' "$content" | grep -qiF -- "$needle"; then
-      allow_key="${file}:${needle}"
-      allowed=0
-      for allow_entry in "${ALLOWLIST[@]}"; do
-        if [ "$allow_entry" = "$allow_key" ]; then
-          allowed=1
-          break
-        fi
-      done
-      if [ "$allowed" = "0" ]; then
-        line_allowed=0
-        break
-      fi
+  matched_needle=""
+  for needle in "${BANNED_EMAILS[@]}" "${BANNED_NAMES[@]}"; do
+    if echo "$content" | grep -qi -- "$needle"; then
+      matched_needle="$needle"
+      break
     fi
   done
-  if [ "$line_allowed" = "1" ]; then
-    name_scan_content="$(printf '%s\n' "$content" | sed -E 's/[[:alnum:]_.%+-]+@[[:alnum:].-]+/[email]/g')"
-    for needle in "${BANNED_NAMES[@]}"; do
-      escaped="${needle//./\\.}"
-      escaped="${escaped// /\\s}"
-      if printf '%s\n' "$name_scan_content" | grep -qiE -- "\\b${escaped}\\b"; then
-        allow_key="${file}:${needle}"
-        allowed=0
-        for allow_entry in "${ALLOWLIST[@]}"; do
-          if [ "$allow_entry" = "$allow_key" ]; then
-            allowed=1
-            break
-          fi
-        done
-        if [ "$allowed" = "0" ]; then
-          line_allowed=0
-          break
-        fi
-      fi
-    done
-  fi
 
-  if [ "$line_allowed" = "0" ]; then
+  allow_key="${file}:${matched_needle}"
+  allowed=0
+  for allow_entry in "${ALLOWLIST[@]}"; do
+    if [ "$allow_entry" = "$allow_key" ]; then
+      allowed=1
+      break
+    fi
+  done
+
+  if [ "$allowed" = "0" ]; then
     filtered+="${line}"$'\n'
   fi
 done <<< "$matches"

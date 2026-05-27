@@ -30,8 +30,6 @@ import { readFileSync, existsSync } from 'fs';
 import type { BrainEngine } from '../core/engine.ts';
 import type { SearchResult } from '../core/types.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
-import { createProgress } from '../core/progress.ts';
-import { cliOptsToProgressOptions, getCliOptions } from '../core/cli-options.ts';
 
 interface ReplayOpts {
   help?: boolean;
@@ -44,15 +42,6 @@ interface ReplayOpts {
   mode?: 'conservative' | 'balanced' | 'tokenmax';
   /** v0.32.3 [CDX-13] — force the per-call limit to a constant across modes. */
   compareLimit?: number;
-}
-
-function parseNonNegativeIntFlag(flag: string, value: string | undefined): number {
-  if (!value) throw new Error(`Missing value for ${flag}`);
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`Invalid value for ${flag}: ${value}`);
-  }
-  return n;
 }
 
 interface RowResult {
@@ -97,7 +86,8 @@ function parseArgs(args: string[]): ReplayOpts {
         i++;
         break;
       case '--limit':
-        opts.limit = parseNonNegativeIntFlag('--limit', next);
+        if (!next) break;
+        opts.limit = parseInt(next, 10);
         i++;
         break;
       case '--json':
@@ -107,7 +97,8 @@ function parseArgs(args: string[]): ReplayOpts {
         opts.verbose = true;
         break;
       case '--top-regressions':
-        opts.topRegressions = parseNonNegativeIntFlag('--top-regressions', next);
+        if (!next) break;
+        opts.topRegressions = parseInt(next, 10);
         i++;
         break;
       case '--mode':
@@ -197,6 +188,10 @@ interface CapturedRow {
 /**
  * Parse NDJSON. One object per non-blank line. Single bad line throws — it's
  * a corrupt export and silently dropping rows would mask real bugs.
+ *
+ * v0.41 (codex round-1 #3): SKIPS the `_kind: 'baseline_metadata'` header line
+ * that `gbrain bench publish` writes. The header carries metadata (label,
+ * thresholds, source_hash, etc) that must NOT be counted as a captured row.
  */
 function parseNdjson(content: string): CapturedRow[] {
   const lines = content.split('\n');
@@ -204,12 +199,14 @@ function parseNdjson(content: string): CapturedRow[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
     if (!line) continue;
-    let row: CapturedRow;
+    let row: CapturedRow & { _kind?: string };
     try {
       row = JSON.parse(line);
     } catch (err) {
       throw new Error(`NDJSON parse error on line ${i + 1}: ${(err as Error).message}`);
     }
+    // v0.41: drop baseline metadata header before it can pollute counts.
+    if (row._kind === 'baseline_metadata') continue;
     if (typeof row.schema_version !== 'number') {
       throw new Error(`Line ${i + 1} missing schema_version — not from \`gbrain eval export\`?`);
     }
@@ -307,7 +304,7 @@ async function replayRow(engine: BrainEngine, row: CapturedRow, opts: ReplayOpts
   };
 }
 
-interface ReplaySummary {
+export interface ReplaySummary {
   rows_total: number;
   rows_replayed: number;
   rows_skipped: number;
@@ -332,8 +329,8 @@ function summarize(results: RowResult[]): ReplaySummary {
     ? 0
     : eligible.reduce((a, r) => a + r.latency_delta_ms, 0) / eligible.length;
   const over2x = eligible.filter(r => {
-    const capturedLatencyMs = r.current_latency_ms - r.latency_delta_ms;
-    return capturedLatencyMs > 0 && r.current_latency_ms > 2 * capturedLatencyMs;
+    const captured = results.find(x => x.id === r.id);
+    return captured && captured.current_latency_ms > 2 * (captured.current_latency_ms - captured.latency_delta_ms);
   }).length;
 
   return {
@@ -387,14 +384,63 @@ function printHumanSummary(summary: ReplaySummary, results: RowResult[], topRegr
   }
 }
 
-export async function runEvalReplay(engine: BrainEngine, args: string[]): Promise<void> {
-  let opts: ReplayOpts;
-  try {
-    opts = parseArgs(args);
-  } catch (err) {
-    console.error(`Error: ${(err as Error).message}`);
-    process.exit(1);
+/**
+ * Programmatic entrypoint. Throws on error (no process.exit), returns the
+ * computed summary + per-row results.
+ *
+ * v0.41 (codex round-2 #7): exposed so `gbrain eval gate --baseline` can
+ * call replay in-process rather than spawning a subprocess. Subprocess
+ * spawning would run the INSTALLED gbrain (drift risk for source-tree runs).
+ */
+export async function replayCore(
+  engine: BrainEngine,
+  opts: ReplayOpts,
+): Promise<{ summary: ReplaySummary; results: RowResult[] }> {
+  if (!opts.against) {
+    throw new Error('replayCore: opts.against (path to NDJSON) is required');
   }
+  if (!existsSync(opts.against)) {
+    throw new Error(`File not found: ${opts.against}`);
+  }
+  const content = readFileSync(opts.against, 'utf-8');
+  const rows = parseNdjson(content);
+  if (rows.length === 0) {
+    throw new Error(`${opts.against} is empty (no NDJSON rows)`);
+  }
+
+  const capped = opts.limit && opts.limit > 0 ? rows.slice(0, opts.limit) : rows;
+
+  if (opts.mode) {
+    try { await engine.setConfig('search.mode', opts.mode); } catch { /* swallow */ }
+  }
+
+  const results: RowResult[] = [];
+  for (const row of capped) {
+    if (!row.query || row.query.length === 0) {
+      results.push({
+        id: row.id,
+        tool_name: row.tool_name,
+        query: row.query ?? '',
+        jaccard: 0,
+        top1Match: false,
+        captured_slugs: row.retrieved_slugs ?? [],
+        current_slugs: [],
+        current_latency_ms: 0,
+        latency_delta_ms: 0,
+        skipped: true,
+        skip_reason: 'empty query',
+      });
+      continue;
+    }
+    const r = await replayRow(engine, row, opts);
+    results.push(r);
+  }
+
+  return { summary: summarize(results), results };
+}
+
+export async function runEvalReplay(engine: BrainEngine, args: string[]): Promise<void> {
+  const opts = parseArgs(args);
   if (opts.help) {
     printHelp();
     return;
@@ -404,69 +450,31 @@ export async function runEvalReplay(engine: BrainEngine, args: string[]): Promis
     printHelp();
     process.exit(1);
   }
-  if (!existsSync(opts.against)) {
-    console.error(`Error: file not found: ${opts.against}`);
-    process.exit(1);
+
+  if (!opts.json) {
+    // Pre-flight: count rows so the "Replaying X of Y" line is accurate.
+    // The programmatic path skips this nicety.
+    try {
+      const content = readFileSync(opts.against!, 'utf-8');
+      const allRows = parseNdjson(content);
+      const cappedCount = opts.limit && opts.limit > 0 ? Math.min(allRows.length, opts.limit) : allRows.length;
+      console.error(
+        `Replaying ${cappedCount}${cappedCount < allRows.length ? ` of ${allRows.length}` : ''} captured queries${opts.mode ? ` under mode=${opts.mode}` : ''}${opts.compareLimit ? ` (compare-limit=${opts.compareLimit})` : ''}…`,
+      );
+    } catch { /* swallow; replayCore will throw with the same message */ }
   }
 
-  let rows: CapturedRow[];
+  let summary: ReplaySummary;
+  let results: RowResult[];
   try {
-    const content = readFileSync(opts.against, 'utf-8');
-    rows = parseNdjson(content);
+    const out = await replayCore(engine, opts);
+    summary = out.summary;
+    results = out.results;
   } catch (err) {
     console.error(`Error: ${(err as Error).message}`);
     process.exit(1);
   }
 
-  if (rows.length === 0) {
-    console.error(`Error: ${opts.against} is empty (no NDJSON rows)`);
-    process.exit(1);
-  }
-
-  const capped = opts.limit && opts.limit > 0 ? rows.slice(0, opts.limit) : rows;
-  if (!opts.json) {
-    console.error(
-      `Replaying ${capped.length}${capped.length < rows.length ? ` of ${rows.length}` : ''} captured queries${opts.mode ? ` under mode=${opts.mode}` : ''}${opts.compareLimit ? ` (compare-limit=${opts.compareLimit})` : ''}…`,
-    );
-  }
-
-  // v0.32.3: thread --mode into the engine's config so hybridSearch resolves
-  // it through the standard chain. Set once before the replay loop runs.
-  if (opts.mode) {
-    try { await engine.setConfig('search.mode', opts.mode); } catch { /* swallow */ }
-  }
-
-  const results: RowResult[] = [];
-  const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  if (!opts.json) progress.start('eval.replay', capped.length);
-  try {
-    for (const row of capped) {
-      if (!row.query || row.query.length === 0) {
-        results.push({
-          id: row.id,
-          tool_name: row.tool_name,
-          query: row.query ?? '',
-          jaccard: 0,
-          top1Match: false,
-          captured_slugs: row.retrieved_slugs ?? [],
-          current_slugs: [],
-          current_latency_ms: 0,
-          latency_delta_ms: 0,
-          skipped: true,
-          skip_reason: 'empty query',
-        });
-        if (!opts.json) progress.tick(1, 'skipped');
-        continue;
-      }
-      const r = await replayRow(engine, row, opts);
-      results.push(r);
-      if (!opts.json) progress.tick(1, row.tool_name);
-    }
-  } finally {
-    if (!opts.json) progress.finish();
-  }
-
-  const summary = summarize(results);
   if (opts.json) {
     console.log(JSON.stringify({
       schema_version: 1,

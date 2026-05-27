@@ -1,43 +1,5 @@
 # Content and Media Ingestion
 
-## Thin-Fork Boundary
-
-Upstream GBrain owns the long-term media core: native image pages, file
-records, multimodal embeddings, OCR, and image-aware query behavior. Eva Brain
-should use those primitives rather than keeping a separate fork-local media
-storage model.
-
-Eva's OpenClaw-specific value lives at the adapter boundary:
-
-- `/plugins/gbrain/extract` performs OAuth-backed extraction through the
-  OpenClaw/Codex runtime
-- the plugin returns `gbrain.media-extraction.v1`
-- GBrain core imports normalized content into pages, chunks, files, and raw
-  data
-
-The fork currently keeps these transitional compatibility commands:
-
-- normalized media evidence JSON can be imported with `gbrain import-media`
-- text-backed extraction can be bridged through `gbrain ingest-media --extract openclaw`
-- image MVP extraction can use the OpenClaw gateway route at `/plugins/gbrain/extract`
-- OCR, captions, transcripts, summaries, entities, tags, locators, and match reasons become searchable once they are present in that normalized payload
-
-The `--extract openclaw` adapter prefers `GBRAIN_OPENCLAW_GATEWAY_URL` or
-`OPENCLAW_GATEWAY_URL`, which calls OpenClaw's OAuth-backed Codex runtime through
-`/plugins/gbrain/extract` and supports text plus the current image MVP. The
-`GBRAIN_OPENCLAW_COMPLETION_COMMAND` fallback remains text-only and is meant for
-local host adapters that cannot accept file media. `GBRAIN_OPENCLAW_COMPLETION_PATH`
-is now legacy opt-in only for older hosts that still expose `/plugins/gbrain/complete`;
-the default repo and live install path is `/plugins/gbrain/extract`.
-
-Do not treat `import-media` / `ingest-media` as a permanent competing GBrain
-media subsystem. They are bridge commands until the OpenClaw plugin can write
-the upstream-native media representation directly.
-
-Direct binary video/audio/PDF understanding is the next adapter milestone. Keep
-binary extraction behind host, resolver, or provider adapters; do not present it
-as core GBrain behavior until it is live-smoked end to end.
-
 ## Goal
 YouTube videos, social media, PDFs, and documents become searchable brain pages with the agent's own analysis and full cross-references to every entity mentioned.
 
@@ -150,11 +112,8 @@ on user_shares_media(url_or_file):
             gbrain add_link <slug> <entity_slug>
             gbrain add_link <entity_slug> <slug>
 
-    # import-media / ingest-media writes searchable pages directly.
-    # For separate local markdown folders, refresh with:
-    gbrain import <folder> --no-embed
-    gbrain embed --stale --source <source-id>
-    # Use `gbrain sync --repo <repo>` only for git-tracked sources with a remote/upstream.
+    # Always sync after ingestion
+    gbrain sync
 ```
 
 ## Tricky Spots

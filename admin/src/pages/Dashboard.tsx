@@ -11,25 +11,15 @@ interface FeedEvent {
 }
 
 export function DashboardPage() {
-  const [stats, setStats] = useState({ connected_agents: 0, requests_today: 0, active_tokens: 0, active_api_keys: 0 });
+  const [stats, setStats] = useState({ connected_agents: 0, requests_today: 0, active_tokens: 0 });
   const [health, setHealth] = useState({ expiring_soon: 0, error_rate: '0%' });
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const [sseStatus, setSseStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
-  const [loadError, setLoadError] = useState('');
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const loadSnapshot = async () => {
-      const [statsResult, healthResult] = await Promise.allSettled([api.stats(), api.health()]);
-      const errors: string[] = [];
-      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
-      else errors.push(statsResult.reason instanceof Error ? statsResult.reason.message : 'Failed to load dashboard stats');
-      if (healthResult.status === 'fulfilled') setHealth(healthResult.value);
-      else errors.push(healthResult.reason instanceof Error ? healthResult.reason.message : 'Failed to load token health');
-      setLoadError(errors.join(' / '));
-    };
-
-    loadSnapshot();
+    api.stats().then(setStats).catch(() => {});
+    api.health().then(setHealth).catch(() => {});
 
     const es = new EventSource('/admin/events');
     eventSourceRef.current = es;
@@ -38,16 +28,20 @@ export function DashboardPage() {
       try {
         const event = JSON.parse(e.data) as FeedEvent;
         setEvents(prev => [event, ...prev].slice(0, 50));
-      } catch (err) {
-        if (import.meta.env.DEV) console.warn('SSE parse error:', err, e.data);
-      }
+      } catch {}
     };
     es.onerror = () => {
       setSseStatus('disconnected');
+      setTimeout(() => {
+        setSseStatus('connecting');
+        es.close();
+        // Reconnect handled by browser EventSource auto-retry
+      }, 3000);
     };
 
     const interval = setInterval(() => {
-      loadSnapshot();
+      api.stats().then(setStats).catch(() => {});
+      api.health().then(setHealth).catch(() => {});
     }, 30000);
 
     return () => { es.close(); clearInterval(interval); };
@@ -63,11 +57,6 @@ export function DashboardPage() {
   return (
     <>
       <h1 className="page-title">Dashboard</h1>
-      {loadError && (
-        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
-          {loadError}
-        </div>
-      )}
 
       <div style={{ display: 'flex', gap: 24 }}>
         <div style={{ flex: 1 }}>
@@ -82,11 +71,7 @@ export function DashboardPage() {
             </div>
             <div className="metric">
               <div className="metric-value">{stats.active_tokens}</div>
-              <div className="metric-label">OAuth Tokens</div>
-            </div>
-            <div className="metric">
-              <div className="metric-value">{stats.active_api_keys}</div>
-              <div className="metric-label">Legacy Tokens</div>
+              <div className="metric-label">Active Tokens</div>
             </div>
           </div>
 

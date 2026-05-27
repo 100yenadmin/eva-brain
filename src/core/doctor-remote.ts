@@ -31,6 +31,8 @@ export interface RemoteDoctorReport {
   status: 'ok' | 'warn' | 'fail';
   mcp_url: string;
   issuer_url: string;
+  oauth_client_id: string;
+  oauth_scope?: string;
   checks: RemoteCheck[];
 }
 
@@ -95,6 +97,7 @@ export async function collectRemoteDoctorReport(
       status: 'fail',
       mcp_url: '',
       issuer_url: '',
+      oauth_client_id: '',
       checks,
     };
   }
@@ -135,6 +138,7 @@ export async function collectRemoteDoctorReport(
       status: 'fail',
       mcp_url: remote.mcp_url,
       issuer_url: remote.issuer_url,
+      oauth_client_id: remote.oauth_client_id,
       checks,
     };
   }
@@ -142,7 +146,7 @@ export async function collectRemoteDoctorReport(
   checks.push({
     name: 'oauth_credentials',
     status: 'ok',
-    message: `credentials=configured, secret_source=${clientSecretSource}`,
+    message: `client_id=${remote.oauth_client_id}, secret_source=${clientSecretSource}`,
   });
 
   // 2. OAuth discovery
@@ -176,8 +180,8 @@ export async function collectRemoteDoctorReport(
   checks.push({
     name: 'oauth_token',
     status: 'ok',
-    message: `${tokenRes.token.token_type ?? 'bearer'} (grant=received, expires_in=${tokenRes.token.expires_in ?? '?'})`,
-    detail: { grant: 'received', expires_in: tokenRes.token.expires_in ?? null },
+    message: `${tokenRes.token.token_type ?? 'bearer'} (scope=${tokenRes.token.scope ?? 'unspecified'}, expires_in=${tokenRes.token.expires_in ?? '?'})`,
+    detail: { scope: tokenRes.token.scope ?? null, expires_in: tokenRes.token.expires_in ?? null },
   });
 
   // 4. MCP smoke
@@ -189,7 +193,7 @@ export async function collectRemoteDoctorReport(
       message: mcpRes.message,
       detail: { reason: mcpRes.reason, ...(mcpRes.status ? { status: mcpRes.status } : {}) },
     });
-    return finalize(remote, checks);
+    return finalize(remote, checks, tokenRes.token.scope);
   }
   checks.push({
     name: 'mcp_smoke',
@@ -216,6 +220,22 @@ export async function collectRemoteDoctorReport(
     checks.push(buildScopeCheck(grantedScope, scopeResult));
   }
 
+  // 5b. v0.42.0.0 D11: thin-client orphan_ratio check via MCP find_orphans.
+  //
+  // Mirrors the local runDoctor `orphan_ratio` check but routes through
+  // the find_orphans MCP op (same canonical findOrphans() data fn under
+  // the hood) and emits an OPERATOR-POINTING hint instead of the
+  // self-fix hint — thin-client users can't run `gbrain extract links
+  // --by-mention` against a brain they don't host. Hint asks them to
+  // ping the brain operator at the configured public URL.
+  //
+  // Skippable via the same `skipScopeProbe` flag so hermetic fixtures
+  // that don't implement find_orphans on /mcp don't hang. find_orphans
+  // is a `read` scope op so even minimal-scope thin-clients can call it.
+  if (!skipProbe) {
+    checks.push(await runOrphanRatioCheck(config));
+  }
+
   // 6. v0.31.11: thin-client version-drift check. Calls get_brain_identity
   // to compare local CLI version against remote brain version. Reports:
   //   - 'ok' when local >= remote OR drift is 'patch' (D8 policy: only
@@ -231,7 +251,84 @@ export async function collectRemoteDoctorReport(
     checks.push(await runUpgradeDriftCheck(config));
   }
 
-  return finalize(remote, checks);
+  return finalize(remote, checks, tokenRes.token.scope);
+}
+
+/**
+ * v0.42.0.0 D11: thin-client orphan_ratio check.
+ *
+ * Calls `find_orphans` MCP op (read scope) to get the same data the
+ * local `gbrain doctor` `orphan_ratio` check uses. Computes the ratio,
+ * applies the same thresholds (vacuous <100 entity, warn >0.5, fail
+ * >0.8), but emits an OPERATOR-POINTING hint: thin-client users can't
+ * run `gbrain extract links --by-mention` themselves — they need to
+ * ping whoever runs the brain server.
+ *
+ * Errors non-fatal — informational check.
+ */
+export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteCheck> {
+  type OrphanData = {
+    orphans: unknown[];
+    total_orphans: number;
+    total_linkable: number;
+    total_pages: number;
+    excluded: number;
+  };
+  let data: OrphanData;
+  try {
+    const raw = await callRemoteTool(
+      config,
+      'find_orphans',
+      { include_pseudo: false },
+      { timeoutMs: 5000 },
+    );
+    data = unpackToolResult<OrphanData>(raw);
+  } catch (e) {
+    return {
+      name: 'orphan_ratio',
+      status: 'ok',
+      message: 'orphan_ratio: could not query remote (informational; not a doctor failure)',
+      detail: { network_error: e instanceof Error ? e.message : String(e) },
+    };
+  }
+  // Entity-count gate uses total_linkable as a proxy (the underlying op
+  // doesn't expose entity count directly; total_linkable is the same
+  // denominator the local check uses).
+  const entityCount = data.total_linkable;
+  if (entityCount < 100) {
+    return {
+      name: 'orphan_ratio',
+      status: 'ok',
+      message: `Vacuous: ${entityCount} linkable pages (<100). Orphan ratio not meaningful at this scale.`,
+    };
+  }
+  const ratio = entityCount > 0 ? data.total_orphans / entityCount : 0;
+  const pct = (ratio * 100).toFixed(0);
+  // Operator-pointing hint per D11 — thin-client users can't run the fix
+  // locally; point them at the brain server's operator.
+  const url = config.remote_mcp?.mcp_url ?? '<your brain server>';
+  const hint =
+    `Ask the brain operator at ${url} to run: gbrain extract links --by-mention ` +
+    `(auto-links entity mentions in body text).`;
+  if (ratio > 0.8) {
+    return {
+      name: 'orphan_ratio',
+      status: 'fail',
+      message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages have no inbound links). ${hint}`,
+    };
+  }
+  if (ratio > 0.5) {
+    return {
+      name: 'orphan_ratio',
+      status: 'warn',
+      message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages have no inbound links). ${hint}`,
+    };
+  }
+  return {
+    name: 'orphan_ratio',
+    status: 'ok',
+    message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages)`,
+  };
 }
 
 /**
@@ -298,7 +395,7 @@ export async function runUpgradeDriftCheck(config: GBrainConfig): Promise<Remote
   } catch { /* state read is best-effort */ }
 
   const fixHint = priorFailed
-    ? `Prior \`gbrain upgrade\` did not advance the binary. See https://github.com/electricsheephq/eva-brain/releases for manual install.`
+    ? `Prior \`gbrain upgrade\` did not advance the binary. See https://github.com/garrytan/gbrain/releases for manual install.`
     : `Run \`gbrain upgrade\` to install v${remoteVersion}.`;
 
   return {
@@ -377,7 +474,7 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
       status: 'fail',
       message: 'OAuth client lacks read scope. Re-register on the host with at least `--scopes read`.',
       detail: {
-        granted_scope_present: Boolean(grantedScope),
+        granted: grantedScope || null,
         read_ok: false,
         admin_ok: probe.admin_ok,
       },
@@ -391,7 +488,7 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
         'admin scope MISSING (read works). On the host, re-register: ' +
         '`gbrain auth register-client <name> --grant-types client_credentials --scopes read,write,admin`',
       detail: {
-        granted_scope_present: Boolean(grantedScope),
+        granted: grantedScope || null,
         read_ok: true,
         admin_ok: false,
         admin_error: probe.admin_error ?? null,
@@ -402,9 +499,9 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
     return {
       name: 'oauth_client_scopes_probe',
       status: 'ok',
-      message: 'read + admin scopes verified (write tier inferred from granted scope)',
+      message: `read + admin scopes verified (write tier inferred from granted="${grantedScope || 'unspecified'}")`,
       detail: {
-        granted_scope_present: Boolean(grantedScope),
+        granted: grantedScope || null,
         read_ok: true,
         admin_ok: true,
       },
@@ -416,9 +513,9 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
   return {
     name: 'oauth_client_scopes_probe',
     status: 'ok',
-    message: 'scope probe inconclusive; commands will surface scope errors at call time if any',
+    message: `scope probe inconclusive (granted="${grantedScope || 'unspecified'}"); commands will surface scope errors at call time if any`,
     detail: {
-      granted_scope_present: Boolean(grantedScope),
+      granted: grantedScope || null,
       read_ok: probe.read_ok,
       admin_ok: probe.admin_ok,
       read_error: probe.read_error ?? null,
@@ -431,6 +528,7 @@ export function buildScopeCheck(grantedScope: string, probe: ScopeProbeResult): 
 function finalize(
   remote: NonNullable<GBrainConfig['remote_mcp']>,
   checks: RemoteCheck[],
+  scope?: string,
 ): RemoteDoctorReport {
   const status: 'ok' | 'warn' | 'fail' = checks.some(c => c.status === 'fail')
     ? 'fail'
@@ -443,6 +541,8 @@ function finalize(
     status,
     mcp_url: remote.mcp_url,
     issuer_url: remote.issuer_url,
+    oauth_client_id: remote.oauth_client_id,
+    ...(scope ? { oauth_scope: scope } : {}),
     checks,
   };
 }
@@ -453,6 +553,8 @@ function printHumanReport(report: RemoteDoctorReport): void {
   console.log(`Mode:        ${report.mode}`);
   console.log(`Issuer URL:  ${report.issuer_url}`);
   console.log(`MCP URL:     ${report.mcp_url}`);
+  console.log(`Client ID:   ${report.oauth_client_id}`);
+  if (report.oauth_scope) console.log(`OAuth scope: ${report.oauth_scope}`);
   console.log('');
 
   for (const c of report.checks) {

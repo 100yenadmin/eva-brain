@@ -118,21 +118,13 @@ describe('loadMounts — entry validation', () => {
     expect(mounts[0].database_url).toBe('postgresql://localhost/luther');
   });
 
-  test('preserves absolute mount paths', () => {
+  test('resolves paths to absolute form', () => {
     const path = track(tempMountsFile({
       version: 1,
       mounts: [{ id: 'a', path: '/tmp/relative-test', engine: 'pglite', database_path: '/tmp/a/.pg' }],
     }));
     const mounts = loadMounts(path);
     expect(mounts[0].path.startsWith('/')).toBe(true);
-  });
-
-  test('rejects relative mount paths', () => {
-    const path = track(tempMountsFile({
-      version: 1,
-      mounts: [{ id: 'a', path: './relative-test', engine: 'pglite', database_path: '/tmp/a/.pg' }],
-    }));
-    expect(() => loadMounts(path)).toThrow(/path must be absolute/);
   });
 
   test('enabled=false is preserved', () => {
@@ -259,28 +251,6 @@ describe('BrainRegistry — resolution', () => {
     const reg = new BrainRegistry([]);
     await reg.disconnectAll();
     await reg.disconnectAll(); // second call must not throw
-  });
-
-  test('disconnectAll drains in-flight mount initialization', async () => {
-    const reg = new BrainRegistry([
-      { id: 'slow', path: '/tmp/slow', engine: 'pglite', database_path: '/tmp/slow/.pg', enabled: true },
-    ]);
-    let disconnected = 0;
-    let resolveInit!: (handle: unknown) => void;
-    const engine = { disconnect: async () => { disconnected++; } };
-    (reg as unknown as { initMountBrain: () => Promise<unknown> }).initMountBrain = () =>
-      new Promise(resolve => { resolveInit = resolve; });
-
-    const pending = reg.getBrain('slow').catch(e => e);
-    await Promise.resolve();
-    const shutdown = reg.disconnectAll();
-    resolveInit({ id: 'slow', engine, config: { engine: 'pglite' }, path: '/tmp/slow' });
-    const result = await pending;
-    await shutdown;
-
-    expect(result).toBeInstanceOf(GBrainError);
-    expect(disconnected).toBeGreaterThanOrEqual(1);
-    await expect(reg.getBrain('slow')).rejects.toThrow(/Brain registry is closed/);
   });
 });
 

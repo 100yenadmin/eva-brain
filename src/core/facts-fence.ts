@@ -90,7 +90,7 @@ export interface ParsedFact {
    *   - `supersededBy` set: the row was superseded by another fence row;
    *     `context` matches `/superseded by #(\d+)/i`.
    *   - `forgotten` true: the user invoked `gbrain forget` on this row;
-   *     `context` contains `/forgotten\s*:/i`.
+   *     `context` matches `/^forgotten:/i`.
    * When neither is set but `active=false`, the row is "inactive for
    * unrecognized reason" — the parser preserves it (markdown source-of-
    * truth contract) but downstream `extract-from-fence` treats it like
@@ -155,7 +155,7 @@ function parseSupersededByFromContext(context: string | undefined): number | und
 
 function parseForgottenFromContext(context: string | undefined): boolean {
   if (!context) return false;
-  return /forgotten\s*:/i.test(context);
+  return /^forgotten\s*:/i.test(context.trim());
 }
 
 /**
@@ -268,8 +268,8 @@ export function parseFactsFence(body: string): FactsFenceParseResult {
 
     const { text: claimText, struck } = stripStrikethrough(claimRaw);
     const context = parseStringCell(contextRaw);
-    const supersededBy = struck ? parseSupersededByFromContext(context) : undefined;
-    const forgotten    = struck ? parseForgottenFromContext(context) : false;
+    const supersededBy = parseSupersededByFromContext(context);
+    const forgotten    = parseForgottenFromContext(context);
 
     facts.push({
       rowNum,
@@ -344,28 +344,6 @@ export function renderFactsTable(facts: ParsedFact[]): string {
   return `${FACTS_FENCE_BEGIN}${inner}${FACTS_FENCE_END}`;
 }
 
-function renderFactRow(f: ParsedFact): string {
-  const claimCell = f.active ? f.claim : `~~${f.claim}~~`;
-  return `| ${f.rowNum} | ${escapeFenceCell(claimCell)} | ${f.kind} | ${formatConfidence(f.confidence)} | ${f.visibility} | ${f.notability} | ${escapeFenceCell(f.validFrom ?? '')} | ${escapeFenceCell(f.validUntil ?? '')} | ${escapeFenceCell(f.source ?? '')} | ${escapeFenceCell(f.context ?? '')} |`;
-}
-
-function maxRawRowNumInExistingFence(body: string): number {
-  const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
-  const endIdx   = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
-  if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) return 0;
-
-  let max = 0;
-  const inner = body.slice(beginIdx + FACTS_FENCE_BEGIN.length, endIdx);
-  for (const line of inner.split('\n')) {
-    const cells = parseRowCells(line);
-    if (!cells) continue;
-    if (isSeparatorRow(cells)) continue;
-    const n = parseInt(cells[0] ?? '', 10);
-    if (Number.isFinite(n) && n > max) max = n;
-  }
-  return max;
-}
-
 /**
  * Append a new fact row to the body. If a fenced facts table exists, the
  * row is added to the end of it. If not, a new `## Facts` section + fence
@@ -382,46 +360,44 @@ export function upsertFactRow(
     active?: boolean;
   },
 ): { body: string; rowNum: number } {
-  const { facts, warnings } = parseFactsFence(body);
-  const maxParsedRowNum = facts.length > 0 ? Math.max(...facts.map(f => f.rowNum)) : 0;
-  const maxRawRowNum = maxRawRowNumInExistingFence(body);
+  const { facts } = parseFactsFence(body);
   const nextRowNum = newRow.rowNum
-    ?? Math.max(maxParsedRowNum, maxRawRowNum) + 1;
+    ?? (facts.length > 0 ? Math.max(...facts.map(f => f.rowNum)) + 1 : 1);
 
-  const rowToAppend: ParsedFact = {
-    rowNum: nextRowNum,
-    claim: newRow.claim,
-    kind: newRow.kind,
-    confidence: newRow.confidence,
-    visibility: newRow.visibility,
-    notability: newRow.notability,
-    validFrom: newRow.validFrom,
-    validUntil: newRow.validUntil,
-    source: newRow.source,
-    context: newRow.context,
-    active: newRow.active ?? true,
-    claimMetric: newRow.claimMetric,
-    claimValue: newRow.claimValue,
-    claimUnit: newRow.claimUnit,
-    claimPeriod: newRow.claimPeriod,
-  };
+  const allRows: ParsedFact[] = [
+    ...facts,
+    {
+      rowNum: nextRowNum,
+      claim: newRow.claim,
+      kind: newRow.kind,
+      confidence: newRow.confidence,
+      visibility: newRow.visibility,
+      notability: newRow.notability,
+      validFrom: newRow.validFrom,
+      validUntil: newRow.validUntil,
+      source: newRow.source,
+      context: newRow.context,
+      active: newRow.active ?? true,
+      // v0.35.4 — typed-claim pass-through. When undefined the renderer
+      // stays at the 10-cell shape so unrelated edits don't widen the
+      // fence.
+      claimMetric: newRow.claimMetric,
+      claimValue:  newRow.claimValue,
+      claimUnit:   newRow.claimUnit,
+      claimPeriod: newRow.claimPeriod,
+    },
+  ];
 
-  const allRows: ParsedFact[] = [...facts, rowToAppend];
+  const newFence = renderFactsTable(allRows);
 
   const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
   const endIdx   = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
   let out: string;
   if (beginIdx !== -1 && endIdx !== -1) {
-    if (warnings.length > 0) {
-      const beforeEnd = body.slice(0, endIdx);
-      const newlineBefore = beforeEnd.endsWith('\n') ? '' : '\n';
-      out = `${beforeEnd}${newlineBefore}${renderFactRow(rowToAppend)}\n${body.slice(endIdx)}`;
-    } else {
-      out = body.slice(0, beginIdx) + renderFactsTable(allRows) + body.slice(endIdx + FACTS_FENCE_END.length);
-    }
+    out = body.slice(0, beginIdx) + newFence + body.slice(endIdx + FACTS_FENCE_END.length);
   } else {
     const sep = body.endsWith('\n') ? '\n' : '\n\n';
-    out = `${body}${sep}## Facts\n\n${renderFactsTable(allRows)}\n`;
+    out = `${body}${sep}## Facts\n\n${newFence}\n`;
   }
   return { body: out, rowNum: nextRowNum };
 }
@@ -471,9 +447,7 @@ export function stripFactsFence(body: string, opts: StripFactsFenceOpts = {}): s
   const beginIdx = body.indexOf(FACTS_FENCE_BEGIN);
   if (beginIdx === -1) return body;
   const endIdx = body.indexOf(FACTS_FENCE_END, beginIdx + FACTS_FENCE_BEGIN.length);
-  if (endIdx === -1) {
-    return body.slice(0, beginIdx).trimEnd();
-  }
+  if (endIdx === -1) return body;
 
   // Whole-fence strip mode (chunker case).
   if (!opts.keepVisibility || opts.keepVisibility.length === 0) {

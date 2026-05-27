@@ -151,6 +151,11 @@ export function checkDestructiveConfirmation(
   // --confirm-destructive is the explicit "I know what I'm doing" flag
   if (opts.confirmDestructive) return null;
 
+  // --yes alone is NOT sufficient for destructive operations with data.
+  // This is the key behavior change: --yes used to be enough, now you
+  // need --confirm-destructive when there's actual data at stake.
+  if (opts.yes && impact.pageCount === 0) return null;
+
   return (
     `\n${impact.summary}\n\n` +
     `To proceed, pass --confirm-destructive (or use soft-delete: gbrain sources archive ${impact.sourceId}).\n` +
@@ -292,10 +297,6 @@ export async function purgeExpiredSources(
 
 // ── Display Helpers ─────────────────────────────────────────
 
-function truncateForBox(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, Math.max(0, max - 3))}...` : s;
-}
-
 /**
  * Format an impact assessment for terminal display.
  */
@@ -305,15 +306,15 @@ export function formatImpact(impact: DestructiveImpact): string {
     `╔══════════════════════════════════════════════════════════╗`,
     `║  DESTRUCTIVE OPERATION — Impact Preview                 ║`,
     `╠══════════════════════════════════════════════════════════╣`,
-    `║  Source:     ${truncateForBox(impact.sourceName, 42).padEnd(42)}║`,
-    `║  Source ID:  ${truncateForBox(impact.sourceId, 42).padEnd(42)}║`,
+    `║  Source:     ${impact.sourceName.padEnd(42)}║`,
+    `║  Source ID:  ${impact.sourceId.padEnd(42)}║`,
     `║                                                          ║`,
     `║  Pages:      ${String(impact.pageCount.toLocaleString()).padEnd(42)}║`,
     `║  Chunks:     ${String(impact.chunkCount.toLocaleString()).padEnd(42)}║`,
     `║  Embeddings: ${String(impact.embeddingCount.toLocaleString()).padEnd(42)}║`,
     `║  Files:      ${String(impact.fileCount.toLocaleString()).padEnd(42)}║`,
     `╠══════════════════════════════════════════════════════════╣`,
-    `║  ${truncateForBox(impact.summary, 56).padEnd(56)}║`,
+    `║  ${impact.summary.padEnd(56)}║`,
     `╚══════════════════════════════════════════════════════════╝`,
     ``,
   ];

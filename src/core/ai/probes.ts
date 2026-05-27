@@ -14,19 +14,15 @@ export interface ProbeResult {
  * port-open is insufficient — a broken daemon can accept connections but
  * serve garbage. We validate the response is JSON with the expected shape.
  */
-function openAICompatModelsUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, '');
-  return trimmed.endsWith('/v1') ? `${trimmed}/models` : `${trimmed}/v1/models`;
-}
-
 export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 1000): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(openAICompatModelsUrl(baseUrl), {
+    const res = await fetch(new URL('/v1/models', baseUrl).toString(), {
       signal: controller.signal,
       headers: { accept: 'application/json' },
     });
+    clearTimeout(timer);
     if (!res.ok) return { reachable: true, models_endpoint_valid: false, error: `HTTP ${res.status}` };
     const body = await res.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -35,19 +31,18 @@ export async function probeOpenAICompat(baseUrl: string, timeoutMs: number = 100
     const isList = (body as any).object === 'list' && Array.isArray((body as any).data);
     return { reachable: true, models_endpoint_valid: isList };
   } catch (e) {
-    return { reachable: false, error: e instanceof Error ? e.message : String(e) };
-  } finally {
     clearTimeout(timer);
+    return { reachable: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-export async function probeOllama(env: Record<string, string | undefined> = process.env): Promise<ProbeResult> {
-  const url = env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1';
+export async function probeOllama(): Promise<ProbeResult> {
+  const url = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1';
   return probeOpenAICompat(url);
 }
 
-export async function probeLMStudio(env: Record<string, string | undefined> = process.env): Promise<ProbeResult> {
-  const url = env.LMSTUDIO_BASE_URL ?? 'http://localhost:1234/v1';
+export async function probeLMStudio(): Promise<ProbeResult> {
+  const url = process.env.LMSTUDIO_BASE_URL ?? 'http://localhost:1234/v1';
   return probeOpenAICompat(url);
 }
 

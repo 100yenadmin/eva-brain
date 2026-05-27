@@ -6,12 +6,6 @@
 # under intra-file concurrency. Discovered via filename suffix; no annotation
 # inside the file is needed.
 #
-# Important: Bun's mock.module() registry is process-scoped. Running every
-# serial file in one `bun test --max-concurrency=1 ...` process preserves test
-# order but still lets a top-level module mock from one file affect later files.
-# Run one Bun process per file so serial means "isolated file process", not
-# merely "single worker".
-#
 # Excluded by run-unit-shard.sh and run-unit-parallel.sh's parallel pass.
 # Invoked separately by run-unit-parallel.sh after the parallel pass succeeds.
 

@@ -15,6 +15,7 @@ WITH_CODEX_PLUGIN="auto"
 WITH_SUPPORT_KB="false"
 RUN_DOCTOR="true"
 RUN_PROVIDER_TEST="auto"
+RUN_HEALTH="auto"
 STOP_STALE_SERVE="false"
 DRY_RUN="false"
 ALLOW_DIRTY="false"
@@ -39,6 +40,7 @@ Options:
   --stop-stale-serve           Stop stale local gbrain serve processes before init/doctor
   --skip-doctor                Skip gbrain doctor
   --skip-provider-test         Skip provider probe
+  --skip-health                Skip source-aware Eva health report
   --allow-dirty                Allow updating a dirty existing checkout
   --dry-run                    Print commands without mutating
   -h, --help                   Show this help
@@ -115,6 +117,7 @@ parse_args() {
       --stop-stale-serve) STOP_STALE_SERVE="true"; shift ;;
       --skip-doctor) RUN_DOCTOR="false"; shift ;;
       --skip-provider-test) RUN_PROVIDER_TEST="false"; shift ;;
+      --skip-health) RUN_HEALTH="false"; shift ;;
       --allow-dirty) ALLOW_DIRTY="true"; shift ;;
       --dry-run) DRY_RUN="true"; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -222,6 +225,29 @@ doctor() {
   run env GBRAIN_SKILLS_DIR="$INSTALL_DIR/skills" "$HOME/.bun/bin/gbrain" doctor --json
 }
 
+health_report() {
+  if [ "$RUN_HEALTH" = "false" ]; then
+    return
+  fi
+  if [ "$RUN_HEALTH" = "auto" ] && [ "$WITH_SUPPORT_KB" != "true" ]; then
+    log "Skipping source-aware health report because --with-support-kb was not requested"
+    return
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    if [ "$WITH_OPENCLAW" = "true" ]; then
+      run node scripts/eva-brain-health.mjs --require-openclaw
+    else
+      run node scripts/eva-brain-health.mjs
+    fi
+    return
+  fi
+  if [ "$WITH_OPENCLAW" = "true" ]; then
+    run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs --require-openclaw
+  else
+    run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs
+  fi
+}
+
 provider_test() {
   if [ "$RUN_PROVIDER_TEST" = "false" ]; then
     return
@@ -320,6 +346,7 @@ main() {
   install_support_kb
   provider_test
   doctor
+  health_report
   log "Update complete."
 }
 

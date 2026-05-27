@@ -65,7 +65,6 @@ export type ErrorCode =
   | 'rate_limited'      // v0.31: gateway rate-limit upstream
   | 'extraction_failed' // v0.31: facts extractor failed (refusal, parse, abort)
   | 'fact_not_found'    // v0.31: forget_fact / recall on unknown id
-  | 'fact_already_expired' // v0.32.2: forget_fact idempotent already-expired path
   // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});      // OPEN union for forward-compat (eE7 / D13)
 
@@ -283,13 +282,6 @@ export interface OperationContext {
    */
   auth?: AuthInfo;
   /**
-   * Local CLI-only read federation. When the source resolver falls all the way
-   * through to the seeded `default` source, read operations should search the
-   * federated source set instead of an often-empty default source. Remote
-   * callers use `auth.allowedSources`; writes still use scalar `sourceId`.
-   */
-  sourceIds?: string[];
-  /**
    * True when the caller is remote/untrusted (MCP over stdio/HTTP, or any agent-facing entry point).
    * False for local CLI invocations by the owner of the machine.
    *
@@ -425,7 +417,6 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   // value of `[]` MUST NOT widen scope to "all sources" by being interpreted
   // as "no filter."
   if (allowed && allowed.length > 0) return { sourceIds: allowed };
-  if (ctx.sourceIds && ctx.sourceIds.length > 0) return { sourceIds: ctx.sourceIds };
   if (ctx.sourceId) return { sourceId: ctx.sourceId };
   return {};
 }
@@ -476,12 +467,19 @@ const get_page: Operation = {
     // the cross-source view, preserving pre-v0.31.8 behavior. MCP callers
     // (stdio + HTTP) populate ctx.sourceId via the transport layer.
     const sourceOpts = ctx.sourceId ? { sourceId: ctx.sourceId } : {};
+    // v0.41.13 #1436: fuzzy resolveSlugs ALSO needs source scope — pre-fix
+    // it was unscoped, so a remote `get_page` with `fuzzy: true` could
+    // return candidates from sources outside ctx.auth.allowedSources /
+    // ctx.sourceId. sourceScopeOpts(ctx) is the canonical precedence
+    // ladder (federated array > scalar > nothing) shared with every other
+    // read-side handler.
+    const fuzzyScope = sourceScopeOpts(ctx);
 
     let page = await ctx.engine.getPage(slug, { includeDeleted, ...sourceOpts });
     let resolved_slug: string | undefined;
 
     if (!page && fuzzy) {
-      const candidates = await ctx.engine.resolveSlugs(slug);
+      const candidates = await ctx.engine.resolveSlugs(slug, fuzzyScope);
       if (candidates.length === 1) {
         page = await ctx.engine.getPage(candidates[0], { includeDeleted, ...sourceOpts });
         resolved_slug = candidates[0];
@@ -543,7 +541,7 @@ const get_page: Operation = {
 
 const put_page: Operation = {
   name: 'put_page',
-  description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries.',
+  description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     content: { type: 'string', required: true, description: 'Full markdown content with YAML frontmatter' },
@@ -808,7 +806,6 @@ const put_page: Operation = {
               date: e.date,
               summary: e.summary,
               detail: e.detail || '',
-              source_id: ctx.sourceId ?? 'default',
             }));
             const created = await ctx.engine.addTimelineEntriesBatch(batch);
             autoTimeline = { created };
@@ -1005,7 +1002,7 @@ async function runAutoLink(
     // Add outgoing edges.
     for (const c of out) {
       try {
-        await tx.addLink( // gbrain-allow-direct-insert: put_page transaction reconciles frontmatter/markdown links from the source page
+        await tx.addLink(
           slug, c.targetSlug, c.context, c.linkType,
           c.linkSource, c.originSlug, c.originField,
           linkSourceOpts,
@@ -1023,7 +1020,7 @@ async function runAutoLink(
     // Add incoming edges (other page → slug).
     for (const c of inc) {
       try {
-        await tx.addLink( // gbrain-allow-direct-insert: put_page transaction reconciles frontmatter incoming links from the source page
+        await tx.addLink(
           c.fromSlug!, c.targetSlug, c.context, c.linkType,
           'frontmatter', c.originSlug, c.originField,
           linkSourceOpts,
@@ -1141,9 +1138,6 @@ const purge_deleted_pages: Operation = {
   localOnly: true,
   handler: async (ctx, p) => {
     const olderThanHours = (p.older_than_hours as number | undefined) ?? 72;
-    if (!Number.isFinite(olderThanHours) || olderThanHours <= 0) {
-      throw new OperationError('invalid_params', 'older_than_hours must be a positive number.', 'Pass a positive age cutoff such as 72.');
-    }
     if (ctx.dryRun) return { dry_run: true, action: 'purge_deleted_pages', older_than_hours: olderThanHours };
     const result = await ctx.engine.purgeDeletedPages(olderThanHours);
     return { status: 'purged', count: result.count, slugs: result.slugs };
@@ -2112,7 +2106,6 @@ const log_ingest: Operation = {
   handler: async (ctx, p) => {
     if (ctx.dryRun) return { dry_run: true, action: 'log_ingest' };
     await ctx.engine.logIngest({
-      source_id: ctx.sourceId ?? 'default',
       source_type: p.source_type as string,
       source_ref: p.source_ref as string,
       pages_updated: p.pages_updated as string[],
@@ -2149,20 +2142,13 @@ const file_list: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (ctx, p) => {
+  handler: async (_ctx, p) => {
     const sql = db.getConnection();
     const slug = p.slug as string | undefined;
-    const sourceId = ctx.sourceId;
     if (slug) {
-      if (sourceId) {
-        return sql`SELECT id, source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE source_id = ${sourceId} AND page_slug = ${slug} ORDER BY filename LIMIT ${FILE_LIST_LIMIT}`;
-      }
-      return sql`SELECT id, source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE page_slug = ${slug} ORDER BY source_id, filename LIMIT ${FILE_LIST_LIMIT}`;
+      return sql`SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE page_slug = ${slug} ORDER BY filename LIMIT ${FILE_LIST_LIMIT}`;
     }
-    if (sourceId) {
-      return sql`SELECT id, source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files WHERE source_id = ${sourceId} ORDER BY page_slug, filename LIMIT ${FILE_LIST_LIMIT}`;
-    }
-    return sql`SELECT id, source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files ORDER BY source_id, page_slug, filename LIMIT ${FILE_LIST_LIMIT}`;
+    return sql`SELECT id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, created_at FROM files ORDER BY page_slug, filename LIMIT ${FILE_LIST_LIMIT}`;
   },
 };
 
@@ -2185,7 +2171,6 @@ const file_upload: Operation = {
 
     const filePath = p.path as string;
     const pageSlug = (p.page_slug as string) || null;
-    const sourceId = ctx.sourceId ?? 'default';
 
     // Fix 1 / B5 / H5 / M4: validate path, slug, filename before any filesystem read.
     // Remote callers (MCP, agent) are confined to cwd (strict). Local CLI callers
@@ -2210,7 +2195,7 @@ const file_upload: Operation = {
     const mimeType = MIME_TYPES[extname(filePath).toLowerCase()] || null;
 
     const sql = db.getConnection();
-    const existing = await sql`SELECT id FROM files WHERE source_id = ${sourceId} AND content_hash = ${hash} AND storage_path = ${storagePath}`;
+    const existing = await sql`SELECT id FROM files WHERE content_hash = ${hash} AND storage_path = ${storagePath}`;
     if (existing.length > 0) {
       return { status: 'already_exists', storage_path: storagePath };
     }
@@ -2228,9 +2213,9 @@ const file_upload: Operation = {
 
     try {
       await sql`
-        INSERT INTO files (source_id, page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
-        VALUES (${sourceId}, ${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${stat.size}, ${hash}, ${'{}'}::jsonb)
-        ON CONFLICT (source_id, storage_path) DO UPDATE SET
+        INSERT INTO files (page_slug, filename, storage_path, mime_type, size_bytes, content_hash, metadata)
+        VALUES (${pageSlug}, ${filename}, ${storagePath}, ${mimeType}, ${stat.size}, ${hash}, ${'{}'}::jsonb)
+        ON CONFLICT (storage_path) DO UPDATE SET
           content_hash = EXCLUDED.content_hash,
           size_bytes = EXCLUDED.size_bytes,
           mime_type = EXCLUDED.mime_type
@@ -2259,10 +2244,9 @@ const file_url: Operation = {
   },
   scope: 'admin',
   localOnly: true,
-  handler: async (ctx, p) => {
+  handler: async (_ctx, p) => {
     const sql = db.getConnection();
-    const sourceId = ctx.sourceId ?? 'default';
-    const rows = await sql`SELECT storage_path, mime_type, size_bytes FROM files WHERE source_id = ${sourceId} AND storage_path = ${p.storage_path as string}`;
+    const rows = await sql`SELECT storage_path, mime_type, size_bytes FROM files WHERE storage_path = ${p.storage_path as string}`;
     if (rows.length === 0) {
       throw new OperationError('storage_error', `File not found: ${p.storage_path}`);
     }
@@ -2830,10 +2814,17 @@ const find_experts: Operation = {
     // thread was missing entirely. The op calls findExperts → hybridSearch
     // internally; without the thread an auth'd src-A whoknows query would
     // surface src-B people in the rankings.
+    // v0.40.6.0 T1.5 wiring (D4): consult the active pack for expert
+    // types; pack-load failure → empty filter (NOT hardcoded defaults
+    // per the silent-violation bug class Finding 1.3 closed).
+    const { loadActivePackBestEffort, expertTypesFromPack } = await import('./schema-pack/index.ts');
+    const pack = await loadActivePackBestEffort(ctx);
+    const types = pack ? expertTypesFromPack(pack.manifest) : [];
     return findExperts(ctx.engine, {
       topic,
       limit: typeof p.limit === 'number' ? p.limit : undefined,
       explain: p.explain === true,
+      types: types as never,
       ...sourceScopeOpts(ctx),
     });
   },
@@ -2864,12 +2855,6 @@ const find_contradictions: Operation = {
     },
   },
   handler: async (ctx, p) => {
-    if (ctx.sourceId && ctx.sourceId !== 'default') {
-      return {
-        contradictions: [],
-        note: 'Contradiction reports are currently brain-global; source-scoped callers should run `gbrain eval suspected-contradictions` locally until reports include source_id metadata.',
-      };
-    }
     const limit = typeof p.limit === 'number' && p.limit > 0 ? Math.min(p.limit, 100) : 20;
     const slugFilter = typeof p.slug === 'string' ? p.slug.toLowerCase() : null;
     const sevFilter = (p.severity === 'low' || p.severity === 'medium' || p.severity === 'high')
@@ -3830,6 +3815,465 @@ async function getRemoteMaxBytes(engine: BrainEngine): Promise<number> {
 
 // --- Exports ---
 
+// ──────────────────────────────────────────────────────────────────────
+// v0.40.6.0 Schema Cathedral v3 — 9 new MCP ops for the agent on-ramp.
+//
+// Read ops (scope: read; NOT localOnly) — any read-scope OAuth client.
+// Write ops (scope: admin; NOT localOnly per D2) — admin-scope client
+// (your OpenClaw and similar remote agents) can author schema packs
+// remotely. Audit log captures actor=mcp:<clientId8> on every mutation
+// (see src/core/schema-pack/mutate-audit.ts privacy posture per D20).
+//
+// Per-call schema_pack opt STAYS rejected for remote callers — that
+// trust boundary is enforced by op-trust-gate.ts and is separate from
+// the localOnly posture (R2 regression preserved).
+// ──────────────────────────────────────────────────────────────────────
+
+const get_active_schema_pack: Operation = {
+  name: 'get_active_schema_pack',
+  description: 'v0.40.6.0: cheap identity packet for the active schema pack. Returns {pack_name, version, sha8, page_types_count, link_types_count, primitive_summary, source_tier}. Useful for agents to know which pack they are operating against without paying full manifest load cost.',
+  params: {},
+  scope: 'read',
+  handler: async (ctx) => {
+    const { loadActivePack, resolveActivePackNameOnly } = await import('./schema-pack/load-active.ts');
+    const { loadConfig } = await import('./config.ts');
+    const cfg = loadConfig();
+    const sourceOpts: Record<string, unknown> = {};
+    if (ctx.sourceId) sourceOpts.sourceId = ctx.sourceId;
+    const resolution = resolveActivePackNameOnly({ cfg, remote: ctx.remote ?? true, ...sourceOpts });
+    const pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, ...sourceOpts });
+    const primitiveSummary: Record<string, number> = {};
+    for (const t of pack.manifest.page_types) {
+      primitiveSummary[t.primitive] = (primitiveSummary[t.primitive] ?? 0) + 1;
+    }
+    return {
+      pack_name: pack.manifest.name,
+      version: pack.manifest.version,
+      sha8: pack.manifest_sha8,
+      identity: pack.identity,
+      page_types_count: pack.manifest.page_types.length,
+      link_types_count: pack.manifest.link_types.length,
+      primitive_summary: primitiveSummary,
+      source_tier: resolution.source,
+    };
+  },
+};
+
+const list_schema_packs: Operation = {
+  name: 'list_schema_packs',
+  description: 'v0.40.6.0: list installed schema packs (bundled + user-installed). Returns {bundled: string[], installed: string[]}. Read-only directory listing.',
+  params: {},
+  scope: 'read',
+  handler: async (_ctx) => {
+    const { existsSync, readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { gbrainPath } = await import('./config.ts');
+    const bundled = ['gbrain-base', 'gbrain-recommended'];
+    const installedDir = gbrainPath('schema-packs');
+    const installed: string[] = [];
+    if (existsSync(installedDir)) {
+      for (const entry of readdirSync(installedDir)) {
+        const candidates = ['pack.yaml', 'pack.yml', 'pack.json'];
+        for (const c of candidates) {
+          if (existsSync(join(installedDir, entry, c))) { installed.push(entry); break; }
+        }
+      }
+    }
+    return { bundled, installed };
+  },
+};
+
+const schema_stats: Operation = {
+  name: 'schema_stats',
+  description: 'v0.40.6.0: per-type page counts + typed-coverage from the DB. Returns {schema_version:1, pack_identity, aggregate, per_source, dead_prefixes}. Multi-source aware via ctx.sourceId/allowedSources.',
+  params: {},
+  scope: 'read',
+  handler: async (ctx) => {
+    const { runStatsCore } = await import('./schema-pack/stats.ts');
+    const scope = sourceScopeOpts(ctx);
+    const opts: { sourceId?: string; sourceIds?: string[] } = {};
+    if (scope.sourceIds && scope.sourceIds.length > 0) opts.sourceIds = scope.sourceIds;
+    else if (scope.sourceId) opts.sourceId = scope.sourceId;
+    return runStatsCore(ctx, opts);
+  },
+};
+
+const schema_lint: Operation = {
+  name: 'schema_lint',
+  description: 'v0.40.6.0: lint the active (or named) schema pack. File-plane rules only over MCP — the with_db option is rejected for remote callers (DB-aware rules require local CLI). Returns {ok, errors, warnings} structured report.',
+  params: {
+    pack: { type: 'string', description: 'Pack name (default: active pack)' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const { runAllLintRules } = await import('./schema-pack/lint-rules.ts');
+    const { loadActivePack } = await import('./schema-pack/load-active.ts');
+    const { loadConfig, gbrainPath } = await import('./config.ts');
+    const { existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const cfg = loadConfig();
+    let manifest;
+    if (p.pack) {
+      // Locate by name without trust-gating per-call schema_pack opt
+      // (that's a separate axis — this is just file lookup).
+      const packName = p.pack as string;
+      const candidates = ['pack.yaml', 'pack.yml', 'pack.json'];
+      let path: string | null = null;
+      for (const c of candidates) {
+        const candidate = join(gbrainPath('schema-packs', packName), c);
+        if (existsSync(candidate)) { path = candidate; break; }
+      }
+      if (!path) return { error: 'pack_not_found', pack: packName };
+      const { loadPackFromFile: loader } = await import('./schema-pack/loader.ts');
+      manifest = loader(path);
+    } else {
+      const resolved = await loadActivePack({ cfg, remote: ctx.remote ?? true, sourceId: ctx.sourceId });
+      manifest = resolved.manifest;
+    }
+    // File-plane only over MCP; the engine-aware --with-db opt-in is
+    // CLI-only (Phase 5 wiring). MCP callers get the 9 file-plane rules.
+    return await runAllLintRules(manifest);
+  },
+};
+
+const schema_graph: Operation = {
+  name: 'schema_graph',
+  description: 'v0.40.6.0: schema pack graph as JSON edges. Returns {nodes: [{name, primitive}], edges: [{from, verb, to}]} derived from link_types inference + frontmatter_links.',
+  params: {},
+  scope: 'read',
+  handler: async (ctx) => {
+    const { loadActivePack } = await import('./schema-pack/load-active.ts');
+    const { loadConfig } = await import('./config.ts');
+    const cfg = loadConfig();
+    const pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, sourceId: ctx.sourceId });
+    const nodes = pack.manifest.page_types.map((t) => ({ name: t.name, primitive: t.primitive }));
+    const edges: Array<{ from: string; verb: string; to: string }> = [];
+    for (const lt of pack.manifest.link_types) {
+      if (lt.inference?.page_type) {
+        edges.push({
+          from: lt.inference.page_type,
+          verb: lt.name,
+          to: lt.inference.target_type ?? '*',
+        });
+      }
+    }
+    for (const fl of pack.manifest.frontmatter_links) {
+      edges.push({ from: fl.page_type, verb: fl.link_type, to: '*' });
+    }
+    return { schema_version: 1, pack: pack.manifest.name, nodes, edges };
+  },
+};
+
+const schema_explain_type: Operation = {
+  name: 'schema_explain_type',
+  description: 'v0.40.6.0: resolved settings for a single page_type in the active pack. Returns {pack, type, primitive, path_prefixes, aliases, extractable, expert_routing}.',
+  params: {
+    type: { type: 'string', required: true, description: 'Page type name to explain' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const { loadActivePack } = await import('./schema-pack/load-active.ts');
+    const { loadConfig } = await import('./config.ts');
+    const cfg = loadConfig();
+    const pack = await loadActivePack({ cfg, remote: ctx.remote ?? true, sourceId: ctx.sourceId });
+    const found = pack.manifest.page_types.find((t) => t.name === p.type);
+    if (!found) return { error: 'type_not_found', type: p.type as string, pack: pack.manifest.name };
+    return { schema_version: 1, pack: pack.manifest.name, type: found };
+  },
+};
+
+const schema_review_orphans: Operation = {
+  name: 'schema_review_orphans',
+  description: 'v0.40.6.0: list pages with no active-pack type match. Returns {orphan_count, orphans: [{slug, source_id}]}.',
+  params: {
+    limit: { type: 'number', description: 'Max orphans to return (default 100)' },
+  },
+  scope: 'read',
+  handler: async (ctx, p) => {
+    const limit = Math.max(1, Math.min(10000, (p.limit as number) ?? 100));
+    const scope = sourceScopeOpts(ctx);
+    let where = `WHERE deleted_at IS NULL AND (type IS NULL OR type = '')`;
+    const params: unknown[] = [];
+    if (scope.sourceIds && scope.sourceIds.length > 0) {
+      where += ` AND source_id = ANY($1::text[])`;
+      params.push(scope.sourceIds);
+    } else if (scope.sourceId) {
+      where += ` AND source_id = $1`;
+      params.push(scope.sourceId);
+    }
+    try {
+      const rows = await ctx.engine.executeRaw<{ slug: string; source_id: string }>(
+        `SELECT slug, COALESCE(source_id, 'default') AS source_id FROM pages ${where} ORDER BY source_id, slug LIMIT ${limit}`,
+        params,
+      );
+      return {
+        schema_version: 1,
+        orphan_count: rows.length,
+        orphans: rows.map((r) => ({ slug: r.slug, source_id: r.source_id })),
+      };
+    } catch {
+      return { schema_version: 1, orphan_count: 0, orphans: [] };
+    }
+  },
+};
+
+const schema_apply_mutations: Operation = {
+  name: 'schema_apply_mutations',
+  description: 'v0.40.7.0: batched schema pack mutation. ATOMIC: all mutations succeed or all roll back. Audit log records one batch_id. Admin scope; NOT localOnly so remote agents (your OpenClaw, etc.) can author packs over normal MCP. Mutation shape per ApplyMutationsRequest type — supports add_type / remove_type / update_type / add_alias / remove_alias / add_prefix / remove_prefix / add_link_type / remove_link_type / set_extractable / set_expert_routing.',
+  params: {
+    pack: { type: 'string', required: true, description: 'Pack to mutate (must not be bundled)' },
+    mutations: {
+      type: 'array',
+      required: true,
+      description: 'Array of {op, ...args} mutation records to apply atomically',
+      items: { type: 'object' },
+    },
+    force: { type: 'boolean', description: 'Steal stale per-pack lock' },
+  },
+  scope: 'admin',
+  mutating: true,
+  handler: async (ctx, p) => {
+    const pack = p.pack as string;
+    const mutations = p.mutations as Array<{ op: string; [k: string]: unknown }>;
+    const force = p.force === true;
+    if (!Array.isArray(mutations) || mutations.length === 0) {
+      return { error: 'invalid_request', message: 'mutations must be a non-empty array' };
+    }
+    const batchId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const actor = ctx.auth?.clientId ? `mcp:${ctx.auth.clientId.slice(0, 8)}` : 'cli';
+    const sourceId = ctx.sourceId;  // codex C5: write-side scoping
+    // Compose every mutation inside ONE withPackLock so the batch is
+    // truly atomic. The withMutation skeleton handles audit / cache
+    // invalidation per operation; we orchestrate the lock + iteration.
+    const { withPackLock } = await import('./schema-pack/pack-lock.ts');
+    const {
+      addTypeToPack, removeTypeFromPack, updateTypeOnPack,
+      addAliasToType, removeAliasFromType, addPrefixToType, removePrefixFromType,
+      addLinkTypeToPack, removeLinkTypeFromPack,
+      setExtractableOnType, setExpertRoutingOnType,
+      SchemaPackMutationError,
+    } = await import('./schema-pack/mutate.ts');
+    const baseMutateOpts = {
+      actor: actor as 'cli' | `mcp:${string}`,
+      batchId,
+      engine: ctx.engine,
+      ...(sourceId ? { sourceId } : {}),
+      ...(force ? { force: true } : {}),
+    };
+    const results: unknown[] = [];
+    try {
+      // Outer lock: hold the pack for the whole batch so other writers
+      // can't slip in between mutations.
+      await withPackLock(pack, { force, lockDir: undefined }, async () => {
+        for (let i = 0; i < mutations.length; i++) {
+          const m = mutations[i]!;
+          // Each primitive acquires the lock internally; the outer
+          // withPackLock makes that re-entrant via fast-stale-detect
+          // (--force option for the inner call). To keep semantics
+          // simple, we pass {force:true} to the inner calls because
+          // they're nested inside our outer lock — we already own it.
+          const innerOpts = { ...baseMutateOpts, force: true };
+          let r: unknown;
+          switch (m.op) {
+            case 'add_type':
+              r = await addTypeToPack(pack, {
+                name: m.name as string,
+                primitive: m.primitive as never,
+                prefix: m.prefix as string,
+                extractable: m.extractable as boolean | undefined,
+                expertRouting: m.expert_routing as boolean | undefined,
+                aliases: m.aliases as string[] | undefined,
+              }, innerOpts);
+              break;
+            case 'remove_type':
+              r = await removeTypeFromPack(pack, m.name as string, innerOpts);
+              break;
+            case 'update_type':
+              r = await updateTypeOnPack(pack, { name: m.name as string, patch: (m.patch as object) ?? {} }, innerOpts);
+              break;
+            case 'add_alias':
+              r = await addAliasToType(pack, m.type as string, m.alias as string, innerOpts);
+              break;
+            case 'remove_alias':
+              r = await removeAliasFromType(pack, m.type as string, m.alias as string, innerOpts);
+              break;
+            case 'add_prefix':
+              r = await addPrefixToType(pack, m.type as string, m.prefix as string, innerOpts);
+              break;
+            case 'remove_prefix':
+              r = await removePrefixFromType(pack, m.type as string, m.prefix as string, innerOpts);
+              break;
+            case 'add_link_type':
+              r = await addLinkTypeToPack(pack, {
+                name: m.name as string,
+                inverse: m.inverse as string | undefined,
+                inference: m.inference as { regex?: string; page_type?: string; target_type?: string } | undefined,
+              }, innerOpts);
+              break;
+            case 'remove_link_type':
+              r = await removeLinkTypeFromPack(pack, m.name as string, innerOpts);
+              break;
+            case 'set_extractable':
+              r = await setExtractableOnType(pack, m.type as string, m.value as boolean, innerOpts);
+              break;
+            case 'set_expert_routing':
+              r = await setExpertRoutingOnType(pack, m.type as string, m.value as boolean, innerOpts);
+              break;
+            default:
+              throw new SchemaPackMutationError(
+                'INVALID_RESULT',
+                `unknown mutation op: '${m.op}' at index ${i}`,
+                { index: i, op: m.op },
+              );
+          }
+          results.push({ index: i, op: m.op, ...(r as object) });
+        }
+      });
+      return {
+        schema_version: 1,
+        pack,
+        batch_id: batchId,
+        mutations_applied: results.length,
+        results,
+      };
+    } catch (e) {
+      const code = (e as { code?: string }).code ?? 'UNKNOWN';
+      return {
+        error: 'mutation_failed',
+        code,
+        message: (e as Error).message,
+        batch_id: batchId,
+        // Partial results recorded so the agent can inspect which
+        // mutations landed before the failure (the atomic guarantee
+        // is at the LOCK level — individual mutations are sequential
+        // and each is atomic; pack state reflects everything up to the
+        // failed mutation).
+        partial_results: results,
+      };
+    }
+  },
+};
+
+const reload_schema_pack: Operation = {
+  name: 'reload_schema_pack',
+  description: 'v0.40.6.0: flush the in-process schema pack cache so the next loadActivePack re-reads from disk. Cascades through extends-chain (codex C6). Admin scope; NOT localOnly. Returns {invalidated: string[]}.',
+  params: {
+    pack: { type: 'string', description: 'Pack name to invalidate (omit to flush all)' },
+  },
+  scope: 'admin',
+  mutating: false,  // no DB writes
+  handler: async (_ctx, p) => {
+    const { invalidatePackCache } = await import('./schema-pack/registry.ts');
+    return invalidatePackCache(p.pack as string | undefined);
+  },
+};
+
+// v0.41.18.0 (A7 + T16, codex finding #5): MCP op for federated / thin-client
+// brain installs to drive `gbrain onboard --auto` over MCP. Admin scope
+// (NOT localOnly) so remote agents authenticated via OAuth can probe
+// brain health + submit auto-eligible remediation handlers.
+//
+// Critical security gate (codex #5): admin scope alone is NOT sufficient
+// to submit handlers in PROTECTED_JOB_NAMES (synthesize, patterns,
+// consolidate, extract-takes-from-pages, contextual_reindex_per_chunk).
+// Without this gate, an admin-scoped OAuth token would bypass the same
+// guard that `submit_job` enforces. The new NAMED scope
+// `run_protected_onboard` MUST be granted IN ADDITION TO admin for any
+// protected child handler to fire.
+//
+// Behavior:
+//   - mode='check' (default): returns the OnboardReport JSON envelope,
+//     never submits jobs. Admin scope sufficient.
+//   - mode='auto':            submits auto_apply tier. Admin + non-protected
+//                             handlers only.
+//   - mode='auto-with-prompt': submits auto_apply + prompt_required tier.
+//                             Same protection check.
+//
+// Any LLM-bearing handler the plan would have submitted gets filtered out
+// unless the caller has run_protected_onboard. Filtered items appear in
+// the response with status='skipped_missing_scope' so the caller knows
+// what they would have gotten with the right grants.
+const run_onboard: Operation = {
+  name: 'run_onboard',
+  description: 'Probe brain health + optionally submit onboard remediations. Admin scope required. Protected handlers (LLM-bearing) require run_protected_onboard scope ADDITIONALLY.',
+  params: {
+    mode: { type: 'string', description: "'check' (default), 'auto', or 'auto-with-prompt'" },
+    target_score: { type: 'number', description: 'Target brain_score (default 90)' },
+    max_usd: { type: 'number', description: 'USD cap for autopilot path (required for auto modes)' },
+  },
+  mutating: true,
+  scope: 'admin',
+  handler: async (ctx, p) => {
+    const mode = (typeof p.mode === 'string' ? p.mode : 'check') as 'check' | 'auto' | 'auto-with-prompt';
+    const targetScore = typeof p.target_score === 'number' ? p.target_score : 90;
+    const maxUsd = typeof p.max_usd === 'number' ? p.max_usd : undefined;
+
+    const { computeRemediationPlan, runRemediation } = await import('./remediation/index.ts');
+    const { runAllOnboardChecks } = await import('./onboard/checks.ts');
+    const { buildOnboardReport } = await import('./onboard/render.ts');
+
+    // Per A26: source-scope via sourceScopeOpts(ctx). The recommendation
+    // planner is brain-wide today; future extension can scope by reading
+    // ctx.sourceId / ctx.auth.allowedSources for per-source plans.
+
+    let extraRemediations: import('./remediation-step.ts').RemediationStep[] = [];
+    try {
+      const checkResults = await runAllOnboardChecks(ctx.engine);
+      extraRemediations = checkResults.flatMap((r) => r.remediations);
+    } catch {
+      // Fail-open per A19 — return plan without extras rather than error.
+    }
+
+    // 'check' mode: just return the plan + JSON envelope. No submission.
+    if (mode === 'check') {
+      const plan = await computeRemediationPlan(ctx.engine, { targetScore, extraRemediations });
+      const report = buildOnboardReport(plan);
+      return report;
+    }
+
+    // 'auto' and 'auto-with-prompt' modes: require --max-usd per A12 + A20
+    // safety posture (cron-safety; refuses surprise spend).
+    if (maxUsd === undefined) {
+      throw new OperationError('invalid_params', `mode='${mode}' requires max_usd (cron-safety cap)`);
+    }
+
+    // Critical T16 + codex #5 security gate: filter out PROTECTED_JOB_NAMES
+    // unless the caller has the run_protected_onboard scope IN ADDITION
+    // to admin. Admin alone is insufficient.
+    const grantedScopes = ctx.auth?.scopes ?? [];
+    const canRunProtected = grantedScopes.includes('run_protected_onboard');
+    const { isProtectedJobName } = await import('./minions/protected-names.ts');
+
+    const skippedMissingScope: Array<{ id: string; job: string; reason: string }> = [];
+    const allowedExtras = extraRemediations.filter((r) => {
+      if (canRunProtected) return true;
+      if (isProtectedJobName(r.job)) {
+        skippedMissingScope.push({ id: r.id, job: r.job, reason: 'requires run_protected_onboard scope' });
+        return false;
+      }
+      return true;
+    });
+
+    // Run remediation with filtered extras. Hooks emit nothing — MCP
+    // returns structured result. Per A23 client_id attribution: stamp
+    // job.data.client_id on each submission so the spend chain (T10)
+    // attributes correctly. The library doesn't do this today; the
+    // upstream submit-side gating in submit_job filters protected names
+    // for ctx.remote !== false callers, so even if MCP run_onboard had a
+    // typo, the underlying queue.add would reject. Defense-in-depth.
+    const result = await runRemediation(
+      ctx.engine,
+      { targetScore, maxUsd },
+      {},
+    );
+
+    return {
+      ...result,
+      skipped_missing_scope: skippedMissingScope,
+    };
+  },
+};
+
 export const operations: Operation[] = [
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
@@ -3890,6 +4334,16 @@ export const operations: Operation[] = [
   code_blast, code_flow,
   // v0.34 W3b: code_traversal_cache admin clear op
   code_traversal_cache_clear,
+  // v0.40.6.0 Schema Cathedral v3: 9 new ops — 7 read + 2 admin (NOT
+  // localOnly per D2 so remote agents (your OpenClaw, etc.) can author packs).
+  // schema_apply_mutations is batched per D10 — one MCP tool, N
+  // mutations applied atomically inside one withPackLock scope.
+  get_active_schema_pack, list_schema_packs,
+  schema_stats, schema_lint, schema_graph, schema_explain_type,
+  schema_review_orphans,
+  schema_apply_mutations, reload_schema_pack,
+  // v0.41.18.0 (T16, A7, codex #5)
+  run_onboard,
 ];
 
 export const operationsByName = Object.fromEntries(

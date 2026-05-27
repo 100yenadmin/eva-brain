@@ -35,8 +35,6 @@ export interface ExtractTakesOpts {
    * pipe). Empty/undefined = full walk.
    */
   slugs?: string[];
-  /** Concrete GBrain source id for slug resolution. Required for source-safe incremental paths. */
-  sourceId?: string;
   /** Dry-run: parse + count, don't write. */
   dryRun?: boolean;
   /** When true, deletes existing takes for affected pages first. */
@@ -71,10 +69,10 @@ export interface ExtractTakesResult {
  * Resolve a slug to its DB page_id. Returns null when no row exists for
  * that slug (e.g. file on disk that hasn't been imported yet).
  */
-async function getPageIdForSlug(engine: BrainEngine, slug: string, sourceId = 'default'): Promise<number | null> {
+async function getPageIdForSlug(engine: BrainEngine, slug: string): Promise<number | null> {
   const rows = await engine.executeRaw<{ id: number }>(
-    `SELECT id FROM pages WHERE slug = $1 AND source_id = $2 LIMIT 1`,
-    [slug, sourceId],
+    `SELECT id FROM pages WHERE slug = $1 LIMIT 1`,
+    [slug],
   );
   return rows[0]?.id ?? null;
 }
@@ -119,7 +117,7 @@ async function flushBatch(
  */
 export async function extractTakesFromFs(
   engine: BrainEngine,
-  opts: { repoPath: string; slugs?: string[]; dryRun?: boolean; rebuild?: boolean; sourceId?: string },
+  opts: { repoPath: string; slugs?: string[]; dryRun?: boolean; rebuild?: boolean },
 ): Promise<ExtractTakesResult> {
   const result: ExtractTakesResult = {
     pagesScanned: 0, pagesWithTakes: 0, takesUpserted: 0, warnings: [], failedFiles: [],
@@ -154,9 +152,9 @@ export async function extractTakesFromFs(
     }
     if (takes.length === 0) continue;
 
-    const pageId = await getPageIdForSlug(engine, slug, opts.sourceId ?? 'default');
+    const pageId = await getPageIdForSlug(engine, slug);
     if (pageId === null) {
-      result.warnings.push(`TAKES_PAGE_NOT_IN_DB: source=${opts.sourceId ?? 'default'} slug=${slug} has takes fence but no page row; run 'gbrain sync' first`);
+      result.warnings.push(`TAKES_PAGE_NOT_IN_DB: slug=${slug} has takes fence but no page row; run 'gbrain sync' first`);
       continue;
     }
 
@@ -187,7 +185,7 @@ export async function extractTakesFromFs(
  */
 export async function extractTakesFromDb(
   engine: BrainEngine,
-  opts: { slugs?: string[]; dryRun?: boolean; rebuild?: boolean; sourceId?: string } = {},
+  opts: { slugs?: string[]; dryRun?: boolean; rebuild?: boolean } = {},
 ): Promise<ExtractTakesResult> {
   const result: ExtractTakesResult = {
     pagesScanned: 0, pagesWithTakes: 0, takesUpserted: 0, warnings: [], failedFiles: [],
@@ -197,10 +195,8 @@ export async function extractTakesFromDb(
   // (back-compat with pre-v0.32.8 callers). When no slugs supplied, enumerate
   // every (slug, source_id) pair across all sources.
   const refs: Array<{ slug: string; source_id: string }> = opts.slugs && opts.slugs.length > 0
-    ? opts.slugs.map(slug => ({ slug, source_id: opts.sourceId ?? 'default' }))
-    : (opts.sourceId
-      ? (await engine.listAllPageRefs()).filter(ref => ref.source_id === opts.sourceId)
-      : await engine.listAllPageRefs());
+    ? opts.slugs.map(slug => ({ slug, source_id: 'default' }))
+    : await engine.listAllPageRefs();
   const buffer: TakeBatchInput[] = [];
 
   for (const { slug, source_id } of refs) {
@@ -247,14 +243,12 @@ export async function extractTakes(
     return extractTakesFromFs(engine, {
       repoPath: opts.repoPath,
       slugs: opts.slugs,
-      sourceId: opts.sourceId,
       dryRun: opts.dryRun,
       rebuild: opts.rebuild,
     });
   }
   return extractTakesFromDb(engine, {
     slugs: opts.slugs,
-    sourceId: opts.sourceId,
     dryRun: opts.dryRun,
     rebuild: opts.rebuild,
   });

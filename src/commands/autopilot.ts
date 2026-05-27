@@ -417,23 +417,117 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
       // autopilot-cycle can never run concurrently (both acquire
       // gbrain-cycle), so the "60-min floor double-processes queued
       // targeted jobs" failure mode is closed by the lock.
+      //
+      // v0.40 D17 layered on top: per-source freshness check fires BEFORE
+      // the score gate so a healthy brain that happens to have a stale
+      // federated source still picks up new commits. brain_score reflects
+      // internal data quality (embed coverage, link density, orphans),
+      // NOT whether GitHub has new commits on the source repo. Decoupling
+      // the two closes the silent-stale-source bug class on
+      // poll-only deployments.
       try {
         const { MinionQueue } = await import('../core/minions/queue.ts');
-        const { computeRecommendations } = await import('../core/brain-score-recommendations.ts');
+        const { computeRecommendations, embeddingProviderConfigured, HOSTED_EMBED_KEY_CONFIG } = await import('../core/brain-score-recommendations.ts');
         const queue = new MinionQueue(engine);
         const slotMs = Math.floor(Date.now() / (baseInterval * 1000)) * baseInterval * 1000;
         const slot = new Date(slotMs).toISOString();
         const timeoutMs = Math.max(baseInterval * 2 * 1000, 300_000);
 
+        // ── v0.40 D17: per-source freshness check ────────────────────
+        // Runs first; independent of score gate. Submits a 'sync' job per
+        // source whose last_sync_at is older than the interval. The sync
+        // handler (T6/T7) auto-enqueues embed-backfill on completion if
+        // pages changed.
+        try {
+          const { isFederatedV2Enabled } = await import('../core/feature-flags.ts');
+          if (await isFederatedV2Enabled(engine)) {
+            const { loadAllSources } = await import('../core/sources-load.ts');
+            const sources = await loadAllSources(engine);
+            const intervalMs = baseInterval * 1000;
+            const now = Date.now();
+            for (const src of sources) {
+              if (!src.local_path) continue;
+              const lastSyncMs = src.last_sync_at ? new Date(src.last_sync_at).getTime() : 0;
+              const ageMs = now - lastSyncMs;
+              if (ageMs < intervalMs) continue; // fresh enough
+              try {
+                const job = await queue.add(
+                  'sync',
+                  {
+                    sourceId: src.id,
+                    repoPath: src.local_path,
+                    auto_embed_backfill: true,
+                    embed_reason: 'autopilot_freshness',
+                  },
+                  {
+                    queue: 'default',
+                    idempotency_key: `autopilot-sync:${src.id}:${slot}`,
+                    max_attempts: 2,
+                    timeout_ms: timeoutMs,
+                    maxWaiting: 1,
+                  },
+                );
+                if (jsonMode) {
+                  process.stderr.write(JSON.stringify({
+                    event: 'dispatched', job_id: job.id, mode: 'freshness',
+                    source_id: src.id, age_ms: ageMs,
+                  }) + '\n');
+                } else {
+                  console.log(`[dispatch] job #${job.id} sync (freshness: ${src.id}; age=${Math.floor(ageMs / 60000)}min)`);
+                }
+              } catch (e) {
+                logError('dispatch.freshness', e);
+              }
+            }
+          }
+        } catch (e) {
+          logError('dispatch.freshness-gate', e);
+        }
+
         // Cheap path: engine.getHealth() is a single SQL count query.
         const health = await engine.getHealth();
         const score = health.brain_score;
+        // v0.40.x: recipe-aware embedding-provider check shared with doctor.ts.
+        // Resolve the configured model (gateway → DB fallback), then pre-await
+        // the handful of hosted-key config values so the resolveKey closure
+        // passed to embeddingProviderConfigured() can stay synchronous.
+        let embeddingModel: string | undefined;
+        try {
+          const gw = await import('../core/ai/gateway.ts');
+          embeddingModel = gw.getEmbeddingModel();
+        } catch {
+          embeddingModel = (await engine.getConfig('embedding_model')) ?? undefined;
+        }
+        const embedKeyCfg: Record<string, string | null> = {};
+        for (const field of Object.values(HOSTED_EMBED_KEY_CONFIG)) {
+          embedKeyCfg[field] = await engine.getConfig(field);
+        }
         const ctx = {
           repoPath,
-          hasEmbeddingApiKey: !!(process.env.OPENAI_API_KEY || await engine.getConfig('openai_api_key')),
+          embeddingModel,
+          embeddingProviderConfigured: embeddingProviderConfigured(embeddingModel, (envVar) => {
+            const cfgField = HOSTED_EMBED_KEY_CONFIG[envVar];
+            return !!(process.env[envVar] || (cfgField ? embedKeyCfg[cfgField] : undefined));
+          }),
           hasChatApiKey: !!(process.env.ANTHROPIC_API_KEY || await engine.getConfig('anthropic_api_key')),
         };
-        const plan = computeRecommendations(health, ctx).filter((r) => r.status === 'remediable');
+        // v0.41.18.0 (A5 + A19 + A22, T15): consult onboard recommendations
+        // ALONGSIDE doctor's brain-score recommendations. Onboard's 4 new
+        // checks (embed_staleness, link_coverage, timeline_coverage,
+        // takes_count) supply extraRemediations into computeRecommendations.
+        // Per A19 fail-open: any throw in the onboard path falls through
+        // to legacy doctor-only plan (no crash).
+        let extraRemediations: ReturnType<typeof computeRecommendations> = [];
+        try {
+          const { runAllOnboardChecks } = await import('../core/onboard/checks.ts');
+          const onboardResults = await runAllOnboardChecks(engine);
+          extraRemediations = onboardResults.flatMap((r) => r.remediations);
+        } catch (err) {
+          process.stderr.write(
+            `[autopilot] onboard checks failed (fail-open per A19): ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+        const plan = computeRecommendations(health, ctx, extraRemediations).filter((r) => r.status === 'remediable');
         const estTotal = plan.reduce((s, r) => s + r.est_seconds, 0);
 
         // Track time since last full cycle for the 60-min floor.
@@ -584,6 +678,36 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
         void shutdown('cycle-failure-cap');
         break;
       }
+    }
+
+    // 4.5 — Nightly quality probe (v0.41).
+    // Per D10: trust the phase's internal 24h rate-limit (via shouldRunNightly
+    // reading the audit JSONL). No scheduler-side precheck — one source of
+    // truth for the rate-limit. Feature flag gates the probe entirely.
+    // Wrapped in try/catch — a probe failure NEVER crashes the autopilot
+    // loop. Probe runs even when cycleOk=false (probe may surface signal
+    // explaining why the cycle is failing).
+    try {
+      const probeEnabled = cfg?.autopilot?.nightly_quality_probe?.enabled === true;
+      if (probeEnabled) {
+        const { runNightlyQualityProbe } = await import('../core/cycle/nightly-quality-probe.ts');
+        const { runLongMemEvalForProbe, runCrossModalBatchForProbe } = await import('../core/cycle/nightly-probe-adapters.ts');
+        const { isAvailable } = await import('../core/ai/gateway.ts');
+        const maxUsd = Number(cfg?.autopilot?.nightly_quality_probe?.max_usd ?? 5);
+        await runNightlyQualityProbe({
+          isEnabled: () => true, // already gated above; phase re-checks for defense-in-depth
+          hasEmbeddingProvider: () => isAvailable('embedding'),
+          resolveMaxUsd: () => maxUsd,
+          resolveRepoRoot: () => repoPath ?? gbrainHomePath('.'),
+          runLongMemEval: runLongMemEvalForProbe,
+          runCrossModalBatch: runCrossModalBatchForProbe,
+          now: () => new Date(),
+        });
+      }
+    } catch (e) {
+      logError('autopilot.nightly_probe', e);
+      // Intentional: do NOT bump consecutiveErrors. Probe failure is
+      // informational; autopilot loop continues.
     }
 
     // Wait for next cycle

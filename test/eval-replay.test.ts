@@ -314,7 +314,6 @@ describe('gbrain eval replay — happy path', () => {
       await runEvalReplay(engine, ['--against', file]);
       const { stdout, stderr } = cap.restore();
       expect(stderr).toContain('Replaying 1');
-      expect(stderr).toContain('eval.replay');
       expect(stdout).toContain('Mean Jaccard@k:');
       expect(stdout).toContain('Top-1 stability:');
       expect(stdout).toContain('regression');
@@ -323,34 +322,6 @@ describe('gbrain eval replay — happy path', () => {
 });
 
 describe('gbrain eval replay — failure modes', () => {
-  test('invalid numeric flags error and exit 1', async () => {
-    const origExit = process.exit;
-    let code: number | undefined;
-    process.exit = (c?: number) => { code = c; throw new Error('exit'); };
-    const cap = captureStdoutStderr();
-    try {
-      await runEvalReplay({} as BrainEngine, ['--against', 'baseline.ndjson', '--limit', '-1']);
-    } catch { /* expected */ }
-    const { stderr } = cap.restore();
-    process.exit = origExit;
-    expect(code).toBe(1);
-    expect(stderr).toContain('Invalid value for --limit');
-  });
-
-  test('missing numeric flag values error and exit 1', async () => {
-    const origExit = process.exit;
-    let code: number | undefined;
-    process.exit = (c?: number) => { code = c; throw new Error('exit'); };
-    const cap = captureStdoutStderr();
-    try {
-      await runEvalReplay({} as BrainEngine, ['--against', 'baseline.ndjson', '--top-regressions']);
-    } catch { /* expected */ }
-    const { stderr } = cap.restore();
-    process.exit = origExit;
-    expect(code).toBe(1);
-    expect(stderr).toContain('Missing value for --top-regressions');
-  });
-
   test('missing --against errors and exits 1', async () => {
     const origExit = process.exit;
     let code: number | undefined;

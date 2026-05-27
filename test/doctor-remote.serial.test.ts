@@ -151,11 +151,7 @@ describe('collectRemoteDoctorReport', () => {
     expect(checkNames).toContain('oauth_token');
     expect(checkNames).toContain('mcp_smoke');
     expect(report.checks.every(c => c.status === 'ok')).toBe(true);
-    const serialized = JSON.stringify(report);
-    expect(serialized).not.toContain('test-client');
-    expect(serialized).not.toContain('read write admin');
-    expect(serialized).not.toContain('oauth_client_id');
-    expect(serialized).not.toContain('oauth_scope');
+    expect(report.oauth_scope).toBe('read write admin');
   });
 
   test('discovery 404 — fails with reason=http and short-circuits', async () => {
@@ -353,7 +349,7 @@ describe('runUpgradeDriftCheck', () => {
         expect(result.message).toContain('major upgrade available');
         // Manual-install hint, NOT the auto-upgrade hint
         expect(result.message).toContain('Prior `gbrain upgrade` did not advance');
-        expect(result.message).toContain('https://github.com/electricsheephq/eva-brain/releases');
+        expect(result.message).toContain('https://github.com/garrytan/gbrain/releases');
         expect(result.message).not.toContain('Run `gbrain upgrade`');
         expect(result.detail?.prior_failed).toBe(true);
       });

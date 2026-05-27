@@ -1,10 +1,10 @@
 /**
  * gatekeeper.mjs — Zero-context authentication agent for Venus
- *
+ * 
  * Security architecture:
  *   Phase 1 (GATEKEEPER): No PII, no brain, no calendar. Only auth tools.
  *   Phase 2 (FULL VENUS): Full context loaded AFTER verification succeeds.
- *
+ * 
  * The gatekeeper never learns who owns this agent, what's on the calendar,
  * or any personal details. It's a generic voice auth gate.
  */

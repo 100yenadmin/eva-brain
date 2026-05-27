@@ -27,6 +27,7 @@ export function extractProjectRef(input: string): string | null {
 
   return null;
 }
+
 /**
  * Discover the pooler connection string via the Management API.
  * Returns the Session pooler URI.
@@ -77,3 +78,4 @@ export async function discoverPoolerUrl(
   const region = settings.region;
   return `postgresql://postgres.${projectRef}:[YOUR-PASSWORD]@aws-0-${region}.pooler.supabase.com:6543/postgres`; /* allow-pg-url-literal */
 }
+

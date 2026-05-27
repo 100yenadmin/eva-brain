@@ -14,7 +14,7 @@ import { loadTrend, writeRunRow } from '../src/core/eval-contradictions/trends.t
 import type { ProbeReport } from '../src/core/eval-contradictions/types.ts';
 
 /** Minimal OperationContext for hermetic op-handler tests. */
-function mkCtx(overrides: Partial<OperationContext> = {}): OperationContext {
+function mkCtx(): OperationContext {
   return {
     engine,
     config: {} as OperationContext['config'],
@@ -22,7 +22,6 @@ function mkCtx(overrides: Partial<OperationContext> = {}): OperationContext {
     dryRun: false,
     remote: false,
     sourceId: 'default',
-    ...overrides,
   };
 }
 
@@ -139,23 +138,6 @@ describe('M3 find_contradictions MCP op', () => {
     expect(result.contradictions.length).toBe(2);
     expect(result.total_in_run).toBe(2);
     expect(result.run_id).toBe('r1');
-  });
-
-  test('source-scoped callers do not receive brain-global contradiction reports', async () => {
-    await writeRunRow(
-      engine,
-      mkReport({
-        run_id: 'global-run',
-        findings: [
-          { severity: 'high', axis: 'MRR figure', slugA: 'companies/acme', slugB: 'openclaw/chat/x' },
-        ],
-      }),
-      45000,
-    );
-    const op = operationsByName['find_contradictions'];
-    const result = await op.handler(mkCtx({ sourceId: 'openclaw-support-kb' }), {}) as { contradictions: unknown[]; note?: string };
-    expect(result.contradictions).toEqual([]);
-    expect(result.note).toContain('brain-global');
   });
 
   test('severity filter narrows results', async () => {

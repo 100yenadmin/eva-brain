@@ -34,9 +34,7 @@ export const EMBEDDING_PRICING: Record<string, EmbeddingPricing> = {
   // Voyage (https://www.voyageai.com/pricing)
   'voyage:voyage-3-large':         { pricePerMTok: 0.18 },
   'voyage:voyage-3':               { pricePerMTok: 0.06 },
-  'voyage:voyage-4-large':         { pricePerMTok: 0.12 },
-  'voyage:voyage-4':               { pricePerMTok: 0.06 },
-  'voyage:voyage-4-lite':          { pricePerMTok: 0.02 },
+  'voyage:voyage-4-large':         { pricePerMTok: 0.18 },
   // ZeroEntropy (https://zeroentropy.dev/pricing — zembed-1)
   'zeroentropyai:zembed-1':        { pricePerMTok: 0.05 },
 };

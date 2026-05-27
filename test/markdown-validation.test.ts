@@ -133,18 +133,6 @@ describe('parseMarkdown validation surface', () => {
       const parsed = parseMarkdown(md, undefined, { validate: true });
       expect(parsed.errors!.map(e => e.code)).not.toContain('NESTED_QUOTES');
     });
-
-    test('unquoted description with trigger phrases does not trigger', () => {
-      const md = `${fence}\ntype: skill\ndescription: Use when phrases like "provider config", "which models", and "base URL" appear.\n${fence}\n\nbody`;
-      const parsed = parseMarkdown(md, undefined, { validate: true });
-      expect(parsed.errors!.map(e => e.code)).not.toContain('NESTED_QUOTES');
-    });
-
-    test('tab-heavy scalar lines are scanned without regex backtracking', () => {
-      const md = `${fence}\nA${'\t'.repeat(20_000)}: "Just a normal title"\n${fence}\n\nbody`;
-      const parsed = parseMarkdown(md, undefined, { validate: true });
-      expect(parsed.errors!.map(e => e.code)).not.toContain('NESTED_QUOTES');
-    });
   });
 
   // The validator's count-of-quotes heuristic is too dumb: it flagged

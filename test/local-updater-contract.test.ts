@@ -67,7 +67,11 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/No Eva Brain release tags found/);
     expect(script).toMatch(/--with-openclaw\b/);
     expect(script).toMatch(/--with-codex-plugin\b/);
+    expect(script).toMatch(/--with-support-kb\b/);
+    expect(script).toMatch(/--skip-health\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
+    expect(script).toMatch(/node\s+scripts\/eva-brain-health\.mjs/);
+    expect(script).toMatch(/eva-brain-health\.mjs --require-openclaw/);
     expect(script).toMatch(/pgrep\s+-f\s+'\[g\]brain serve'/);
     expect(script).toMatch(/pgrep\s+-f\s+'\[l\]aunch-gbrain-serve\\\.mjs'/);
     expect(script).toMatch(/kill\s+-KILL\s+\$pids/);
@@ -81,6 +85,13 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/if \[ -f "\$config_path" \]; then/);
     expect(script).toMatch(/run "\$HOME\/\.bun\/bin\/gbrain" init/);
     expect(script).not.toMatch(/\bfleet\b/i);
+
+    const health = readFileSync(join(root, 'scripts/eva-brain-health.mjs'), 'utf8');
+    expect(health).toContain('supportKbPages');
+    expect(health).toContain('bySource');
+    expect(health).toContain('openclaw-support-kb');
+    expect(health).toContain("process.argv.includes('--require-openclaw')");
+    expect(health).toContain('!requireOpenClaw || pluginInspect.ok');
 
     const result = Bun.spawnSync({
       cmd: ['bash', '-n', 'scripts/update-local-install.sh'],
@@ -105,20 +116,19 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(workflow).not.toContain('xargs -0 sha256sum > SHA256SUMS');
     expect(workflow).toMatch(/tag_name:\s+\$\{\{\s*env\.RELEASE_TAG\s*\}\}/);
     expect(workflow).toContain('Release tags must use eva-v*');
+    expect(workflow).toContain('Validate release tag matches package version');
+    expect(workflow).toContain("require('./package.json').version");
+    expect(workflow).toContain('Release tag must match package.json version');
   });
 
-  test('workflows use Node 24-ready checkout pin', () => {
-    const files = [
-      '.github/workflows/test.yml',
-      '.github/workflows/e2e.yml',
-      '.github/workflows/heavy-tests.yml',
-      '.github/workflows/release.yml',
-    ];
-    for (const file of files) {
-      const workflow = readFileSync(join(root, file), 'utf8');
-      expect(workflow).toContain('actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd');
-      expect(workflow).not.toContain('actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5');
-    }
+  test('test workflow uses OSS gitleaks CLI without an organization license secret', () => {
+    const workflow = readFileSync(join(root, '.github/workflows/test.yml'), 'utf8');
+
+    expect(workflow).toContain('Install gitleaks OSS CLI');
+    expect(workflow).toContain('gitleaks dir . --redact --no-banner');
+    expect(workflow).toContain('gitleaks git . --redact --no-banner --log-opts="${BASE_SHA}..${HEAD_SHA}"');
+    expect(workflow).not.toContain('gitleaks/gitleaks-action');
+    expect(workflow).not.toContain('GITLEAKS_LICENSE');
   });
 
   test('Codex plugin metadata stays repo-owned and version-aligned', () => {
@@ -290,7 +300,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.40.2.1');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.0');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {

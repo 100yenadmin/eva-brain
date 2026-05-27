@@ -10,9 +10,8 @@
  *   - --help → prints usage, exits 0.
  *
  * Subprocess invocation against temp $HOME so each test sees clean fixture
- * state. GBRAIN_HOME is pinned to the same temp dir and DATABASE_URL /
- * GBRAIN_DATABASE_URL are stripped so the report runs filesystem-only
- * (the checks we care about live there).
+ * state. DATABASE_URL / GBRAIN_DATABASE_URL stripped so the report runs
+ * filesystem-only (the checks we care about live there).
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
@@ -27,7 +26,7 @@ let tmp: string;
 let origHome: string | undefined;
 
 function run(args: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const env = { ...process.env, HOME: tmp, GBRAIN_HOME: tmp } as Record<string, string | undefined>;
+  const env = { ...process.env, HOME: tmp } as Record<string, string | undefined>;
   delete env.DATABASE_URL;
   delete env.GBRAIN_DATABASE_URL;
   try {
@@ -68,19 +67,6 @@ describe('gbrain skillpack-check', () => {
     expect(report.version).toBeTruthy();
     expect(report.ts).toBeTruthy();
   });
-
-  test('fresh initialized PGLite brain → no obsolete migration repair action', () => {
-    const init = run(['init', '--pglite', '--embedding-model', 'voyage:voyage-4-large', '--embedding-dimensions', '2048', '--json']);
-    expect(init.exitCode).toBe(0);
-
-    const result = run(['skillpack-check']);
-    expect(result.exitCode).toBe(0);
-    const report = JSON.parse(result.stdout);
-    expect(report.healthy).toBe(true);
-    expect(report.actions).not.toContain('gbrain apply-migrations --yes');
-    expect(report.migrations.pending_count).toBe(0);
-    expect(report.migrations.partial_count).toBe(0);
-  }, 60_000);
 
   test('half-migrated (partial completed.jsonl) → exit 1, apply-migrations in actions', () => {
     const migrationsDir = join(tmp, '.gbrain', 'migrations');

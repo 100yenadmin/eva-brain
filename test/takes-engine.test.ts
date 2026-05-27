@@ -87,30 +87,6 @@ describe('addTakesBatch + listTakes', () => {
     const allTakes = await engine.listTakes({});
     expect(allTakes.length).toBeGreaterThan(worldOnly.length);
   });
-
-  test('sourceId filters duplicate-slug takes by owning source', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('kb-takes-engine', 'kb-takes-engine') ON CONFLICT (id) DO NOTHING`,
-    );
-    const defaultPage = await engine.putPage('people/source-filter', {
-      title: 'Default source filter',
-      type: 'person',
-      compiled_truth: '',
-    });
-    const kbPage = await engine.putPage('people/source-filter', {
-      title: 'KB source filter',
-      type: 'person',
-      compiled_truth: '',
-    }, { sourceId: 'kb-takes-engine' });
-    await engine.addTakesBatch([
-      { page_id: defaultPage.id, row_num: 1, claim: 'Default-only take', kind: 'fact', holder: 'world', weight: 1.0 },
-      { page_id: kbPage.id, row_num: 1, claim: 'KB-only take', kind: 'fact', holder: 'world', weight: 1.0 },
-    ]);
-
-    const kbTakes = await engine.listTakes({ page_slug: 'people/source-filter', sourceId: 'kb-takes-engine' });
-    expect(kbTakes).toHaveLength(1);
-    expect(kbTakes[0].claim).toBe('KB-only take');
-  });
 });
 
 describe('searchTakes', () => {
@@ -123,12 +99,6 @@ describe('searchTakes', () => {
   test('searchTakes honors takesHoldersAllowList', async () => {
     const worldHits = await engine.searchTakes('founder', { takesHoldersAllowList: ['world'] });
     expect(worldHits.every(h => h.holder === 'world')).toBe(true);
-  });
-
-  test('searchTakes honors sourceId', async () => {
-    const hits = await engine.searchTakes('KB-only', { sourceId: 'kb-takes-engine' });
-    expect(hits).toHaveLength(1);
-    expect(hits[0].claim).toBe('KB-only take');
   });
 });
 

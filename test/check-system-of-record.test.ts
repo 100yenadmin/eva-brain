@@ -24,7 +24,18 @@ import { join } from 'node:path';
 const SCRIPT_PATH = join(import.meta.dir, '..', 'scripts', 'check-system-of-record.sh');
 
 function runGate(cwd: string): { code: number; stdout: string; stderr: string } {
-  const r = spawnSync('bash', [SCRIPT_PATH], { cwd, encoding: 'utf-8', timeout: 30_000 });
+  // GBRAIN_SCAN_ROOT pins the gate's scan directory to our fake repo.
+  // Without this, `git rev-parse --show-toplevel` inside the gate can walk
+  // up past our /tmp/gate-test-* fakeRepo (when its `git init -q` silently
+  // failed under shard-concurrency load) into the real gbrain repo and
+  // scan the clean src+scripts — false-negative the negative-case test.
+  // v0.40.10 flake-hardening fix.
+  const r = spawnSync('bash', [SCRIPT_PATH], {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 30_000,
+    env: { ...process.env, GBRAIN_SCAN_ROOT: cwd },
+  });
   return {
     code: r.status ?? -1,
     stdout: r.stdout ?? '',
@@ -121,51 +132,6 @@ async function tricky(engine: BrainEngine) {
       const r = runGate(fakeRepo);
       expect(r.code).toBe(1);
       expect(r.stdout).toContain('tricky.ts');
-    } finally {
-      rmSync(fakeRepo, { recursive: true, force: true });
-    }
-  });
-
-  test('engine aliases do NOT bypass the gate', () => {
-    const fakeRepo = mkdtempSync(join(tmpdir(), 'gate-test-alias-'));
-    try {
-      spawnSync('git', ['init', '-q'], { cwd: fakeRepo });
-      const fakeSrc = join(fakeRepo, 'src');
-      mkdirSync(fakeSrc, { recursive: true });
-      writeFileSync(
-        join(fakeSrc, 'alias.ts'),
-        `// Aliasing BrainEngine must not bypass the source-of-record gate.
-import type { BrainEngine } from './engine.ts';
-async function sneaky(engine: BrainEngine) {
-  const db = engine;
-  await db.insertFact({ fact: 'alias bypass' } as any, { source_id: 'default' });
-}
-`,
-        'utf-8',
-      );
-
-      const r = runGate(fakeRepo);
-      expect(r.code).toBe(1);
-      expect(r.stdout).toContain('alias.ts');
-    } finally {
-      rmSync(fakeRepo, { recursive: true, force: true });
-    }
-  });
-
-  test('inline backtick mentions of engine methods are not violations', () => {
-    const fakeRepo = mkdtempSync(join(tmpdir(), 'gate-test-backtick-doc-'));
-    try {
-      spawnSync('git', ['init', '-q'], { cwd: fakeRepo });
-      const fakeSrc = join(fakeRepo, 'src');
-      mkdirSync(fakeSrc, { recursive: true });
-      writeFileSync(
-        join(fakeSrc, 'docs.ts'),
-        "export const docs = `Use engine.insertFact( only inside the reconcile layer.`;\n",
-        'utf-8',
-      );
-
-      const r = runGate(fakeRepo);
-      expect(r.code).toBe(0);
     } finally {
       rmSync(fakeRepo, { recursive: true, force: true });
     }

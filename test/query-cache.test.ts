@@ -80,9 +80,12 @@ const META: HybridSearchMeta = {
 };
 
 beforeAll(async () => {
-  // This test hardcodes DIM=1536 in its embeddings. Pin the gateway to
-  // 1536d explicitly so this file is hermetic regardless of Eva's Voyage
-  // 2048 default or any cross-file gateway state.
+  // v0.36.2.0: DEFAULT_EMBEDDING_DIMENSIONS flipped to 1280 (ZE Matryoshka).
+  // This test hardcodes DIM=1536 in its embeddings. If another test file in
+  // the same shard configured the gateway before us, initSchema() would size
+  // query_cache.embedding at vector(1280) and every insert below would fail
+  // with "expected 1280 dimensions, not 1536". Pin the gateway to 1536d
+  // explicitly so this file is hermetic regardless of cross-file state.
   resetGateway();
   configureGateway({
     embedding_model: 'openai:text-embedding-3-large',

@@ -2,7 +2,7 @@
  * v0.29.1 — Backfill effective_date / effective_date_source for existing
  * pages.
  *
- * Migration v42 added the columns; they're NULL for rows imported before
+ * Migration v38 added the columns; they're NULL for rows imported before
  * v0.29.1. This walks every page in keyset-paginated batches, runs the
  * `computeEffectiveDate` precedence chain, and UPDATEs in place.
  *
@@ -46,8 +46,6 @@ export interface BackfillOpts {
    * scope to a subset. Undefined = no filter.
    */
   slugPrefix?: string;
-  /** Optional source scope. Undefined = all sources. */
-  sourceId?: string;
   /**
    * When true, recompute even if existing effective_date matches what
    * the chain would produce. Default false (no-op-on-equal saves writes).
@@ -131,10 +129,8 @@ export async function backfillEffectiveDate(
 ): Promise<BackfillResult> {
   const start = Date.now();
   const slugPrefix = opts.slugPrefix?.replace(/[\\%_]/g, (c) => '\\' + c) ?? null;
-  const sourceId = opts.sourceId;
-  const scopedRun = sourceId !== undefined || slugPrefix !== null;
 
-  let lastId = scopedRun ? 0 : await getCheckpoint(engine, opts.fresh ?? false);
+  let lastId = await getCheckpoint(engine, opts.fresh ?? false);
   let examined = 0;
   let updated = 0;
   let fallback = 0;
@@ -154,24 +150,18 @@ export async function backfillEffectiveDate(
 
     // Keyset pagination: WHERE id > last_id ORDER BY id LIMIT N. Single-direction
     // walk; safe under concurrent inserts (new rows show up at the tail).
+    const slugFilter = slugPrefix
+      ? `AND slug LIKE $2 ESCAPE '\\\\'`
+      : '';
     const params: unknown[] = [lastId];
-    const filters: string[] = [];
-    if (slugPrefix) {
-      params.push(slugPrefix + '%');
-      filters.push(`slug LIKE $${params.length} ESCAPE '\\'`);
-    }
-    if (sourceId !== undefined) {
-      params.push(sourceId);
-      filters.push(`source_id = $${params.length}`);
-    }
+    if (slugPrefix) params.push(slugPrefix + '%');
     params.push(limit);
     const limitParam = `$${params.length}`;
-    const filterSql = filters.length ? `AND ${filters.join(' AND ')}` : '';
 
     const rows = await engine.executeRaw<PageRow>(
       `SELECT id, slug, frontmatter, import_filename, effective_date, effective_date_source, created_at, updated_at
          FROM pages
-         WHERE id > $1 ${filterSql}
+         WHERE id > $1 ${slugFilter}
          ORDER BY id
          LIMIT ${limitParam}`,
       params,
@@ -247,12 +237,12 @@ export async function backfillEffectiveDate(
     updated += touched;
     lastId = rows[rows.length - 1].id;
     batchNum++;
-    if (!opts.dryRun && !scopedRun) await setCheckpoint(engine, lastId);
+    if (!opts.dryRun) await setCheckpoint(engine, lastId);
     opts.onBatch?.({ batch: batchNum, lastId, rowsTouched: touched, cumulative: examined });
   }
 
   // Walk done; clear the checkpoint so the next manual run starts fresh.
-  if (!opts.dryRun && !scopedRun) await clearCheckpoint(engine);
+  if (!opts.dryRun) await clearCheckpoint(engine);
 
   return {
     examined,

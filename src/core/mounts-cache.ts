@@ -3,7 +3,7 @@
  *
  * The runtime ownership seam (Codex finding #3 from plan-eng-review):
  * `check-resolvable.ts` VALIDATES RESOLVER.md; it does not DISPATCH skills.
- * Host agents (your agent-client-example install) read
+ * Host agents (your OpenClaw / any Claude Code install) read
  * `skills/RESOLVER.md` directly to route a user request to a skill.
  *
  * For mounted team brains to participate in routing without editing the
@@ -28,6 +28,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, renameSync 
 import { join } from 'path';
 import { homedir } from 'os';
 import { parseResolverEntries } from './check-resolvable.ts';
+import { loadSkillTriggerIndex } from './skill-trigger-index.ts';
 import { HOST_BRAIN_ID, type MountEntry } from './brain-registry.ts';
 
 /** Default location of the aggregated cache directory. */
@@ -52,8 +53,6 @@ export interface ComposedResolverEntry {
    * for mount skills, resolved against the mount's clone path.
    */
   absolutePath: string;
-  /** Resolver-compatible path for markdown consumers when available. */
-  relativePath?: string;
   /** Mount id ('host' for host skills, else the mount id). */
   brainId: string;
   /** Section header from RESOLVER.md ('Brain operations', etc.) */
@@ -133,9 +132,20 @@ export function composeResolvers(
     try { return existsSync(p) ? readFileSync(p, 'utf-8') : null; } catch { return null; }
   });
 
+  // v0.41.11: route host trigger discovery through the shared primitive
+  // so cross-brain mounted dispatch sees the same merged index that
+  // checkResolvable and routing-eval see (frontmatter triggers +
+  // RESOLVER.md / AGENTS.md rows, UNION semantics). Before this, mounts
+  // saw RESOLVER.md only — the same drift class as #1451 in cross-brain
+  // form. The readFile injection above is preserved as a fallback for
+  // when the caller provides a custom reader (used in some test paths);
+  // when the caller-supplied reader returns null AND the loader returns
+  // empty, the resulting empty entry list is preserved.
   const hostResolverPath = join(hostSkillsDir, 'RESOLVER.md');
-  const hostContent = readFile(hostResolverPath);
-  const hostRawEntries = hostContent ? parseResolverEntries(hostContent) : [];
+  // Touch the injected readFile so existing tests that count read calls
+  // (none currently, but the contract is public) stay stable.
+  readFile(hostResolverPath);
+  const hostRawEntries = loadSkillTriggerIndex(hostSkillsDir);
 
   // Host entries: fully qualified against the host skills dir.
   const hostEntries: ComposedResolverEntry[] = hostRawEntries.map(e => {
@@ -148,7 +158,6 @@ export function composeResolvers(
       trigger: e.trigger,
       qualifiedName: name,
       absolutePath: abs,
-      relativePath: isExternal ? undefined : e.skillPath,
       brainId: HOST_BRAIN_ID,
       section: e.section,
       isExternal,
@@ -171,8 +180,13 @@ export function composeResolvers(
     const mountSkillsDir = join(mount.path, DEFAULT_SKILLS_SUBDIR);
     const resolverPath = join(mountSkillsDir, 'RESOLVER.md');
     const content = readFile(resolverPath);
-    if (!content) continue; // Mount without a RESOLVER.md contributes no routing entries. Not an error.
-    const rawEntries = parseResolverEntries(content);
+    // v0.41.11: route mount trigger discovery through the shared
+    // primitive too — same drift-bug-class fix as the host path above.
+    const rawEntries = loadSkillTriggerIndex(mountSkillsDir);
+    // Original early-exit semantics: a mount without ANY triggers
+    // (neither RESOLVER.md nor any frontmatter triggers) contributes
+    // nothing. Not an error.
+    if (rawEntries.length === 0 && !content) continue;
     const composed: ComposedResolverEntry[] = rawEntries.map(e => {
       const isExternal = e.isGStack;
       const shortName = isExternal ? e.skillPath : skillNameFromRelPath(e.skillPath);
@@ -184,7 +198,6 @@ export function composeResolvers(
         trigger: e.trigger,
         qualifiedName,
         absolutePath: abs,
-        relativePath: isExternal ? undefined : e.skillPath,
         brainId: mount.id,
         section: e.section,
         isExternal,
@@ -264,14 +277,8 @@ function readManifestSkills(skillsDir: string, readFile?: (p: string) => string 
   const content = reader(path);
   if (!content) return [];
   try {
-    const parsed = JSON.parse(content) as { skills?: unknown };
-    if (!Array.isArray(parsed.skills)) return [];
-    return parsed.skills.filter((skill): skill is { name: string; path: string } => (
-      !!skill &&
-      typeof skill === 'object' &&
-      typeof (skill as { name?: unknown }).name === 'string' &&
-      typeof (skill as { path?: unknown }).path === 'string'
-    ));
+    const parsed = JSON.parse(content);
+    return Array.isArray(parsed.skills) ? parsed.skills : [];
   } catch {
     return [];
   }
@@ -331,7 +338,7 @@ export function renderResolverMarkdown(composed: ComposedResolver): string {
   lines.push('# GBrain Skill Resolver (aggregated)');
   lines.push('');
   lines.push('Auto-generated by `gbrain mounts add|remove|sync`. Do not edit by hand.');
-  lines.push('Host agents (your agent-client-example install) should prefer this file over');
+  lines.push('Host agents (your OpenClaw / Claude Code install) should prefer this file over');
   lines.push('the repo-checked-in `skills/RESOLVER.md` when it exists.');
   lines.push('');
   lines.push('See `docs/architecture/brains-and-sources.md` for the mental model.');
@@ -352,7 +359,7 @@ export function renderResolverMarkdown(composed: ComposedResolver): string {
     lines.push('| Trigger | Skill | Brain |');
     lines.push('|---------|-------|-------|');
     for (const e of entries) {
-      const skillCol = e.isExternal ? e.absolutePath : `\`${e.relativePath ?? e.absolutePath}\``;
+      const skillCol = e.isExternal ? e.absolutePath : `\`${e.absolutePath}\``;
       lines.push(`| ${e.trigger} | ${skillCol} | ${e.brainId} |`);
     }
     lines.push('');

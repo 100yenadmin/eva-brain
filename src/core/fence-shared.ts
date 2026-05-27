@@ -27,37 +27,17 @@
  * or has no second pipe). On a match, returns the cells with surrounding
  * whitespace trimmed, with the outer pipes already stripped.
  *
- * Escaped pipes (`\|`) stay inside their cell, and escaped backslashes
- * round-trip to literal backslashes. This matches `escapeFenceCell()`.
+ * NOTE: does NOT unescape `\|` back to `|`. Round-trip-on-pipes is a
+ * separate concern callers handle if their domain text legitimately
+ * contains pipes (currently neither takes nor facts do at the LLM-extract
+ * layer; if a hand-edit introduces one, escape-on-write at render time
+ * protects the table shape).
  */
 export function parseRowCells(line: string): string[] | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith('|') || !trimmed.includes('|', 1)) return null;
   const inner = trimmed.replace(/^\|/, '').replace(/\|$/, '');
-  const cells: string[] = [];
-  let current = '';
-  let escaped = false;
-
-  for (const ch of inner) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '|') {
-      cells.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  if (escaped) current += '\\';
-  cells.push(current.trim());
-  return cells;
+  return inner.split('|').map(c => c.trim());
 }
 
 /**
@@ -96,13 +76,12 @@ export function parseStringCell(raw: string): string | undefined {
 }
 
 /**
- * Escape a value for safe placement inside a pipe-separated cell. Escapes
- * backslashes first, then replaces any literal `|` with `\|` so the table
- * layout stays intact and caller-provided backslashes cannot be confused with
- * generated pipe escapes. Inverse is not needed at parse time today (see
- * parseRowCells note); a future `unescapeFenceCell` helper can land alongside
- * any domain that needs to read pipes back out of cell text.
+ * Escape a value for safe placement inside a pipe-separated cell. Replaces
+ * any literal `|` with `\|` so the table layout stays intact. Inverse is
+ * not needed at parse time today (see parseRowCells note); a future
+ * `unescapeFenceCell` helper can land alongside any domain that needs to
+ * read pipes back out of cell text.
  */
 export function escapeFenceCell(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+  return s.replace(/\|/g, '\\|');
 }

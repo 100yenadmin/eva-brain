@@ -414,9 +414,9 @@ export function renderTakesFence(takes: ParsedTake[]): string {
     const sinceCell = t.untilDate ? `${t.sinceDate ?? ''} → ${t.untilDate}` : (t.sinceDate ?? '');
     const w = formatWeight(t.weight);
     const source = t.source ?? '';
-    // Escape any pipes inside cells so the table doesn't break. The shared
-    // helper also escapes backslashes first so pipe escapes cannot be confused
-    // with caller-provided escape sequences.
+    // Escape any pipes inside cells so the table doesn't break. The
+    // escapeFenceCell primitive lives in fence-shared.ts and is re-aliased
+    // as `safe` here purely to keep the row-render lines visually compact.
     const safe = safeFenceCell;
     const baseCells = `| ${t.rowNum} | ${safe(claimCell)} | ${t.kind} | ${safe(t.holder)} | ${w} | ${safe(sinceCell)} | ${safe(source)} |`;
     if (!hasAnyResolution) return baseCells;

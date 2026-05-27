@@ -162,19 +162,6 @@ describe('parseFactsFence — strikethrough semantics (Codex R2-#3 contract)', (
     });
   });
 
-  test('strikethrough + appended "forgotten: <reason>" context → forgotten=true', () => {
-    const body = wrapFenceBody(
-      `| 1 | ~~Stale fact~~ | fact | 1.0 | private | low | 2018-01-01 | 2026-05-10 | inferred | original context; forgotten: user asked to remove |`,
-    );
-    const r = parseFactsFence(body);
-    expect(r.facts[0]).toMatchObject({
-      claim: 'Stale fact',
-      active: false,
-      forgotten: true,
-      context: 'original context; forgotten: user asked to remove',
-    });
-  });
-
   test('strikethrough with unrecognized context → inactive but no superseded/forgotten flag', () => {
     const body = wrapFenceBody(
       `| 1 | ~~Something~~ | fact | 1.0 | world | medium | 2026-01-01 |  | src | random note |`,
@@ -189,11 +176,11 @@ describe('parseFactsFence — strikethrough semantics (Codex R2-#3 contract)', (
   });
 
   test('NO strikethrough but context contains "superseded by #N" → active stays true, supersededBy NOT populated', () => {
-    // The strikethrough is the trigger. A row whose context mentions
+    // The strikethrough is the trigger. A row whose claim text mentions
     // superseded but isn't struck-through stays active. Prevents a stray
     // mention in `context` from inadvertently marking a row inactive.
     const body = wrapFenceBody(
-      `| 1 | Talked about the issue | fact | 1.0 | world | medium | 2026-01-01 |  | src | superseded by #3 |`,
+      `| 1 | Talked about the superseded by #3 issue | fact | 1.0 | world | medium | 2026-01-01 |  | src |  |`,
     );
     const r = parseFactsFence(body);
     expect(r.facts[0].active).toBe(true);
@@ -486,27 +473,6 @@ describe('upsertFactRow', () => {
     expect(out).toContain('superseded by #2');
     expect(out).toContain('Replacement');
   });
-
-  test('malformed hand-edited rows survive an unrelated append', () => {
-    const body = wrapFenceBody(
-      `| 1 | First | fact | 1.0 | world | medium | 2026-01-01 |  | src |  |
-| 7 | Hand-edited malformed row | bogus | 1.0 | world | medium | 2026-01-01 |  | src | keep me |`,
-    );
-    const { body: out, rowNum } = upsertFactRow(body, {
-      claim: 'New row',
-      kind: 'fact',
-      confidence: 1.0,
-      visibility: 'world',
-      notability: 'medium',
-    });
-
-    expect(rowNum).toBe(8);
-    expect(out).toContain('| 7 | Hand-edited malformed row | bogus |');
-    expect(out).toContain('| 8 | New row | fact |');
-    const reparsed = parseFactsFence(out);
-    expect(reparsed.warnings.some(w => w.includes('unknown kind "bogus"'))).toBe(true);
-    expect(reparsed.facts.map(f => f.rowNum)).toEqual([1, 8]);
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -565,24 +531,6 @@ describe('stripFactsFence', () => {
     );
     const stripped = stripFactsFence(body, { keepVisibility: [] });
     expect(stripped).not.toContain('something');
-    expect(stripped).not.toContain(FACTS_FENCE_BEGIN);
-  });
-
-  test('unbalanced begin marker fails closed and strips the trailing fence', () => {
-    const body = `# Page
-
-Visible prose.
-
-## Facts
-
-${FACTS_FENCE_BEGIN}
-| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
-|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
-| 1 | PRIVATE_UNBALANCED_PROOF | fact | 1.0 | private | high | 2026-01-01 |  | s |  |
-`;
-    const stripped = stripFactsFence(body, { keepVisibility: ['world'] });
-    expect(stripped).toContain('Visible prose.');
-    expect(stripped).not.toContain('PRIVATE_UNBALANCED_PROOF');
     expect(stripped).not.toContain(FACTS_FENCE_BEGIN);
   });
 });

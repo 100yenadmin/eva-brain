@@ -83,17 +83,18 @@ describe('buildScopeCheck', () => {
     expect(check.detail?.inconclusive).toBe(true);
   });
 
-  test('granted scope is redacted while preserving presence signal', () => {
+  test('granted scope is surfaced in detail (and message when ok)', () => {
     const probe: ScopeProbeResult = { read_ok: true, admin_ok: true };
     const check = buildScopeCheck('read write admin', probe);
-    expect(check.detail?.granted_scope_present).toBe(true);
-    expect(JSON.stringify(check)).not.toContain('read write admin');
+    expect(check.detail?.granted).toBe('read write admin');
+    expect(check.message).toContain('read write admin');
   });
 
-  test('empty granted scope preserves false presence signal', () => {
+  test('empty granted scope renders as "unspecified"', () => {
     const probe: ScopeProbeResult = { read_ok: true, admin_ok: true };
     const check = buildScopeCheck('', probe);
-    expect(check.detail?.granted_scope_present).toBe(false);
+    expect(check.detail?.granted).toBe(null);
+    expect(check.message).toContain('unspecified');
   });
 
   test('admin probe fails with read also failing (not missing_scope) → fail (read takes precedence)', () => {

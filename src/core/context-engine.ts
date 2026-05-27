@@ -269,18 +269,14 @@ function getTimeInTz(tz: string): { iso: string; dayOfWeek: string; hour: number
   const parts = fmt.formatToParts(now);
   const get = (t: string) => parts.find(p => p.type === t)?.value ?? '00';
 
+  const utcH = now.getUTCHours();
   const localH = parseInt(get('hour'));
-  const tzParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    timeZoneName: 'shortOffset',
-    hour: '2-digit',
-  }).formatToParts(now);
-  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value ?? 'GMT';
-  const m = tzName.match(/^GMT(?:(?<sign>[+-])(?<hours>\d{1,2})(?::?(?<minutes>\d{2}))?)?$/);
-  const sign = m?.groups?.sign ?? '+';
-  const hours = m?.groups?.hours ? Number(m.groups.hours) : 0;
-  const minutes = m?.groups?.minutes ? Number(m.groups.minutes) : 0;
-  const offsetStr = `${sign}${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  let offset = localH - utcH;
+  if (offset > 12) offset -= 24;
+  if (offset < -12) offset += 24;
+  const sign = offset >= 0 ? '+' : '-';
+  const abs = Math.abs(offset);
+  const offsetStr = `${sign}${String(abs).padStart(2, '0')}:00`;
 
   const iso = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}${offsetStr}`;
   const dayOfWeek = now.toLocaleDateString('en-US', { timeZone: tz, weekday: 'long' });
@@ -293,17 +289,11 @@ function resolveLocation(
   flights: FlightData | null,
 ): { city: string; tz: string; source: string } {
   if (hb?.currentLocation?.timezone) {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: hb.currentLocation.timezone }).format(new Date());
-      return {
-        city: sanitizeForPrompt(hb.currentLocation.city ?? DEFAULT_HOME, 80),
-        tz: hb.currentLocation.timezone,
-        source: sanitizeForPrompt(hb.currentLocation.source ?? 'heartbeat', 80),
-      };
-    } catch {
-      // Fall through to active-flight or default resolution instead of
-      // throwing during context assembly.
-    }
+    return {
+      city: hb.currentLocation.city ?? DEFAULT_HOME,
+      tz: hb.currentLocation.timezone,
+      source: hb.currentLocation.source ?? 'heartbeat',
+    };
   }
 
   // Heartbeat has no tz. Check flights.
@@ -312,8 +302,7 @@ function resolveLocation(
     const destUpper = active.destination.toUpperCase();
     const knownTz = AIRPORT_TZ[destUpper];
     if (knownTz) {
-      const flightNumber = sanitizeForPrompt(active.flightNumber ?? 'unknown', 40);
-      return { city: sanitizeForPrompt(active.destination, 40), tz: knownTz, source: `flight:${flightNumber}` };
+      return { city: active.destination, tz: knownTz, source: `flight:${active.flightNumber}` };
     }
     // Unknown airport. Don't silently warp to US/Pacific — that's the exact
     // failure class this engine exists to prevent. Return UNKNOWN_TZ so
@@ -322,9 +311,9 @@ function resolveLocation(
     // path returned tz: DEFAULT_TZ with a "tz-unknown" sticker in source,
     // which was cosmetic — the engine still injected a wrong concrete time.
     return {
-      city: sanitizeForPrompt(hb?.currentLocation?.city ?? active.destination, 80),
+      city: hb?.currentLocation?.city ?? active.destination,
       tz: UNKNOWN_TZ,
-      source: `flight:${sanitizeForPrompt(active.flightNumber ?? 'unknown', 40)}:tz-unknown:${sanitizeForPrompt(destUpper, 40)}`,
+      source: `flight:${active.flightNumber}:tz-unknown:${destUpper}`,
     };
   }
 
@@ -348,8 +337,7 @@ function resolveActivity(
   }
 
   // Check staleness: if cache is >6 hours old, flag it
-  const parsedLastUpdated = cache.lastUpdated ? new Date(cache.lastUpdated).getTime() : 0;
-  const lastUpdated = Number.isNaN(parsedLastUpdated) ? 0 : parsedLastUpdated;
+  const lastUpdated = cache.lastUpdated ? new Date(cache.lastUpdated).getTime() : 0;
   const calendarStale = (nowMs - lastUpdated) > 6 * 60 * 60 * 1000;
 
   const LOOKAHEAD_MS = 4 * 60 * 60 * 1000; // next 4 hours
@@ -460,7 +448,7 @@ function generateLiveContext(workspaceDir: string): LiveContext {
   // Active travel
   const activeFlight = flights?.flights?.find(f => f.status === 'active');
   const activeTravel = activeFlight
-    ? `${sanitizeForPrompt(activeFlight.flightNumber ?? 'unknown', 40)}: ${sanitizeForPrompt(activeFlight.origin ?? 'unknown', 40)}→${sanitizeForPrompt(activeFlight.destination ?? 'unknown', 40)}`
+    ? `${activeFlight.flightNumber}: ${activeFlight.origin}→${activeFlight.destination}`
     : null;
 
   // Calendar activity
@@ -516,17 +504,17 @@ function formatContextBlock(ctx: LiveContext): string {
   } else {
     // Active flight to an unmapped airport. Refuse to emit a guessed local
     // time — the LLM should see the gap explicitly.
-    lines.push(`- **Timezone:** unknown (${sanitizeForPrompt(ctx.location.source, 80)})`);
+    lines.push(`- **Timezone:** unknown (${ctx.location.source})`);
     lines.push(`- ⚠️ Local time NOT computed — verify timezone before time-sensitive actions`);
   }
 
-  lines.push(`- **Location:** ${sanitizeForPrompt(ctx.location.city, 80)} (source: ${sanitizeForPrompt(ctx.location.source, 80)})`);
+  lines.push(`- **Location:** ${ctx.location.city} (source: ${ctx.location.source})`);
 
   if (ctx.homeTime) {
     lines.push(`- **Home (SF):** ${ctx.homeTime}`);
   }
   if (ctx.activeTravel) {
-    lines.push(`- **Active travel:** ${sanitizeForPrompt(ctx.activeTravel, 140)}`);
+    lines.push(`- **Active travel:** ${ctx.activeTravel}`);
   }
   if (!ctx.userAwake) {
     lines.push(`- **User awake:** no (quiet hours ${ctx.quietHoursActive ? 'active' : 'paused'})`);

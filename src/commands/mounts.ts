@@ -2,12 +2,12 @@
  * gbrain mounts — manage connected gbrains (v0.19.0, PR 0).
  *
  * A "mount" is a SEPARATE gbrain DATABASE connected to your host agent.
- * Your host agent can mount N team-published brains (team-media,
- * team-politics, team-research) and route operations to each via `--brain <id>`.
+ * Your host OpenClaw can mount N team-published brains (YC Media, YC
+ * Politics, Garry's List) and route operations to each via `--brain <id>`.
  *
  * Mounts are distinct from v0.18.0 "sources" (repos within ONE brain).
  * Orthogonal axes:
- *   --brain team-media   → which DATABASE to target
+ *   --brain yc-media     → which DATABASE to target
  *   --source meetings    → which repo WITHIN that database
  *
  * Subcommands (PR 0 — direct transport only):
@@ -22,7 +22,7 @@
  *   gbrain mounts add --mcp-url         — HTTP MCP transport + OAuth (PR 2)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync, statSync, openSync, closeSync, unlinkSync, writeSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import {
@@ -38,7 +38,14 @@ import { writeMountsCache, clearMountsCache } from '../core/mounts-cache.ts';
 import { GBrainError } from '../core/types.ts';
 
 function getMountsDir(): string { return join(homedir(), '.gbrain'); }
-function getMountsPath(): string { return join(getMountsDir(), 'mounts.json'); }
+// v0.40.3.0: GBRAIN_MOUNTS_PATH override exists for tests (libuv caches
+// homedir() at startup on some platforms; HOME mutation alone isn't
+// reliably picked up). Production callers don't set this.
+function getMountsPath(): string {
+  const override = process.env.GBRAIN_MOUNTS_PATH;
+  if (override) return override;
+  return join(getMountsDir(), 'mounts.json');
+}
 
 /**
  * Read mounts.json and return the parsed MountsFile, or a fresh empty file
@@ -66,48 +73,6 @@ function writeMountsFile(file: MountsFile, path: string = getMountsPath()): void
   try { chmodSync(tmpPath, 0o600); } catch { /* platform dep */ }
   // Atomic rename so readers never see a torn file.
   renameSync(tmpPath, path);
-}
-
-function withMountsFileLock<T>(fn: () => T): T {
-  mkdirSync(getMountsDir(), { recursive: true });
-  const lockPath = `${getMountsPath()}.lock`;
-  const deadline = Date.now() + 5000;
-  const staleAfterMs = 5 * 60 * 1000;
-  let fd: number | undefined;
-  while (fd === undefined) {
-    try {
-      fd = openSync(lockPath, 'wx', 0o600);
-      writeSync(fd, JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() }) + '\n');
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        try {
-          const ageMs = Date.now() - statSync(lockPath).mtimeMs;
-          if (ageMs > staleAfterMs) {
-            unlinkSync(lockPath);
-            continue;
-          }
-        } catch {
-          try { unlinkSync(lockPath); continue; } catch { /* best effort */ }
-        }
-      }
-      if (code !== 'EEXIST' || Date.now() >= deadline) {
-        throw new GBrainError(
-          'mounts.json is locked',
-          'Another mounts command is updating the registry',
-          'Wait a moment, then retry the command',
-        );
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-    }
-  }
-
-  try {
-    return fn();
-  } finally {
-    try { closeSync(fd); } catch { /* best effort */ }
-    try { unlinkSync(lockPath); } catch { /* best effort */ }
-  }
 }
 
 // ── Argument parsing helpers ───────────────────────────────────────────
@@ -177,7 +142,7 @@ function parseAddArgs(args: string[]): AddArgs {
   if (engine === 'postgres' && !database_url) {
     throw new GBrainError('postgres mount requires --db-url', '', 'Pass --db-url postgresql://...');
   }
-  if (engine === 'pglite' && !database_path) {
+  if (engine === 'pglite' && !database_path && !database_url) {
     throw new GBrainError('pglite mount requires --db-path', '', 'Pass --db-path /path/to/mount/.pglite');
   }
 
@@ -198,59 +163,50 @@ async function runAdd(args: string[]): Promise<void> {
       `Clone the repo first (git clone <repo> ${parsed.path}) then re-run`,
     );
   }
-  if (!statSync(parsed.path).isDirectory()) {
+
+  const file = readMountsFile();
+
+  // Duplicate id check.
+  if (file.mounts.some(m => m.id === parsed.id)) {
     throw new GBrainError(
-      `Mount path is not a directory: ${parsed.path}`,
-      'The local clone path must be a directory',
-      `Pass --path /absolute/path/to/${parsed.id}`,
+      `Mount id already exists: "${parsed.id}"`,
+      `Use 'gbrain mounts list' to see registered mounts`,
+      `Remove the existing mount first: gbrain mounts remove ${parsed.id}`,
     );
   }
 
-  withMountsFileLock(() => {
-    const file = readMountsFile();
+  // Duplicate path check (load-bearing — skills/handlers/attestation/git
+  // sync all key off path, so two mounts at the same path silently collide).
+  const existingAtPath = file.mounts.find(m => resolve(m.path) === parsed.path);
+  if (existingAtPath) {
+    throw new DuplicateMountPathError(parsed.path, existingAtPath.id, parsed.id);
+  }
 
-    // Duplicate id check.
-    if (file.mounts.some(m => m.id === parsed.id)) {
-      throw new GBrainError(
-        `Mount id already exists: "${parsed.id}"`,
-        `Use 'gbrain mounts list' to see registered mounts`,
-        `Remove the existing mount first: gbrain mounts remove ${parsed.id}`,
-      );
-    }
-
-    // Duplicate path check (load-bearing — skills/handlers/attestation/git
-    // sync all key off path, so two mounts at the same path silently collide).
-    const existingAtPath = file.mounts.find(m => resolve(m.path) === parsed.path);
-    if (existingAtPath) {
-      throw new DuplicateMountPathError(parsed.path, existingAtPath.id, parsed.id);
-    }
-
-    // Soft warning: same database_url/database_path under different id. A
-    // team can legitimately mount the same remote brain under two aliases,
-    // so this is NOT a hard block (Codex finding #9 correction).
-    const urlDupe = file.mounts.find(m =>
-      (parsed.database_url && m.database_url === parsed.database_url) ||
-      (parsed.database_path && m.database_path === parsed.database_path),
+  // Soft warning: same database_url/database_path under different id. A
+  // team can legitimately mount the same remote brain under two aliases,
+  // so this is NOT a hard block (Codex finding #9 correction).
+  const urlDupe = file.mounts.find(m =>
+    (parsed.database_url && m.database_url === parsed.database_url) ||
+    (parsed.database_path && m.database_path === parsed.database_path),
+  );
+  if (urlDupe) {
+    process.stderr.write(
+      `WARN: mount "${parsed.id}" shares database with "${urlDupe.id}". ` +
+      `This is usually a mistake but is allowed for intentional aliasing.\n`,
     );
-    if (urlDupe) {
-      process.stderr.write(
-        `WARN: mount "${parsed.id}" shares database with "${urlDupe.id}". ` +
-        `This is usually a mistake but is allowed for intentional aliasing.\n`,
-      );
-    }
+  }
 
-    const entry: MountEntry = {
-      id: parsed.id,
-      alias: parsed.alias,
-      path: parsed.path,
-      engine: parsed.engine,
-      database_url: parsed.database_url,
-      database_path: parsed.database_path,
-      enabled: true,
-    };
-    file.mounts.push(entry);
-    writeMountsFile(file);
-  });
+  const entry: MountEntry = {
+    id: parsed.id,
+    alias: parsed.alias,
+    path: parsed.path,
+    engine: parsed.engine,
+    database_url: parsed.database_url,
+    database_path: parsed.database_path,
+    enabled: true,
+  };
+  file.mounts.push(entry);
+  writeMountsFile(file);
 
   process.stdout.write(
     `Mount "${parsed.id}" added → ${parsed.path}\n` +
@@ -318,13 +274,6 @@ function runRemove(args: string[]): void {
       `Run 'gbrain mounts list' to see registered mounts`,
     );
   }
-  if (args.length > 1) {
-    throw new GBrainError(
-      `Unexpected arguments: ${args.slice(1).join(' ')}`,
-      'gbrain mounts remove <id>',
-      'Pass exactly one mount id',
-    );
-  }
   const id = args[0];
   if (id === HOST_BRAIN_ID) {
     throw new GBrainError(
@@ -334,27 +283,24 @@ function runRemove(args: string[]): void {
     );
   }
 
-  const remainingMounts = withMountsFileLock(() => {
-    const file = readMountsFile();
-    const before = file.mounts.length;
-    file.mounts = file.mounts.filter(m => m.id !== id);
-    if (file.mounts.length === before) {
-      throw new GBrainError(
-        `Mount "${id}" not found`,
-        `No mount with id "${id}" is registered`,
-        `Run 'gbrain mounts list' to see registered mounts`,
-      );
-    }
+  const file = readMountsFile();
+  const before = file.mounts.length;
+  file.mounts = file.mounts.filter(m => m.id !== id);
+  if (file.mounts.length === before) {
+    throw new GBrainError(
+      `Mount "${id}" not found`,
+      `No mount with id "${id}" is registered`,
+      `Run 'gbrain mounts list' to see registered mounts`,
+    );
+  }
 
-    writeMountsFile(file);
-    return file.mounts.length;
-  });
+  writeMountsFile(file);
   process.stdout.write(`Mount "${id}" removed from mounts.json\n`);
 
   // If removing the last mount, clear the cache entirely; otherwise
   // rewrite with the remaining mounts so the aggregated resolver doesn't
   // reference stale entries.
-  if (remainingMounts === 0) {
+  if (file.mounts.length === 0) {
     try { clearMountsCache(); } catch { /* best effort */ }
   } else {
     refreshMountsCache();
@@ -432,13 +378,85 @@ export async function runMounts(args: string[]): Promise<void> {
     case 'rm':
       runRemove(rest);
       return;
+    case 'enable':
+      runSetMountFlag(rest, 'enabled', true, 'enable');
+      return;
+    case 'disable':
+      runSetMountFlag(rest, 'enabled', false, 'disable');
+      return;
+    case 'trust-frontmatter':
+      runSetMountFlag(rest, 'trust_frontmatter_overrides', true, 'trust-frontmatter');
+      return;
+    case 'untrust-frontmatter':
+      runSetMountFlag(rest, 'trust_frontmatter_overrides', false, 'untrust-frontmatter');
+      return;
     default:
       throw new GBrainError(
         `Unknown subcommand: gbrain mounts ${sub}`,
-        `Supported: add, list, remove`,
+        `Supported: add, list, remove, enable, disable, trust-frontmatter, untrust-frontmatter`,
         `Run 'gbrain mounts --help' for usage`,
       );
   }
+}
+
+/**
+ * Shared writer for boolean-flag verbs (enable/disable/trust-frontmatter/
+ * untrust-frontmatter). v0.40.3.0 D4 picked separate verbs over a single
+ * `set <flag> <value>` mutator because validation actually matters per-flag
+ * (e.g., trust_frontmatter_overrides is security-relevant; future flags may
+ * need bespoke prompts).
+ *
+ * Trust→untrust→trust cycle preserves other fields (test pinned).
+ */
+function runSetMountFlag(
+  args: string[],
+  field: 'enabled' | 'trust_frontmatter_overrides',
+  value: boolean,
+  verb: string,
+): void {
+  if (args.length === 0) {
+    throw new GBrainError(
+      `Missing mount id`,
+      `gbrain mounts ${verb} <id>`,
+      `Run 'gbrain mounts list' to see registered mounts`,
+    );
+  }
+  const id = args[0];
+  if (id === HOST_BRAIN_ID) {
+    throw new GBrainError(
+      `Cannot ${verb} host brain`,
+      `"host" is not a mount — it is the default brain from ~/.gbrain/config.json`,
+      verb === 'trust-frontmatter' || verb === 'untrust-frontmatter'
+        ? `Host frontmatter is always trusted; this verb applies only to mounted brains.`
+        : `Use 'gbrain init' to reconfigure the host brain`,
+    );
+  }
+
+  const file = readMountsFile();
+  const mount = file.mounts.find((m) => m.id === id);
+  if (!mount) {
+    throw new GBrainError(
+      `Mount "${id}" not found`,
+      `No mount with id "${id}" is registered`,
+      `Run 'gbrain mounts list' to see registered mounts`,
+    );
+  }
+
+  // No-op check so the cache refresh + write don't churn when state matches.
+  // For `enabled` field, default is true when unset — coerce for comparison.
+  const currentValue = field === 'enabled' ? (mount.enabled ?? true) : (mount[field] ?? false);
+  if (currentValue === value) {
+    process.stdout.write(`Mount "${id}" already has ${field}=${value}; no change\n`);
+    return;
+  }
+
+  mount[field] = value;
+  writeMountsFile(file);
+  process.stdout.write(`Mount "${id}" ${verb}d (${field}=${value})\n`);
+
+  // Refresh the aggregated mounts cache so host agents see the new flag
+  // immediately. Same best-effort pattern as runRemove.
+  refreshMountsCache();
 }
 
 function printHelp(): void {
@@ -450,21 +468,31 @@ USAGE
   gbrain mounts remove <id>
 
 EXAMPLES
-  # Mount a team-published team-media gbrain (PGLite)
-  git clone https://example.com/team-media-gbrain ~/gbrains/team-media
-  gbrain mounts add team-media --path ~/gbrains/team-media --engine pglite \\
-    --db-path ~/gbrains/team-media/.pglite
+  # Mount a team-published yc-media gbrain (PGLite)
+  git clone https://github.com/yc-team/yc-media-gbrain ~/gbrains/yc-media
+  gbrain mounts add yc-media --path ~/gbrains/yc-media --engine pglite \\
+    --db-path ~/gbrains/yc-media/.pglite
 
   # List registered mounts
   gbrain mounts list
 
   # Remove a mount
-  gbrain mounts remove team-media
+  gbrain mounts remove yc-media
+
+v0.40.3.0 ADDITIONS
+  gbrain mounts enable <id>             — re-enable a disabled mount
+  gbrain mounts disable <id>            — toggle a mount off without removing
+  gbrain mounts trust-frontmatter <id>  — let this mount's per-page
+                                          contextual_retrieval_mode
+                                          frontmatter override the source
+                                          default. Off by default for
+                                          mounted brains; host is always
+                                          trusted.
+  gbrain mounts untrust-frontmatter <id> — clear the trust flag.
 
 NOT YET IMPLEMENTED (coming in PR 1/2)
   gbrain mounts pin <id> <sha>          — freeze a mount at a tested version
   gbrain mounts sync [--id <id>]        — git pull + refresh attestation
-  gbrain mounts enable|disable <id>     — toggle without removing
   gbrain mounts add --mcp-url <url>     — HTTP MCP transport + OAuth
 `);
 }
@@ -475,6 +503,5 @@ export const __testing = {
   redactUrl,
   readMountsFile,
   writeMountsFile,
-  withMountsFileLock,
   getMountsPath,
 };

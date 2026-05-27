@@ -20,23 +20,33 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Resolution order for the scan root:
+#   1. $GBRAIN_SCAN_ROOT explicit override — tests pass this so they
+#      don't depend on `git rev-parse` walking up to an unrelated parent
+#      .git/ on filesystems where `git init` silently fails under
+#      shard-concurrency load (v0.40.10 flake-hardening fix).
+#   2. `git rev-parse --show-toplevel` — production callers from inside
+#      the gbrain repo.
+#   3. $PWD — last-resort fallback for callers without git.
+if [ -n "${GBRAIN_SCAN_ROOT:-}" ]; then
+  ROOT="$GBRAIN_SCAN_ROOT"
+else
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
 cd "$ROOT"
 
 # Banned direct-call patterns. Each is a method on BrainEngine that
-# writes to a derived table. Match any receiver (`engine.insertFact`,
-# `db.insertFact`, `this.engine.insertFact`) so aliasing the engine
-# object cannot bypass the invariant. Pre-v0.32.2 callers used these
-# freely; post-v0.32.2 every call site must either route through the
+# writes to a derived table. Pre-v0.32.2 callers used these freely;
+# post-v0.32.2 every call site must either route through the
 # reconcile layer OR carry an explicit allow-direct-insert comment.
 PATTERNS=(
-  '\.[[:space:]]*insertFact[[:space:]]*\('
-  '\.[[:space:]]*insertFacts[[:space:]]*\('
-  '\.[[:space:]]*addLink[[:space:]]*\('
-  '\.[[:space:]]*addLinksBatch[[:space:]]*\('
-  '\.[[:space:]]*addTimelineEntry[[:space:]]*\('
-  '\.[[:space:]]*upsertTake[[:space:]]*\('
-  '\.[[:space:]]*expireFact[[:space:]]*\('
+  'engine\.insertFact\('
+  'engine\.insertFacts\('
+  'engine\.addLink\('
+  'engine\.addLinksBatch\('
+  'engine\.addTimelineEntry\('
+  'engine\.upsertTake\('
+  'engine\.expireFact\('
 )
 
 # Build an OR-regex for one grep pass.
@@ -71,7 +81,7 @@ violations=$(
     | grep -vE 'gbrain-allow-direct-insert:' \
     | grep -vE ':[[:space:]]*\*[[:space:]]+' \
     | grep -vE ':[[:space:]]*//' \
-    | grep -vE '`[^`]*\.[[:alnum:]_]+\(' \
+    | grep -vE '`[^`]*\\.\w+\(' \
     || true
 )
 

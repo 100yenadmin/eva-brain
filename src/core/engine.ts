@@ -15,6 +15,7 @@ import type {
   SalienceOpts, SalienceResult, AnomaliesOpts, AnomalyResult,
   EmotionalWeightInputRow, EmotionalWeightWriteRow,
   DomainBankSampleOpts, CorpusSampleOpts, DomainBankRow,
+  AdjacencyRow,
 } from './types.ts';
 
 /**
@@ -125,6 +126,15 @@ export interface LinkBatchInput {
   from_source_id?: string;
   to_source_id?: string;
   origin_source_id?: string;
+  /**
+   * v0.41.18.0 (A10, codex finding #12): distinguishes "plain body mention"
+   * (NULL or 'plain') from "verb-pattern-derived typed NER" ('typed_ner')
+   * within link_source='mentions'. Backed by v98 schema column. NOT in
+   * the links UNIQUE constraint — same (from, to, type, source, origin)
+   * tuple with different link_kind collides DO NOTHING. Default NULL =
+   * legacy / unknown / pre-v98 semantics.
+   */
+  link_kind?: string;
 }
 
 /** Input row for addTimelineEntriesBatch. Optional fields default to '' (matches NOT NULL DDL). */
@@ -164,7 +174,19 @@ export interface TimelineBatchInput {
  * transaction itself is waiting to write.
  */
 export interface ReservedConnection {
-  executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  /**
+   * v0.41.18.0 (A20, codex #7): optional 3rd-arg `opts.signal` lets callers
+   * actually cancel a running query. Init nudge (3s wallclock cap) wires an
+   * AbortController whose timer fires at 3s; queries that haven't returned
+   * by then get cancelled (Postgres: query.cancel(); PGLite: in-process,
+   * Promise.race against signal-rejection — documented gap because PGLite
+   * has no kernel-level cancellation).
+   */
+  executeRaw<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<T[]>;
 }
 
 /**
@@ -241,8 +263,6 @@ export interface Take {
 export interface TakesListOpts {
   page_id?: number;
   page_slug?: string;       // resolved via JOIN
-  /** Scope page joins to one source. Omitted means all sources for listing/search paths that explicitly opt into this filter. */
-  sourceId?: string;
   holder?: string;
   kind?: TakeKind;
   active?: boolean;         // default true (only active rows)
@@ -614,9 +634,6 @@ export interface BrainEngine {
    * filter contract). Pass `opts.includeDeleted: true` to surface them with
    * `deleted_at` populated — used by `gbrain pages purge-deleted` listing,
    * by `restore_page` flow, and by operator diagnostics.
-   * Source behavior: omitted `opts.sourceId` targets the historical
-   * `default` source. Federated or multi-source callers must pass an explicit
-   * source for non-default rows.
    */
   getPage(slug: string, opts?: GetPageOpts): Promise<Page | null>;
   /**
@@ -627,6 +644,35 @@ export interface BrainEngine {
    * duplicate at (default, slug). Multi-source brains MUST pass sourceId.
    */
   putPage(slug: string, page: PageInput, opts?: { sourceId?: string }): Promise<Page>;
+  /**
+   * v0.41.13 (#1309) — identity-based dedup pre-check for the import pipeline.
+   *
+   * Returns the first matching `{slug, id}` whose `(source_id, …)` matches
+   * the supplied identity signal, OR null when nothing matches.
+   *
+   * Identity precedence (a row matches if EITHER fires):
+   *   - `content_hash = $hash` AND `deleted_at IS NULL`
+   *   - `frontmatter->>'id' = $frontmatterId` AND `$frontmatterId IS NOT NULL`
+   *     AND `deleted_at IS NULL`
+   *
+   * Background: the overlapping-ingest-roots bug class (infiniteGameExp,
+   * issue #1309) created two pages per file when a user ran `gbrain import
+   * /vault/Subdir/` then `gbrain import /vault/` — the slug-shape changed
+   * but the content + external ID were identical. Pre-fix, the import
+   * pipeline dedup-checked by `getPage(slug)` alone and missed the
+   * cross-slug duplicate. This method gives the importer a deterministic
+   * way to identify true duplicates BEFORE insert.
+   *
+   * Per codex review: the optional `?` shape lets existing test doubles
+   * compile without changes. Callers must defensively check
+   * `engine.findDuplicatePage?.(...)` and fall through on undefined.
+   * `deleted_at IS NULL` is deliberate — a soft-deleted page should NOT
+   * block a legitimate re-import under a new slug.
+   */
+  findDuplicatePage?(
+    sourceId: string,
+    opts: { hash: string; frontmatterId?: string | null },
+  ): Promise<{ slug: string; id: number } | null>;
   /**
    * Hard-delete a page row. Cascades to content_chunks, page_links,
    * chunk_relations via existing FK ON DELETE CASCADE.
@@ -639,7 +685,7 @@ export interface BrainEngine {
   /**
    * v0.18.0+ multi-source: `opts.sourceId` scopes the DELETE so a source-A
    * delete doesn't hard-delete the same-slug pages in sources B/C/D. Without
-   * it, the operation targets the historical `default` source only.
+   * it, the bare DELETE matches every row with that slug across all sources.
    * Cascades through content_chunks / page_links / chunk_relations via FKs.
    */
   deletePage(slug: string, opts?: { sourceId?: string }): Promise<void>;
@@ -648,14 +694,12 @@ export interface BrainEngine {
    * was soft-deleted, null if no row matched (already soft-deleted OR not found).
    * Idempotent-as-null. The page stays in the DB and cascade rows (chunks,
    * links) stay intact; the autopilot purge phase hard-deletes after 72h.
-   * Omitted `opts.sourceId` targets `default`, not every same-slug source row.
    */
   softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null>;
   /**
    * v0.26.5 — clear `deleted_at` on a soft-deleted page. Returns true iff a
    * row was restored. False if the slug is unknown OR the page is not
    * currently soft-deleted (idempotent-as-false).
-   * Omitted `opts.sourceId` targets `default`, not every same-slug source row.
    */
   restorePage(slug: string, opts?: { sourceId?: string }): Promise<boolean>;
   /**
@@ -669,7 +713,20 @@ export interface BrainEngine {
    * `filters.includeDeleted: true` to surface them.
    */
   listPages(filters?: PageFilters): Promise<Page[]>;
-  resolveSlugs(partial: string): Promise<string[]>;
+  /**
+   * Fuzzy slug resolver.
+   *
+   * v0.41.13 (#1436): `opts.sourceId` scopes the search to a single source;
+   * `opts.sourceIds` to an array (federated_read OAuth tier). Pre-fix the
+   * resolver was unscoped, so MCP `get_page` with `fuzzy: true` would
+   * return candidates from sources the caller couldn't actually access.
+   * Source-bleed via fuzzy resolution was the bug class infiniteGameExp
+   * reported as #1436. When neither opt is set, the original unscoped
+   * behavior is preserved for back-compat with internal callers (the
+   * `gbrain query --resolve` CLI path, etc.). Field names match the
+   * `sourceScopeOpts(ctx)` helper output so callers can spread directly.
+   */
+  resolveSlugs(partial: string, opts?: { sourceId?: string; sourceIds?: string[] }): Promise<string[]>;
   /**
    * Returns the slug of every page in the brain. Used by batch commands as a
    * mutation-immune iteration source (alternative to listPages OFFSET pagination,
@@ -829,6 +886,16 @@ export interface BrainEngine {
     afterPageId?: number;
     afterChunkIndex?: number;
     sourceId?: string;
+    // v0.41.18.0 (A13, codex #9): pagination order. Default 'page_id'
+    // (legacy stable cursor). 'updated_desc' joins pages and orders by
+    // p.updated_at DESC NULLS LAST, p.id, cc.chunk_index — backed by
+    // idx_pages_updated_at_desc + content_chunks_stale_idx partial.
+    orderBy?: 'page_id' | 'updated_desc';
+    // For 'updated_desc' cursor: previous row's updated_at, page_id, chunk_index.
+    // ISO-8601 string for cross-engine compatibility (postgres.js + PGLite
+    // both round-trip TIMESTAMPTZ as Date | string; ISO string is the
+    // common denominator on the wire).
+    afterUpdatedAt?: string | null;
   }): Promise<StaleChunkRow[]>;
   /**
    * Delete every chunk for a page. Internal page-id lookup is sourceId-scoped
@@ -945,6 +1012,32 @@ export interface BrainEngine {
    */
   getBacklinkCounts(slugs: string[]): Promise<Map<string, number>>;
   /**
+   * v0.40.4 — for a list of page_ids, return adjacency aggregates
+   * restricted to the subgraph induced by them. Returns ALL pages with
+   * `hits >= 1` (callers apply their own threshold). Empty input → empty
+   * Map, no SQL.
+   *
+   * Returned shape per page (AdjacencyRow):
+   *   - `hits`: distinct from_page_id count, in-set
+   *   - `cross_source_hits`: distinct OTHER source_ids count (excluding
+   *     target's own source), in-set
+   *
+   * SOURCE-SCOPE CONTRACT: pageIds MUST already be source-scoped by the
+   * caller. This method does NOT filter by source_id. Adjacency is
+   * page-id keyed and the in-set restriction makes cross-source leakage
+   * impossible BY CONSTRUCTION (a leaked-in page_id from another source
+   * would have to also appear in the caller's input set, which the
+   * caller is responsible for preventing). The only consumer in v0.40.4
+   * is hybridSearch via runPostFusionStages, which is source-scoped
+   * upstream. Same trust posture as `cosineReScore`'s chunk_id handling.
+   *
+   * Known limitation: cross_source_hits doesn't distinguish "genuinely
+   * linked from another team" from "mirrored imports from another
+   * source" (codex outside-voice #15). T-todo-4 captures the v0.41+
+   * sync-topology-aware refinement.
+   */
+  getAdjacencyBoosts(pageIds: number[]): Promise<Map<number, AdjacencyRow>>;
+  /**
    * v0.27.0: for a list of slugs, return their updated_at timestamps (or created_at fallback).
    * Used by hybrid search recency boost. Single SQL query, not N+1.
    * Slugs with no timestamp get no entry in the map.
@@ -1023,7 +1116,8 @@ export interface BrainEngine {
   // Raw data
   /**
    * v0.31.8 (D21): `opts.sourceId` source-scopes the page-id lookup. When
-   * omitted, the write targets the historical `default` source.
+   * omitted, the write targets the bare slug (pre-v0.31.8 behavior); the
+   * Postgres 21000 hazard for multi-source brains exists on this path.
    * Multi-source callers MUST pass sourceId to land on the intended row.
    */
   putRawData(slug: string, source: string, data: object, opts?: { sourceId?: string }): Promise<void>;
@@ -1479,6 +1573,30 @@ export interface BrainEngine {
   ): Promise<void>;
 
   /**
+   * v0.40.3.0 — narrow UPDATE that stamps the two CR-state columns
+   * (`contextual_retrieval_mode`, `corpus_generation`) plus
+   * `updated_at = now()` and nothing else.
+   *
+   * Used by `src/core/contextual-retrieval-service.ts:reembedPageWithContextualRetrieval`
+   * at the end of its PHASE 2 transaction. Why narrow instead of routing
+   * through `putPage`: stamping the CR state alone shouldn't trigger the
+   * full page-version snapshot machinery (createVersion fires on every
+   * putPage with an existing row, which would bloat page_versions on every
+   * tier upgrade).
+   *
+   * Skips soft-deleted rows (deleted_at filter). Idempotent — same args
+   * twice produces the same row state. Both columns are NULL-tolerant
+   * (callers pass NULL for `corpusGeneration` only on the 'none' tier
+   * path; 'title' and 'per_chunk_synopsis' always supply a hash).
+   */
+  updatePageContextualRetrievalState(
+    slug: string,
+    sourceId: string,
+    mode: string,
+    corpusGeneration: string | null,
+  ): Promise<void>;
+
+  /**
    * v0.35.5 — lossless DB-side migration of fact rows from one slug to
    * another within a single source. UPDATEs `entity_slug` and
    * `source_markdown_slug` on every active fact row whose
@@ -1519,7 +1637,19 @@ export interface BrainEngine {
   getChunksWithEmbeddings(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]>;
 
   // Raw SQL (for Minions job queue and other internal modules)
-  executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  /**
+   * v0.41.18.0 (A20, codex #7): optional 3rd-arg `opts.signal` lets callers
+   * actually cancel a running query. Init nudge (3s wallclock cap) wires an
+   * AbortController whose timer fires at 3s; queries that haven't returned
+   * by then get cancelled (Postgres: query.cancel(); PGLite: in-process,
+   * Promise.race against signal-rejection — documented gap because PGLite
+   * has no kernel-level cancellation).
+   */
+  executeRaw<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<T[]>;
 
   // ============================================================
   // v0.20.0 Cathedral II: code edges (Layer 5 populates, Layer 7 consumes)
@@ -1589,8 +1719,6 @@ export interface BrainEngine {
   logEvalCandidate(input: EvalCandidateInput): Promise<number>;
   /** Read candidates by time window / limit / tool filter. Used by `gbrain eval export`. */
   listEvalCandidates(filter?: { since?: Date; limit?: number; tool?: 'query' | 'search' }): Promise<EvalCandidate[]>;
-  /** Count candidates created before `date` for `gbrain eval prune --dry-run`. */
-  countEvalCandidatesBefore(date: Date): Promise<number>;
   /** Delete candidates created before `date`. Returns rows deleted. Used by `gbrain eval prune`. */
   deleteEvalCandidatesBefore(date: Date): Promise<number>;
   /** Log a capture failure so `gbrain doctor` can surface drops cross-process. Best-effort; symmetric with logEvalCandidate (failure-of-failure is lost). */

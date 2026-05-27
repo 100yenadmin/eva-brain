@@ -8,9 +8,8 @@
  *   Lane A: ConnectionManager constructed; doctor diagnostic shape
  *           (single-mode for non-Supabase URL).
  *   Lane B: Migration runner applies pending migrations cleanly via the
- *           new retry wrapper. The upstream v44
- *           emotional_weight_recomputed_at ALTER lands on PGLite through
- *           Eva's next pending migration.
+ *           new retry wrapper. v44 (emotional_weight_recomputed_at)
+ *           lands on PGLite.
  *   Lane C: Backfill registry resolves all 3 entries; running
  *           emotional_weight backfill on an empty brain returns
  *           examined=0 (no work).
@@ -68,7 +67,7 @@ describe('Lane B — migration runner applies cleanly through retry wrapper', ()
     expect(parseInt(ver || '1', 10)).toBe(LATEST_VERSION);
   });
 
-  test('emotional_weight_recomputed_at column exists on pages', async () => {
+  test('v44 emotional_weight_recomputed_at column exists on pages', async () => {
     // PGLite supports information_schema.columns. ALTER TABLE ADD COLUMN
     // is idempotent, so v44 should have applied even on a freshly-created
     // PGLite brain.

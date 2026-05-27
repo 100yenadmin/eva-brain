@@ -19,7 +19,6 @@ let lintCalls: Array<{ target: string; fix: boolean; dryRun: boolean | undefined
 let backlinksCalls: Array<{ action: string; dir: string; dryRun: boolean | undefined }> = [];
 let syncCalls: Array<{ dryRun: boolean | undefined; noPull: boolean | undefined; noExtract: boolean | undefined; sourceId: string | undefined }> = [];
 let extractCalls: Array<{ mode: string; dir: string; slugs: string[] | undefined }> = [];
-let extractFactsCalls: Array<{ dryRun: boolean | undefined; slugs: string[] | undefined; sourceId: string | undefined }> = [];
 let embedCalls: Array<{ stale: boolean | undefined; dryRun: boolean | undefined }> = [];
 let orphansCalls: number = 0;
 
@@ -79,22 +78,6 @@ mock.module('../../src/commands/extract.ts', () => ({
   walkMarkdownFiles: () => [],
   extractMarkdownLinks: () => [],
   resolveSlug: () => null,
-}));
-
-// Mock extract_facts
-mock.module('../../src/core/cycle/extract-facts.ts', () => ({
-  runExtractFacts: async (_engine: any, opts: any) => {
-    extractFactsCalls.push({ dryRun: opts.dryRun, slugs: opts.slugs, sourceId: opts.sourceId });
-    return {
-      pagesScanned: opts.slugs?.length ?? 0,
-      pagesWithFacts: 0,
-      factsInserted: 0,
-      factsDeleted: 0,
-      legacyRowsPending: 0,
-      guardTriggered: false,
-      warnings: [],
-    };
-  },
 }));
 
 // Mock embed
@@ -163,7 +146,6 @@ beforeEach(() => {
   backlinksCalls = [];
   syncCalls = [];
   extractCalls = [];
-  extractFactsCalls = [];
   embedCalls = [];
   orphansCalls = 0;
 });
@@ -408,7 +390,9 @@ describe('runCycle — yieldBetweenPhases hook', () => {
     // v0.33.3: 13 phases (added `resolve_symbol_edges` between extract_facts and patterns) → 13 yield calls.
     // v0.36.1.0: 16 phases (added `propose_takes`, `grade_takes`, `calibration_profile` between consolidate and embed).
     // v0.39.0.0: 17 phases (added `schema-suggest` between orphans and purge — T12 schema cathedral).
-    expect(hookCalls).toBe(17);
+    // v0.41.2.0: 19 phases (added `extract_atoms` after extract_facts + `synthesize_concepts` after patterns).
+    // v0.41.11.0: 20 phases (added `conversation_facts_backfill` between consolidate and propose_takes).
+    expect(hookCalls).toBe(20);
   });
 
   test('hook exceptions do not abort the cycle', async () => {
@@ -421,7 +405,8 @@ describe('runCycle — yieldBetweenPhases hook', () => {
     // v0.33.3: 13 phases (v0.32.2's 12 + resolve_symbol_edges).
     // v0.36.1.0: 16 phases (Hindsight calibration wave adds propose_takes, grade_takes, calibration_profile).
     // v0.39.0.0: 17 phases (T12 schema-suggest phase between orphans and purge).
-    expect(report.phases.length).toBe(17);
+    // v0.41.11.0: 20 phases (+extract_atoms, +synthesize_concepts, +conversation_facts_backfill).
+    expect(report.phases.length).toBe(20);
   });
 });
 
@@ -526,20 +511,20 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
   });
 
   test('sources table missing (very old brain) → catch returns undefined, sync still runs', async () => {
-    // Simulate an old brain without sources without creating a second
-    // PGLite WASM runtime inside the already-large parallel shard.
-    const originalExecuteRaw = sharedEngine.executeRaw.bind(sharedEngine);
-    sharedEngine.executeRaw = (async (sql: string, params?: unknown[]) => {
-      if (sql.includes('FROM sources')) {
-        throw new Error('relation "sources" does not exist');
-      }
-      return originalExecuteRaw(sql, params);
-    }) as typeof sharedEngine.executeRaw;
+    // CRITICAL: do NOT DROP TABLE on the shared engine. initSchema() only
+    // re-runs PENDING migrations; once schema_version is at latest, the
+    // v20 migration that creates `sources` will not re-execute. Use a
+    // fresh one-shot engine so the shared engine isn't degraded for
+    // every later test in this file.
+    const fresh = new PGLiteEngine();
+    await fresh.connect({});
+    await fresh.initSchema();
+    await (fresh as any).db.query('DROP TABLE IF EXISTS sources CASCADE');
     try {
-      await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-d' });
+      await runCycle(fresh, { brainDir: '/tmp/brain-475-d' });
       expect(syncCalls.at(-1)?.sourceId).toBeUndefined();
     } finally {
-      sharedEngine.executeRaw = originalExecuteRaw as typeof sharedEngine.executeRaw;
+      await fresh.disconnect();
     }
   });
 
@@ -570,25 +555,5 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
     );
     await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-f' });
     expect(syncCalls.at(-1)?.sourceId).toBe('');
-  });
-
-  test('sync-resolved source id is forwarded into extract_facts', async () => {
-    await (sharedEngine as any).db.query(
-      `INSERT INTO sources (id, name, local_path) VALUES ('work', 'work', '/tmp/brain-475-g')`,
-    );
-    await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-g', phases: ['sync', 'extract_facts'] });
-    expect(syncCalls.at(-1)?.sourceId).toBe('work');
-    expect(extractFactsCalls.at(-1)?.sourceId).toBe('work');
-    expect(extractFactsCalls.at(-1)?.slugs).toEqual(['a', 'b']);
-  });
-
-  test('extract_facts resolves source id even when sync phase is not selected', async () => {
-    await (sharedEngine as any).db.query(
-      `INSERT INTO sources (id, name, local_path) VALUES ('facts-only', 'facts-only', '/tmp/brain-475-h')`,
-    );
-    await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-h', phases: ['extract_facts'] });
-    expect(syncCalls.length).toBe(0);
-    expect(extractFactsCalls.at(-1)?.sourceId).toBe('facts-only');
-    expect(extractFactsCalls.at(-1)?.slugs).toBeUndefined();
   });
 });

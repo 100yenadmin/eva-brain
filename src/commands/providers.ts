@@ -8,12 +8,9 @@
 import { listRecipes, getRecipe } from '../core/ai/recipes/index.ts';
 import { configureGateway, embedOne, isAvailable as gwIsAvailable, chat as gwChat } from '../core/ai/gateway.ts';
 import { probeOllama, probeLMStudio } from '../core/ai/probes.ts';
-import { loadConfig, loadGbrainEnv } from '../core/config.ts';
+import { loadConfig } from '../core/config.ts';
 import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
 import type { Recipe } from '../core/ai/types.ts';
-import type { GBrainConfig } from '../core/config.ts';
-import { resolveProviderAuth, redactAuthResolution } from '../core/ai/auth.ts';
-import { safePublicModelLabel, sanitizeLogText } from '../core/log-safety.ts';
 
 const SCHEMA_VERSION = 1;
 
@@ -34,40 +31,20 @@ interface ProviderOption {
   cons: string[];
 }
 
-function configureFromEnv(): { env: Record<string, string | undefined>; config: Partial<GBrainConfig> } {
-  const env = loadGbrainEnv();
-  const config = loadConfig(env) ?? {};
-  configureGateway(buildProviderGatewayConfig(config, env));
-  return { env, config };
-}
-
-function buildProviderGatewayConfig(config: Partial<GBrainConfig>, env: Record<string, string | undefined>) {
-  const envFromConfig: Record<string, string> = {};
-  if (config.openai_api_key) envFromConfig.OPENAI_API_KEY = config.openai_api_key;
-  if (config.anthropic_api_key) envFromConfig.ANTHROPIC_API_KEY = config.anthropic_api_key;
-  if (config.voyage_api_key) envFromConfig.VOYAGE_API_KEY = config.voyage_api_key;
-  if (config.zeroentropy_api_key) envFromConfig.ZEROENTROPY_API_KEY = config.zeroentropy_api_key;
-
-  const envBaseUrls: Record<string, string> = {};
-  if (env.LLAMA_SERVER_BASE_URL) envBaseUrls['llama-server'] = env.LLAMA_SERVER_BASE_URL;
-  if (env.OLLAMA_BASE_URL) envBaseUrls['ollama'] = env.OLLAMA_BASE_URL;
-  if (env.LMSTUDIO_BASE_URL) envBaseUrls['lmstudio'] = env.LMSTUDIO_BASE_URL;
-  if (env.LITELLM_BASE_URL) envBaseUrls['litellm'] = env.LITELLM_BASE_URL;
-  if (env.OPENROUTER_BASE_URL) envBaseUrls['openrouter'] = env.OPENROUTER_BASE_URL;
-
-  return {
+function configureFromEnv(): void {
+  const config = loadConfig();
+  configureGateway({
     embedding_model: config?.embedding_model,
     embedding_dimensions: config?.embedding_dimensions,
     expansion_model: config?.expansion_model,
     chat_model: config?.chat_model,
     chat_fallback_chain: config?.chat_fallback_chain,
-    base_urls: { ...envBaseUrls, ...(config?.provider_base_urls ?? {}) },
-    provider_auth: config?.provider_auth,
-    env: { ...envFromConfig, ...env },
-  };
+    base_urls: config?.provider_base_urls,
+    env: { ...process.env },
+  });
 }
 
-export function envReady(recipe: Recipe, env: Record<string, string | undefined> = loadGbrainEnv()): boolean {
+export function envReady(recipe: Recipe, env: NodeJS.ProcessEnv = process.env): boolean {
   const required = recipe.auth_env?.required ?? [];
   if (required.length === 0) return true; // e.g. local Ollama
   return required.every(k => !!env[k]);
@@ -81,10 +58,18 @@ export function envReady(recipe: Recipe, env: Record<string, string | undefined>
  * Returns the multi-line string (joined with `\n`). Callers handle stdout vs.
  * stderr routing themselves.
  */
-export function formatRecipeTable(recipes: Recipe[], env: Record<string, string | undefined> = loadGbrainEnv()): string {
+export function formatRecipeTable(recipes: Recipe[], env: NodeJS.ProcessEnv = process.env): string {
   const rows: string[] = [];
-  rows.push('PROVIDER'.padEnd(14) + 'TIER'.padEnd(18) + 'EMBED'.padEnd(8) + 'EXPAND'.padEnd(8) + 'CHAT'.padEnd(8) + 'STATUS');
-  rows.push('-'.repeat(78));
+  // Dynamic column width: longest recipe id + 1 space, floor at 14 (the
+  // historical default). v0.40.6.1 introduced `llama-server-reranker` (21 chars)
+  // which overflowed the static 14-char column and made the row start with the
+  // tier name (no space delimiter), breaking `each recipe appears at most once`
+  // in test/providers.test.ts. Auto-widening keeps the contract — every row's
+  // id is followed by at least one space — without per-recipe column tuning.
+  const idCol = Math.max(14, ...recipes.map(r => r.id.length + 1));
+  const totalWidth = idCol + 18 + 8 + 8 + 8 + 16; // tier+embed+expand+chat+status
+  rows.push('PROVIDER'.padEnd(idCol) + 'TIER'.padEnd(18) + 'EMBED'.padEnd(8) + 'EXPAND'.padEnd(8) + 'CHAT'.padEnd(8) + 'STATUS');
+  rows.push('-'.repeat(totalWidth));
   for (const r of recipes) {
     const hasEmbed = !!r.touchpoints.embedding && (r.touchpoints.embedding.models.length > 0);
     const hasExpand = !!r.touchpoints.expansion;
@@ -92,7 +77,7 @@ export function formatRecipeTable(recipes: Recipe[], env: Record<string, string 
     const ready = envReady(r, env);
     const status = ready ? '✓ ready' : `✗ missing ${r.auth_env?.required?.[0] ?? 'setup'}`;
     rows.push(
-      r.id.padEnd(14) +
+      r.id.padEnd(idCol) +
       r.tier.padEnd(18) +
       (hasEmbed ? 'yes' : '—').padEnd(8) +
       (hasExpand ? 'yes' : '—').padEnd(8) +
@@ -104,7 +89,7 @@ export function formatRecipeTable(recipes: Recipe[], env: Record<string, string 
 }
 
 export async function runProviders(subcommand: string | undefined, args: string[]): Promise<void> {
-  const configured = configureFromEnv();
+  configureFromEnv();
 
   switch (subcommand) {
     case 'list':
@@ -114,7 +99,7 @@ export async function runProviders(subcommand: string | undefined, args: string[
     case 'env':
       return runEnv(args);
     case 'explain':
-      return runExplain(args, configured);
+      return runExplain(args);
     case undefined:
     case '--help':
     case '-h':
@@ -151,23 +136,15 @@ EXAMPLES
 }
 
 function runList(_args: string[]): void {
-  console.log(formatRecipeTable(listRecipes(), loadGbrainEnv()));
+  console.log(formatRecipeTable(listRecipes()));
 }
 
 async function runTest(args: string[]): Promise<void> {
   const modelIdx = args.indexOf('--model');
   const modelArg = modelIdx >= 0 ? args[modelIdx + 1] : undefined;
-  if (modelIdx >= 0 && (!modelArg || modelArg.startsWith('--'))) {
-    console.error('Missing value for --model');
-    process.exit(1);
-  }
 
   const tpIdx = args.indexOf('--touchpoint');
   const tpArg = (tpIdx >= 0 ? args[tpIdx + 1] : 'embedding') as TouchpointFilter;
-  if (tpIdx >= 0 && (!args[tpIdx + 1] || args[tpIdx + 1]!.startsWith('--'))) {
-    console.error('Missing value for --touchpoint');
-    process.exit(1);
-  }
 
   if (tpArg !== 'embedding' && tpArg !== 'chat') {
     console.error(`--touchpoint must be 'embedding' or 'chat' (got: ${tpArg}).`);
@@ -187,8 +164,7 @@ async function runTest(args: string[]): Promise<void> {
     // doesn't repeat the bug-reporter's "providers test ✓ but import still
     // broken" trap.
     try {
-      const env = loadGbrainEnv();
-      const cfg = loadConfig(env);
+      const cfg = loadConfig();
       const configuredModel = tpArg === 'embedding' ? cfg?.embedding_model : cfg?.chat_model;
       if (!configuredModel) {
         console.error(
@@ -206,20 +182,16 @@ async function runTest(args: string[]): Promise<void> {
 
     if (tpArg === 'embedding') {
       const dims = recipe?.touchpoints.embedding?.default_dims ?? 1536;
-      const env = loadGbrainEnv();
-      const cfg = loadConfig(env) ?? ({} as GBrainConfig);
-      configureGateway(buildProviderGatewayConfig({
-        ...cfg,
+      configureGateway({
         embedding_model: modelArg,
         embedding_dimensions: dims,
-      }, env));
+        env: { ...process.env },
+      });
     } else {
-      const env = loadGbrainEnv();
-      const cfg = loadConfig(env) ?? ({} as GBrainConfig);
-      configureGateway(buildProviderGatewayConfig({
-        ...cfg,
+      configureGateway({
         chat_model: modelArg,
-      }, env));
+        env: { ...process.env },
+      });
     }
     void modelId; // intentionally unused but preserved for readability
   }
@@ -242,21 +214,22 @@ async function runTest(args: string[]): Promise<void> {
         maxTokens: 16,
       });
       const ms = Date.now() - start;
-      const preview = sanitizeLogText(result.text || '<empty>').replace(/\s+/g, ' ').slice(0, 80);
-      console.log(`  ✓ ${ms}ms · model=${safePublicModelLabel(result.model)} · stop=${sanitizeLogText(result.stopReason)} · in=${result.usage.input_tokens}/out=${result.usage.output_tokens} · "${preview}"`);
+      const preview = (result.text || '<empty>').replace(/\s+/g, ' ').slice(0, 80);
+      console.log(`  ✓ ${ms}ms · model=${result.model} · stop=${result.stopReason} · in=${result.usage.input_tokens}/out=${result.usage.output_tokens} · "${preview}"`);
     }
     console.log('\nAll probes green.');
   } catch (e) {
     const ms = Date.now() - start;
     if (e instanceof AIConfigError) {
-      console.error(`  ✗ config error (${ms}ms). Run \`gbrain providers explain\` and check the selected provider credentials.`);
+      console.error(`  ✗ config error (${ms}ms): ${e.message}`);
+      if (e.fix) console.error(`    Fix: ${e.fix}`);
       process.exit(2);
     } else if (e instanceof AITransientError) {
-      console.error(`  ✗ transient provider error (${ms}ms).`);
+      console.error(`  ✗ transient error (${ms}ms): ${e.message}`);
       console.error(`    Retry after a moment.`);
       process.exit(3);
     } else {
-      console.error(`  ✗ unknown provider error (${ms}ms).`);
+      console.error(`  ✗ unknown error (${ms}ms): ${e instanceof Error ? e.message : e}`);
       process.exit(4);
     }
   }
@@ -277,11 +250,10 @@ function runEnv(args: string[]): void {
   console.log('');
   const required = recipe.auth_env?.required ?? [];
   const optional = recipe.auth_env?.optional ?? [];
-  const env = loadGbrainEnv();
   if (required.length > 0) {
     console.log('Required:');
     for (const k of required) {
-      const set = !!env[k];
+      const set = !!process.env[k];
       console.log(`  ${k.padEnd(32)} ${set ? '✓ set' : '✗ not set'}`);
     }
   } else {
@@ -290,7 +262,7 @@ function runEnv(args: string[]): void {
   if (optional.length > 0) {
     console.log('\nOptional:');
     for (const k of optional) {
-      const set = !!env[k];
+      const set = !!process.env[k];
       console.log(`  ${k.padEnd(32)} ${set ? '✓ set' : '✗ not set'}`);
     }
   }
@@ -302,55 +274,25 @@ function runEnv(args: string[]): void {
   }
 }
 
-async function runExplain(
-  args: string[],
-  configured: { env: Record<string, string | undefined>; config: Partial<GBrainConfig> } = configureFromEnv(),
-): Promise<void> {
+async function runExplain(args: string[]): Promise<void> {
   const asJson = args.includes('--json') || args.includes('-j');
-  const env = configured.env;
-  const cfg = configured.config;
-  const gatewayConfig = buildProviderGatewayConfig(cfg, env);
 
   const recipes = listRecipes();
-  const authByProvider = new Map<string, ReturnType<typeof resolveProviderAuth>>();
-  const authFor = (recipe: Recipe) => {
-    let auth = authByProvider.get(recipe.id);
-    if (!auth) {
-      auth = resolveProviderAuth(recipe, gatewayConfig);
-      authByProvider.set(recipe.id, auth);
-    }
-    return auth;
-  };
-
   const env_detected = {
-    OPENAI_API_KEY: !!env.OPENAI_API_KEY,
-    GOOGLE_GENERATIVE_AI_API_KEY: !!env.GOOGLE_GENERATIVE_AI_API_KEY,
-    ANTHROPIC_API_KEY: !!env.ANTHROPIC_API_KEY,
-    VOYAGE_API_KEY: !!env.VOYAGE_API_KEY,
-    DEEPSEEK_API_KEY: !!env.DEEPSEEK_API_KEY,
-    GROQ_API_KEY: !!env.GROQ_API_KEY,
-    TOGETHER_API_KEY: !!env.TOGETHER_API_KEY,
+    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+    GOOGLE_GENERATIVE_AI_API_KEY: !!process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+    ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+    VOYAGE_API_KEY: !!process.env.VOYAGE_API_KEY,
+    DEEPSEEK_API_KEY: !!process.env.DEEPSEEK_API_KEY,
+    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
+    TOGETHER_API_KEY: !!process.env.TOGETHER_API_KEY,
   };
 
   // Parallel probes for local providers (1s timeout each)
-  const [ollama, lmstudio] = await Promise.all([probeOllama(env), probeLMStudio(env)]);
-  const localProbes = {
-    ollama: {
-      url: publicBaseUrl(env.OLLAMA_BASE_URL, 'http://localhost:11434/v1'),
-      reachable: ollama.reachable,
-      models_endpoint_valid: ollama.models_endpoint_valid === true,
-    },
-    lmstudio: {
-      url: publicBaseUrl(env.LMSTUDIO_BASE_URL, 'http://localhost:1234/v1'),
-      reachable: lmstudio.reachable,
-      models_endpoint_valid: lmstudio.models_endpoint_valid === true,
-    },
-  };
+  const [ollama, lmstudio] = await Promise.all([probeOllama(), probeLMStudio()]);
 
   const options: ProviderOption[] = [];
   for (const r of recipes) {
-    const auth = authFor(r);
-    const providerReady = auth.isConfigured || envReady(r, env) || (r.id === 'ollama' && ollama.models_endpoint_valid === true);
     if (r.touchpoints.embedding && r.touchpoints.embedding.models.length > 0) {
       const m = r.touchpoints.embedding;
       options.push({
@@ -360,7 +302,7 @@ async function runExplain(
         dims: m.default_dims,
         cost_per_1m_tokens_usd: m.cost_per_1m_tokens_usd,
         price_last_verified: m.price_last_verified,
-        env_ready: providerReady,
+        env_ready: envReady(r) || (r.id === 'ollama' && ollama.models_endpoint_valid === true),
         tier: r.tier,
         pros: prosFor(r, 'embedding'),
         cons: consFor(r),
@@ -374,7 +316,7 @@ async function runExplain(
         model: m.models[0],
         cost_per_1m_tokens_usd: m.cost_per_1m_tokens_usd,
         price_last_verified: m.price_last_verified,
-        env_ready: providerReady,
+        env_ready: envReady(r),
         tier: r.tier,
         pros: prosFor(r, 'expansion'),
         cons: consFor(r),
@@ -389,7 +331,7 @@ async function runExplain(
         cost_per_1m_input_usd: m.cost_per_1m_input_usd,
         cost_per_1m_output_usd: m.cost_per_1m_output_usd,
         price_last_verified: m.price_last_verified,
-        env_ready: providerReady,
+        env_ready: envReady(r),
         tier: r.tier,
         pros: prosFor(r, 'chat'),
         cons: consFor(r),
@@ -397,18 +339,16 @@ async function runExplain(
     }
   }
 
-  const auth_resolved = Object.fromEntries(
-    [...authByProvider.entries()].map(([id, resolution]) => [id, redactAuthResolution(resolution)]),
-  );
-
-  const recommended = pickRecommended(options, env_detected, ollama.models_endpoint_valid === true, authByProvider);
+  const recommended = pickRecommended(options, env_detected, ollama.models_endpoint_valid === true);
 
   const matrix = {
     schema_version: SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
     env_detected,
-    auth_resolved,
-    local_probes: localProbes,
+    local_probes: {
+      ollama: { url: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434/v1', reachable: ollama.reachable, models_endpoint_valid: ollama.models_endpoint_valid === true },
+      lmstudio: { url: process.env.LMSTUDIO_BASE_URL ?? 'http://localhost:1234/v1', reachable: lmstudio.reachable, models_endpoint_valid: lmstudio.models_endpoint_valid === true },
+    },
     options,
     recommended: recommended.id,
     recommended_reason: recommended.reason,
@@ -481,25 +421,12 @@ function consFor(r: Recipe): string[] {
   return out;
 }
 
-function pickRecommended(
-  options: ProviderOption[],
-  env: Record<string, boolean>,
-  ollamaReady: boolean,
-  authByProvider: Map<string, ReturnType<typeof resolveProviderAuth>> = new Map(),
-): { id: string; reason: string } {
+function pickRecommended(options: ProviderOption[], env: Record<string, boolean>, ollamaReady: boolean): { id: string; reason: string } {
   // Embedding recommendation: prefer env-ready native providers in this order.
   const embOpts = options.filter(o => o.touchpoint === 'embedding');
-  if (env.VOYAGE_API_KEY || authByProvider.get('voyage')?.isConfigured) {
-    const voyage = embOpts.find(o => o.id === 'voyage:voyage-4-large') ?? embOpts.find(o => o.id.startsWith('voyage:'));
-    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Eva Brain recommends Voyage 4 Large at 2048 dims for the fleet default.' };
-  }
-  const openaiAuth = authByProvider.get('openai');
-  if (env.OPENAI_API_KEY || openaiAuth?.isConfigured) {
+  if (env.OPENAI_API_KEY) {
     const openai = embOpts.find(o => o.id.startsWith('openai:'));
-    if (openai) {
-      const source = openaiAuth?.source && openaiAuth.source !== 'missing' ? openaiAuth.source : 'env';
-      return { id: openai.id, reason: `OpenAI auth resolved via ${source} — OpenAI is high-quality and preserves OpenAI-sized schemas.` };
-    }
+    if (openai) return { id: openai.id, reason: 'OPENAI_API_KEY set — OpenAI default is high-quality and preserves existing 1536-dim schema.' };
   }
   if (ollamaReady) {
     const ollama = embOpts.find(o => o.id.startsWith('ollama:'));
@@ -509,21 +436,13 @@ function pickRecommended(
     const google = embOpts.find(o => o.id.startsWith('google:'));
     if (google) return { id: google.id, reason: 'GOOGLE_GENERATIVE_AI_API_KEY set — Gemini embedding at 768 dims.' };
   }
+  if (env.VOYAGE_API_KEY) {
+    const voyage = embOpts.find(o => o.id.startsWith('voyage:'));
+    if (voyage) return { id: voyage.id, reason: 'VOYAGE_API_KEY set — Voyage at 1024 dims.' };
+  }
   // Nothing ready. Recommend OpenAI as the lowest-friction path.
   return {
     id: 'openai:text-embedding-3-large',
     reason: 'No provider env detected. OpenAI is the fastest setup — get a key at https://platform.openai.com/api-keys.',
   };
-}
-
-function publicBaseUrl(value: string | undefined, fallback: string): string {
-  if (!value) return fallback;
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '<invalid-url>';
-    const path = url.pathname && url.pathname !== '/' ? url.pathname.replace(/\/+$/, '') : '';
-    return `${url.protocol}//${url.host}${path}`;
-  } catch {
-    return '<invalid-url>';
-  }
 }

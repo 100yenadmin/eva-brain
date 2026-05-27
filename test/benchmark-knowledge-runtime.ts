@@ -387,7 +387,7 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  console.error('Benchmark error.');
+main().catch(e => {
+  console.error(e);
   process.exit(1);
 });

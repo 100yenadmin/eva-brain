@@ -26,13 +26,13 @@ export type DocSection = {
 };
 
 export const PROJECT = {
-  name: "Eva Brain",
+  name: "GBrain",
   summary:
-    "Eva Brain is a thin OpenClaw-native distribution of GBrain. Pluggable engines (PGLite default, Postgres+pgvector for scale), contract-first operations, OpenClaw plugin defaults, support-KB setup, Voyage 4 Large 2048d posture, and 43 fat-markdown skills.",
-  repoUrl: "https://github.com/electricsheephq/eva-brain",
+    "GBrain is a personal knowledge brain and GStack mod for agent platforms. Pluggable engines (PGLite default, Postgres+pgvector for scale), contract-first operations, 26 fat-markdown skills. Teaches agents brain ops, ingestion, enrichment, scheduling, identity, and access control.",
+  repoUrl: "https://github.com/garrytan/gbrain",
   rawBaseUrl:
     process.env.LLMS_REPO_BASE ??
-    "https://raw.githubusercontent.com/electricsheephq/eva-brain/master",
+    "https://raw.githubusercontent.com/garrytan/gbrain/master",
 };
 
 export const SECTIONS: DocSection[] = [
@@ -81,6 +81,22 @@ export const SECTIONS: DocSection[] = [
         description:
           "MECE directory structure (people/, companies/, concepts/).",
         path: "docs/GBRAIN_RECOMMENDED_SCHEMA.md",
+        // v0.40.6.0: 64KB reference doc. Web index entry stays; the single-fetch
+        // bundle gets the README + setup guides instead. Keeps llms-full.txt
+        // under the 600KB budget as CLAUDE.md grows with each release.
+        includeInFull: false,
+      },
+      {
+        title: "docs/what-schemas-unlock.md",
+        description:
+          "Why schemas matter: 7 killer use cases (4000 invisible meetings, founder ops brain, research brain, legal brain, team brain, agent-as-co-curator) + the structural argument for typed page kinds. Read this before pitching schema authoring (v0.40.7.0).",
+        path: "docs/what-schemas-unlock.md",
+      },
+      {
+        title: "docs/schema-author-tutorial.md",
+        description:
+          "5-minute walkthrough: fork the bundled pack, add a custom `researcher` type, backfill existing pages via `gbrain schema sync --apply`, prove the T1.5 wiring via `gbrain whoknows` (v0.40.7.0).",
+        path: "docs/schema-author-tutorial.md",
       },
       {
         title: "docs/guides/live-sync.md",
@@ -97,6 +113,12 @@ export const SECTIONS: DocSection[] = [
         description:
           "Deploying the gbrain jobs worker: crontab + watchdog, inline --follow, systemd/Procfile/fly.toml, upgrade checklist.",
         path: "docs/guides/minions-deployment.md",
+        // v0.41.8.0: 13KB deployment runbook. Web index entry stays;
+        // single-fetch bundle drops it to keep under FULL_SIZE_BUDGET
+        // (CLAUDE.md grew past 600KB once master's v0.41.2-v0.41.6 +
+        // this wave's annotations landed). Operators read this once;
+        // agents rarely need it in context.
+        includeInFull: false,
       },
       {
         title: "docs/guides/quiet-hours.md",
@@ -104,9 +126,36 @@ export const SECTIONS: DocSection[] = [
         path: "docs/guides/quiet-hours.md",
       },
       {
+        title: "docs/guides/scaling-skills.md",
+        description:
+          "Three-tier architecture for agents with 300+ skills: always-loaded, resolver-routed, and dormant. Per-turn token math, the v0.41.7.0 compact list-format resolver, and the `gbrain doctor` safety net. 306 skills, ~21K tokens freed per turn, zero capability loss.",
+        path: "docs/guides/scaling-skills.md",
+      },
+      {
         title: "docs/mcp/DEPLOY.md",
         description: "MCP server deployment.",
         path: "docs/mcp/DEPLOY.md",
+      },
+    ],
+  },
+  {
+    heading: "AI providers",
+    entries: [
+      {
+        title: "docs/ai-providers/zeroentropy.md",
+        description:
+          "ZeroEntropy zembed-1 embedding + zerank-2 reranker (hosted): API key, embedding switch, reranker config.",
+        path: "docs/ai-providers/zeroentropy.md",
+        // Setup walkthrough — discoverable in the index, not inlined in the
+        // single-fetch bundle (keeps llms-full.txt under FULL_SIZE_BUDGET).
+        includeInFull: false,
+      },
+      {
+        title: "docs/ai-providers/llama-server-reranker.md",
+        description:
+          "Local reranker via llama.cpp --reranking: Qwen3-Reranker or self-hosted ZE weights, --alias setup, gbrain config keys, cold-start timeout, budget-cap interaction.",
+        path: "docs/ai-providers/llama-server-reranker.md",
+        includeInFull: false,
       },
     ],
   },
@@ -139,6 +188,12 @@ export const SECTIONS: DocSection[] = [
         description:
           "Patches for downstream agent skill forks. One section per release.",
         path: "docs/UPGRADING_DOWNSTREAM_AGENTS.md",
+        // Excluded from inlined bundle (v0.41.7.0): 25KB of release-by-release
+        // migration patches that are valuable as a reference but don't need
+        // to ride along in every llms-full.txt fetch. Pushes the bundle back
+        // under FULL_SIZE_BUDGET after the v0.41.7.0 scaling-skills guide
+        // landed.
+        includeInFull: false,
       },
       {
         title: "skills/migrations/",
@@ -200,6 +255,9 @@ export const INLINE_TIPS = [
   "`gbrain upgrade` runs post-upgrade + apply-migrations.",
 ];
 
-// Target ~600KB so llms-full.txt fits in ~150k-token contexts with room to spare.
+// Target ~700KB so llms-full.txt fits in ~175k-token contexts with room to spare.
+// Bumped from 600KB in v0.41.9.0 — CLAUDE.md grew past 600KB after the wave's
+// new-file annotations + Conductor branch-name iron-rule landed; the bundle
+// still fits comfortably in modern long-context models.
 // Generator prints a WARN if exceeded; ship with includeInFull=false exclusions.
-export const FULL_SIZE_BUDGET = 600_000;
+export const FULL_SIZE_BUDGET = 700_000;

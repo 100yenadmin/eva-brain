@@ -1,16 +1,16 @@
 /**
  * v0.32.7 CJK wave — post-upgrade chunker-bump cost prompt.
  *
- * When `MARKDOWN_CHUNKER_VERSION` bumps, older markdown pages need a
- * re-chunk + re-embed. Re-embed has a real provider bill ($X) and wall-clock
+ * When `MARKDOWN_CHUNKER_VERSION` bumps, every markdown page needs a
+ * re-chunk + re-embed. Re-embed has a real OpenAI bill ($X) and wall-clock
  * cost (Y min) proportional to the brain size. On a 1386-page brain that's
- * pennies; on a 100K-page brain it's tens of dollars. Surprise bills are how
- * trust breaks.
+ * pennies; on a 100K-page brain it's tens of dollars. Surprise OpenAI bills
+ * are how trust breaks.
  *
- * Eva policy: upgrade is advisory only. Print a real-data estimate and a
- * manual command, but never mutate/chunk/embed automatically from upgrade.
- * This avoids both surprise provider spend and legacy metadata loss when a
- * row lacks `source_path`.
+ * Per D3=B: print a stderr line with the real-data estimate before the
+ * sweep starts, give the operator 10 seconds to Ctrl-C, then proceed.
+ *
+ * TTY-only wait so non-TTY upgrades (CI, cron-driven, headless) don't hang.
  *
  * Codex C3 corrections in place:
  *   - Real SQL queries against `pages.chunker_version < N AND page_kind = 'markdown'`
@@ -80,32 +80,53 @@ export async function computeReembedEstimate(
  * Format the operator-facing stderr line. Pure function so tests can pin
  * the exact wording.
  */
-export function formatReembedPrompt(est: ReembedEstimate, _graceSeconds: number): string {
+export function formatReembedPrompt(est: ReembedEstimate, graceSeconds: number): string {
   if (est.pendingCount === 0) {
     return `[chunker-bump] No pending markdown pages. Skipping re-embed.`;
   }
   const minEst = Math.max(1, Math.ceil(est.pendingCount / 60)); // ~60 pages/min wall-clock heuristic
+  // v0.40.3.0 — chunker version bump to 3 includes the contextual retrieval
+  // wrapper (Anthropic's published methodology). Re-embed picks up the
+  // title-tier wrapper for balanced-mode users automatically (free at
+  // runtime — pure string concat). Tokenmax users can later run
+  // `gbrain config set search.mode tokenmax` to upgrade pages to per-chunk
+  // Haiku synopsis via the contextual_reindex_per_chunk Minion handler.
+  // Documented inline so the prompt explains WHY the re-embed is firing.
+  const crNote =
+    `\n[contextual retrieval] v0.40.3.0 wraps each chunk with its page ` +
+    `title before embedding (Anthropic's published method).`;
   if (est.pricingKnown && est.estimatedCostUsd !== null) {
     const dollars = est.estimatedCostUsd.toFixed(2);
-    return `[chunker-bump] ~${est.pendingCount} markdown pages need reindexing via ${est.modelString}, rough est. ~$${dollars} (CJK-heavy content may be higher), ~${minEst}min. Upgrade will not run this automatically.`;
+    return `[chunker-bump] Will re-embed ~${est.pendingCount} markdown pages via ${est.modelString}, est. ~$${dollars}, ~${minEst}min. Press Ctrl-C within ${graceSeconds}s to abort.${crNote}`;
   }
-  return `[chunker-bump] ~${est.pendingCount} markdown pages need reindexing via ${est.modelString}; pricing estimate unavailable for this provider. Upgrade will not run this automatically.`;
+  return `[chunker-bump] Will re-embed ~${est.pendingCount} markdown pages via ${est.modelString}; pricing estimate unavailable for this provider. Press Ctrl-C within ${graceSeconds}s to abort.${crNote}`;
 }
 
 export interface PromptResult {
   proceeded: boolean;
-  reason: 'no_pending' | 'bypassed_no_reembed' | 'manual_required';
+  reason: 'no_pending' | 'bypassed_no_reembed' | 'tty_proceeded' | 'non_tty_proceeded';
   estimate: ReembedEstimate;
 }
 
 /**
- * Run the post-upgrade chunker-bump advisory. Returns proceeded=false for all
- * non-empty cases: the caller should not invoke `gbrain reindex --markdown`
- * automatically from upgrade.
+ * Run the post-upgrade chunker-bump prompt + grace window. Returns whether
+ * the caller should proceed to invoke `gbrain reindex --markdown`.
  *
  * Env overrides (codex C3 + D3=B):
  *   - GBRAIN_NO_REEMBED=1     → bail out entirely (writes a doctor warning marker).
- *   - GBRAIN_REEMBED_GRACE_SECONDS is ignored by the advisory-only path.
+ *   - GBRAIN_REEMBED_GRACE_SECONDS=0 → skip wait (proceed immediately).
+ *   - Non-TTY (CI / cron) → skip wait, proceed.
+ *
+ * v0.41.13.0 T13 retrofit relationship: this prompt is a pre-flight gate
+ * for `gbrain reindex --markdown` (which is a separate site we retrofitted
+ * onto the progressive-batch primitive — see T11 in reindex.ts). The
+ * underlying reindex sweep now writes progressive-batch audit JSONL +
+ * cost-cap gating; this prompt remains as the operator-facing cost
+ * estimate before that work starts. The `GBRAIN_NO_REEMBED=1` env var
+ * remains the authoritative bail-out at THIS layer; the
+ * `GBRAIN_PROGRESSIVE_BATCH_DISABLED=1` env var at the reindex layer
+ * is a different toggle (skips ramp within reindex but doesn't bail
+ * out the whole cycle).
  */
 export async function runPostUpgradeReembedPrompt(
   engine: BrainEngine,
@@ -142,7 +163,15 @@ export async function runPostUpgradeReembedPrompt(
       })();
 
   writeFn(formatReembedPrompt(estimate, grace));
-  writeFn(`[chunker-bump] Run \`gbrain reindex --markdown --repo <brain-repo>\` when ready, or \`gbrain reindex --markdown --repo <brain-repo> --no-embed\` followed by \`gbrain embed --stale\`.`);
 
-  return { proceeded: false, reason: 'manual_required', estimate };
+  const isTTY = typeof opts.isTTY === 'boolean'
+    ? opts.isTTY
+    : Boolean(process.stdin.isTTY);
+
+  if (!isTTY || grace === 0) {
+    return { proceeded: true, reason: isTTY ? 'tty_proceeded' : 'non_tty_proceeded', estimate };
+  }
+
+  await new Promise<void>(resolveSleep => setTimeout(resolveSleep, grace * 1000));
+  return { proceeded: true, reason: 'tty_proceeded', estimate };
 }

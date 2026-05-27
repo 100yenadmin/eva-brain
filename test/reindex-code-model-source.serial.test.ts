@@ -52,39 +52,39 @@ describe('runReindexCode — model field reflects gateway (IRON RULE regression)
     else process.env.GBRAIN_NO_CODE_MODEL_NUDGE = prevNudgeEnv;
   }, 30_000);
 
-  test('voyage:voyage-code-3 configured → result.model is provider-qualified, NOT legacy OpenAI', async () => {
+  test('voyage:voyage-code-3 configured → result.model is "voyage-code-3", NOT "text-embedding-3-large"', async () => {
     configureGateway({
       embedding_model: 'voyage:voyage-code-3',
       embedding_dimensions: 1024,
       env: { VOYAGE_API_KEY: 'pa-test' },
     });
     const result = await runReindexCode(engine, { dryRun: true });
-    expect(result.model).toBe('voyage:voyage-code-3');
+    expect(result.model).toBe('voyage-code-3');
     expect(result.model).not.toBe('text-embedding-3-large');
     resetGateway();
   });
 
-  test('openai:text-embedding-3-small configured → result.model stays provider-qualified', async () => {
+  test('openai:text-embedding-3-small configured → result.model is "text-embedding-3-small"', async () => {
     configureGateway({
       embedding_model: 'openai:text-embedding-3-small',
       embedding_dimensions: 1536,
       env: { OPENAI_API_KEY: 'sk-test' },
     });
     const result = await runReindexCode(engine, { dryRun: true });
-    expect(result.model).toBe('openai:text-embedding-3-small');
+    expect(result.model).toBe('text-embedding-3-small');
     resetGateway();
   });
 
-  test('voyage:voyage-4-large configured → result.model stays provider-qualified', async () => {
+  test('voyage:voyage-4-large configured → result.model is "voyage-4-large"', async () => {
     // Regression coverage: any provider:model the gateway accepts should
-    // round-trip through the cost preview without falling back to old OpenAI literals.
+    // round-trip through the cost preview as the bare name.
     configureGateway({
       embedding_model: 'voyage:voyage-4-large',
       embedding_dimensions: 2048,
       env: { VOYAGE_API_KEY: 'pa-test' },
     });
     const result = await runReindexCode(engine, { dryRun: true });
-    expect(result.model).toBe('voyage:voyage-4-large');
+    expect(result.model).toBe('voyage-4-large');
     resetGateway();
   });
 });

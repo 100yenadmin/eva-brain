@@ -26,19 +26,10 @@ describe('lookupEmbeddingPrice — first-class providers', () => {
     if (r.kind === 'known') expect(r.pricePerMTok).toBe(0.18);
   });
 
-  test('Voyage voyage-4-large at $0.12/MTok (v0.35.1.0+)', () => {
+  test('Voyage voyage-4-large at $0.18/MTok (v0.35.1.0+)', () => {
     const r = lookupEmbeddingPrice('voyage:voyage-4-large');
     expect(r.kind).toBe('known');
-    if (r.kind === 'known') expect(r.pricePerMTok).toBe(0.12);
-  });
-
-  test('Voyage voyage-4 and voyage-4-lite use current v4 pricing tiers', () => {
-    const standard = lookupEmbeddingPrice('voyage:voyage-4');
-    const lite = lookupEmbeddingPrice('voyage:voyage-4-lite');
-    expect(standard.kind).toBe('known');
-    expect(lite.kind).toBe('known');
-    if (standard.kind === 'known') expect(standard.pricePerMTok).toBe(0.06);
-    if (lite.kind === 'known') expect(lite.pricePerMTok).toBe(0.02);
+    if (r.kind === 'known') expect(r.pricePerMTok).toBe(0.18);
   });
 
   test('ZeroEntropy zembed-1 at $0.05/MTok (v0.35.1.0+)', () => {

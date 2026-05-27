@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS sources (
   archived            BOOLEAN NOT NULL DEFAULT false,
   archived_at         TIMESTAMPTZ,
   archive_expires_at  TIMESTAMPTZ,
+  -- v0.40.3.0: per-source CR mode override + mount-frontmatter trust gate.
+  -- contextual_retrieval_mode NULL = fall through to global mode bundle.
+  -- trust_frontmatter_overrides FALSE for mounts by default; host source
+  -- (id='default') is always trusted regardless of this column.
+  contextual_retrieval_mode   TEXT,
+  trust_frontmatter_overrides BOOLEAN NOT NULL DEFAULT false,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -54,6 +60,15 @@ CREATE TABLE IF NOT EXISTS sources (
 INSERT INTO sources (id, name, config)
   VALUES ('default', 'default', '{"federated": true}'::jsonb)
   ON CONFLICT (id) DO NOTHING;
+
+-- v0.40 Federated Sync v2: partial expression index on config->>'github_repo'
+-- so POST /webhooks/github's source-by-repo lookup hits an index. Only rows
+-- with a configured webhook actually take up index entries. Both Postgres and
+-- PGLite support partial expression indexes. Migration v87 installs the same
+-- index on legacy brains (idempotent IF NOT EXISTS).
+CREATE INDEX IF NOT EXISTS sources_github_repo_idx
+  ON sources ((config->>'github_repo'))
+  WHERE config ? 'github_repo';
 
 -- ============================================================
 -- pages: the core content table
@@ -104,8 +119,67 @@ CREATE TABLE IF NOT EXISTS pages (
   -- (NOT inside engine methods — internal callers must not pollute the
   -- signal). NULL = never retrieved (LSD prioritizes these first).
   last_retrieved_at     TIMESTAMPTZ,
+  -- v0.40.3.0 contextual retrieval (renumbered from v81 to v90 on master
+  -- merge). contextual_retrieval_mode is what tier the page was last embedded
+  -- under (NULL = pre-v90 = treated as 'none' for drift detection).
+  -- corpus_generation is the composite hash of (synopsis_prompt_version,
+  -- haiku_model, title_wrapper_version, embedding_model) — document-side
+  -- provenance for query_cache invalidation per D27 P1-5. NULL means pre-v90;
+  -- the page_generations JSONB check correctly invalidates pre-v90 cache
+  -- rows against any current generation.
+  contextual_retrieval_mode  TEXT,
+  corpus_generation          TEXT,
+  -- v0.40.3.0 cache invalidation gate (migration v91). Monotonic per-page
+  -- counter bumped by bump_page_generation_trg on INSERT (initial value =
+  -- MAX(generation) + 1 so the bookmark fires for any cache row stored
+  -- before this page existed — codex #4) and on UPDATE when any column in
+  -- the content allow-list IS DISTINCT FROM. Read by the per-page snapshot
+  -- check in query-cache-gate.ts.
+  generation     BIGINT NOT NULL DEFAULT 1,
   CONSTRAINT pages_source_slug_key UNIQUE (source_id, slug)
 );
+
+-- v0.40.3.0 cache invalidation trigger (migration v91; mirrored in
+-- src/core/pglite-schema.ts). BEFORE INSERT OR UPDATE so every write path
+-- bumps generation per D6 / codex #4. INSERT: pages get
+-- COALESCE(MAX(generation), 0) + 1 so the bookmark gate fires for any
+-- cache row stored before the new page existed. UPDATE: bumps only when
+-- content columns IS DISTINCT FROM (allow-list widened per D6 + codex #3
+-- to include title/type/page_kind/corpus_generation/content_hash) so
+-- read-time mutations don't invalidate every cache row.
+CREATE OR REPLACE FUNCTION bump_page_generation_fn() RETURNS trigger AS $func$
+BEGIN
+  IF (TG_OP = 'INSERT') THEN
+    NEW.generation := COALESCE((SELECT MAX(generation) FROM pages), 0) + 1;
+  ELSIF (OLD.compiled_truth IS DISTINCT FROM NEW.compiled_truth)
+     OR (OLD.timeline IS DISTINCT FROM NEW.timeline)
+     OR (OLD.frontmatter IS DISTINCT FROM NEW.frontmatter)
+     OR (OLD.deleted_at IS DISTINCT FROM NEW.deleted_at)
+     OR (OLD.contextual_retrieval_mode IS DISTINCT FROM NEW.contextual_retrieval_mode)
+     OR (OLD.title IS DISTINCT FROM NEW.title)
+     OR (OLD.type IS DISTINCT FROM NEW.type)
+     OR (OLD.page_kind IS DISTINCT FROM NEW.page_kind)
+     OR (OLD.corpus_generation IS DISTINCT FROM NEW.corpus_generation)
+     OR (OLD.content_hash IS DISTINCT FROM NEW.content_hash)
+  THEN
+    NEW.generation := OLD.generation + 1;
+  END IF;
+  RETURN NEW;
+END;
+$func$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS bump_page_generation_trg ON pages;
+CREATE TRIGGER bump_page_generation_trg
+  BEFORE INSERT OR UPDATE ON pages
+  FOR EACH ROW
+  EXECUTE FUNCTION bump_page_generation_fn();
+
+-- v0.40.3.0 supports O(log N) MAX(generation) for the Layer 1 bookmark
+-- check in query-cache-gate.ts. Plain btree (DESC unnecessary; Postgres
+-- backward-scans plain btrees for MAX per codex #8). CONCURRENTLY would
+-- be used inside a migration; in the schema-bootstrap path it's a plain
+-- CREATE INDEX since the table is empty.
+CREATE INDEX IF NOT EXISTS pages_generation_idx ON pages (generation);
 
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
@@ -188,6 +262,13 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding_image
 CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON content_chunks USING GIN(search_vector);
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_qualified
   ON content_chunks(symbol_name_qualified) WHERE symbol_name_qualified IS NOT NULL;
+-- v0.41.18.0 (codex finding #9): partial index for `gbrain embed --stale`
+-- + `--priority recent`. content_chunks has no updated_at column (chunks
+-- are re-INSERTed on page change, not UPDATEd), so the "recent-first"
+-- ORDER BY happens at the JOIN site: outer ORDER BY p.updated_at DESC
+-- uses idx_pages_updated_at_desc; inner partial uses this index.
+CREATE INDEX IF NOT EXISTS content_chunks_stale_idx
+  ON content_chunks(page_id, chunk_index) WHERE embedding IS NULL;
 
 -- v0.20.0 Cathedral II: chunk-grain FTS trigger.
 -- Weight 'A' on doc_comment + symbol_name_qualified; weight 'B' on chunk_text.
@@ -279,7 +360,16 @@ CREATE TABLE IF NOT EXISTS links (
   to_page_id     INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   link_type      TEXT    NOT NULL DEFAULT '',
   context        TEXT    NOT NULL DEFAULT '',
-  link_source    TEXT    CHECK (link_source IS NULL OR link_source IN ('markdown', 'frontmatter', 'manual')),
+  -- v0.41.18.0: 'mentions' added for auto-linked body-text mentions
+  -- (gbrain extract links --by-mention). Filtered OUT of backlink-count
+  -- for search ranking; only counts toward orphan-ratio + graph traversal.
+  link_source    TEXT    CHECK (link_source IS NULL OR link_source IN ('markdown', 'frontmatter', 'manual', 'mentions')),
+  -- v0.41.18.0: nullable link_kind distinguishes "plain body mention" from
+  -- "verb-pattern-derived typed link" within link_source='mentions'.
+  -- Codex finding #12 design: keep link_source stable; add link_kind
+  -- so callers can distinguish without breaking existing mentions queries.
+  -- NULL = legacy / unknown / pre-v98 row (semantically 'plain').
+  link_kind      TEXT    CHECK (link_kind IS NULL OR link_kind IN ('plain', 'typed_ner')),
   origin_page_id INTEGER REFERENCES pages(id) ON DELETE SET NULL,
   origin_field   TEXT,
   -- v0.18.0 Step 4: 'qualified' when the link was written as
@@ -342,8 +432,10 @@ CREATE TABLE IF NOT EXISTS timeline_entries (
 
 CREATE INDEX IF NOT EXISTS idx_timeline_page ON timeline_entries(page_id);
 CREATE INDEX IF NOT EXISTS idx_timeline_date ON timeline_entries(date);
--- Dedup constraint: same (page, date, summary) treated as same event
-CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup ON timeline_entries(page_id, date, summary);
+-- v0.41.18.0 (codex finding #11): widened from (page_id, date, summary) to
+-- include `source` so distinct meeting provenance survives. Legacy rows
+-- have source='' (schema default) so legacy dedup behavior is preserved.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_dedup ON timeline_entries(page_id, date, summary, source);
 
 -- ============================================================
 -- page_versions: snapshot history for compiled_truth
@@ -509,6 +601,39 @@ CREATE INDEX IF NOT EXISTS op_checkpoints_updated_at_idx
   ON op_checkpoints (updated_at);
 
 -- ============================================================
+-- migration_impact_log: before/after metric stats per onboard remediation
+-- ============================================================
+-- v0.41.18.0 (gbrain onboard wave). Every completion captured by the
+-- onboard remediation pipeline records before/after metric stats so
+-- `gbrain onboard --history --json` can show "you reduced orphans 47%".
+-- delta computed at read time (NOT a stored GENERATED column —
+-- zero PGLite parity risk per eng-review D2).
+--
+-- Attribution columns (job_id, source_id, brain_id, started_at,
+-- idempotency_key) per codex finding #10 so concurrent onboard /
+-- autopilot / manual runs can't misattribute deltas to the wrong
+-- migration when overlapping runs change the same metric.
+CREATE TABLE IF NOT EXISTS migration_impact_log (
+  id              BIGSERIAL PRIMARY KEY,
+  remediation_id  TEXT      NOT NULL,
+  metric_name     TEXT      NOT NULL,
+  metric_before   NUMERIC,
+  metric_after    NUMERIC,
+  job_id          BIGINT    REFERENCES minion_jobs(id) ON DELETE SET NULL,
+  source_id       TEXT,
+  brain_id        TEXT,
+  started_at      TIMESTAMPTZ,
+  idempotency_key TEXT,
+  applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  applied_by      TEXT,
+  details         JSONB     DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS migration_impact_log_remediation_idx
+  ON migration_impact_log(remediation_id, applied_at DESC);
+CREATE INDEX IF NOT EXISTS migration_impact_log_attribution_idx
+  ON migration_impact_log(job_id, source_id) WHERE job_id IS NOT NULL;
+
+-- ============================================================
 -- files: binary attachments stored in Supabase Storage
 -- ============================================================
 -- v0.18.0 Step 7: files gains source_id + page_id alongside the
@@ -530,7 +655,7 @@ CREATE TABLE IF NOT EXISTS files (
   content_hash TEXT   NOT NULL,
   metadata     JSONB  NOT NULL DEFAULT '{}',
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT files_source_storage_path_key UNIQUE(source_id, storage_path)
+  UNIQUE(storage_path)
 );
 
 -- Migration: drop storage_url if it exists (renamed to storage_path only)
@@ -796,11 +921,16 @@ CREATE TABLE IF NOT EXISTS dream_verdicts (
 -- Works through PgBouncer transaction pooling, unlike session-scoped
 -- pg_try_advisory_lock.
 CREATE TABLE IF NOT EXISTS gbrain_cycle_locks (
-  id              TEXT        PRIMARY KEY,
-  holder_pid      INT         NOT NULL,
-  holder_host     TEXT,
-  acquired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ttl_expires_at  TIMESTAMPTZ NOT NULL
+  id                 TEXT        PRIMARY KEY,
+  holder_pid         INT         NOT NULL,
+  holder_host        TEXT,
+  acquired_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ttl_expires_at     TIMESTAMPTZ NOT NULL,
+  -- v0.41.13.0 (migration v97 + D-V3-4): bumped on every withRefreshingLock
+  -- refresh tick. Used by `gbrain sync --break-lock --max-age <s>` to
+  -- identify wedged-but-alive holders without stealing healthy long-running
+  -- holders that are actively refreshing.
+  last_refreshed_at  TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_cycle_locks_ttl ON gbrain_cycle_locks(ttl_expires_at);
 

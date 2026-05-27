@@ -17,8 +17,7 @@ describe('upgrade command', () => {
     const stdout = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
     expect(stdout).toContain('Usage: gbrain upgrade');
-    expect(stdout).toContain('Self-update the Eva Brain CLI');
-    expect(stdout).toContain('public source updater');
+    expect(stdout).toContain('Detects install method');
     expect(exitCode).toBe(0);
   });
 
@@ -78,7 +77,7 @@ describe('detectInstallMethod heuristic (source analysis)', () => {
   });
 
   // v0.28.5 cluster D: 3-signal layered detection.
-  test('bun-link signal walks .git/config for the Eva Brain repo match', () => {
+  test('bun-link signal walks .git/config for garrytan/gbrain match', () => {
     expect(source).toContain('function detectBunLink');
     expect(source).toContain('GBRAIN_GITHUB_REPO');
     expect(source).toContain('toLowerCase()');
@@ -109,14 +108,9 @@ describe('detectInstallMethod heuristic (source analysis)', () => {
     expect(source).toContain("execFileSync('bun', ['install']");
   });
 
-  test('bun package upgrade defers to the source updater', () => {
-    const caseStart = source.indexOf("case 'bun':");
-    const caseEnd = source.indexOf("case 'binary':", caseStart);
-    const bunCase = source.slice(caseStart, caseEnd);
-    expect(bunCase).toContain('source updater');
-    expect(bunCase).toContain('printSourceUpdaterCommands()');
-    expect(bunCase).not.toContain('resolveBunGlobalRoot');
-    expect(bunCase).not.toContain("execFileSync('bun'");
+  test('bun global upgrade passes cwd to bun update', () => {
+    expect(source).toContain('const bunGlobalRoot = resolveBunGlobalRoot()');
+    expect(source).toContain("execFileSync('bun', ['update', 'gbrain'], { cwd: bunGlobalRoot");
   });
 
   test('classifyBunInstall checks repository.url AND src/cli.ts marker', () => {
@@ -133,14 +127,6 @@ describe('detectInstallMethod heuristic (source analysis)', () => {
     expect(source).toContain('git clone');
     expect(source).toContain('releases');
     expect(source).toContain('#658');
-  });
-
-  test('Eva upgrade messages point at the fork updater, not upstream package commands', () => {
-    expect(source).toContain('electricsheephq/eva-brain');
-    expect(source).toContain('scripts/update-local-install.sh');
-    expect(source).not.toContain('bun update gbrain');
-    expect(source).not.toContain('clawhub update gbrain');
-    expect(source).not.toContain('https://github.com/garrytan/gbrain/releases');
   });
 });
 

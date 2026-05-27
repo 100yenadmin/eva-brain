@@ -1101,8 +1101,8 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  console.error('Benchmark error.');
+main().catch(e => {
+  console.error('Benchmark error:', e);
   process.exit(1);
 });
 

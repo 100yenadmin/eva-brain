@@ -31,6 +31,7 @@ import { loadPackFromFile } from './loader.ts';
 import {
   resolveActivePackName,
   resolvePack,
+  tryCachedPack,
   UnknownPackError,
   type ResolvedPack,
   type ResolutionInput,
@@ -94,7 +95,20 @@ function defaultPackLocator(name: string): string | null {
   // v0.39 T8 — bundled packs registry. gbrain-base + gbrain-recommended
   // ship in src/core/schema-pack/base/. Add a new entry here to bundle
   // additional canonical packs.
-  const BUNDLED: ReadonlyArray<string> = ['gbrain-base', 'gbrain-recommended'];
+  //
+  // v0.41 T4 — lens packs join the bundle: creator (atoms + concepts +
+  // extract_atoms/synthesize_concepts phases), investor (theses + bet
+  // resolution + 3 calibration domains), engineer (gstack-learnings bridge
+  // + 3 calibration domains), everything (meta-pack stacking all three
+  // via extends + borrow_from). Each ships as a real YAML at base/<name>.yaml.
+  const BUNDLED: ReadonlyArray<string> = [
+    'gbrain-base',
+    'gbrain-recommended',
+    'gbrain-creator',
+    'gbrain-investor',
+    'gbrain-engineer',
+    'gbrain-everything',
+  ];
   if (BUNDLED.includes(name)) {
     // Resolve bundled YAML relative to this source file. Works in both
     // direct-bun execution and bun --compile binaries.
@@ -143,8 +157,17 @@ async function loadPackManifestByName(name: string): Promise<SchemaPackManifest>
 export async function loadActivePack(input: LoadActivePackInput): Promise<ResolvedPack> {
   const resolutionInput = buildResolutionInput(input);
   const resolution: ResolutionResult = resolveActivePackName(resolutionInput);
+  // v0.40.6.0: TTL-gated cache fast path. Inside STAT_TTL_MS (default 1s)
+  // returns immediately (~10ns). Outside the window: stats files in the
+  // extends chain; cascade-invalidates and falls through on mtime change.
+  const cached = tryCachedPack(resolution.pack_name);
+  if (cached) return cached;
   const manifest = await loadPackManifestByName(resolution.pack_name);
-  return await resolvePack(manifest, loadPackManifestByName);
+  // Thread the locator so resolvePack can snapshot file paths + mtimes
+  // for the stat-TTL gate on subsequent calls (codex C6 + D11 + D13).
+  return await resolvePack(manifest, loadPackManifestByName, {
+    loadByPath: (name) => _packLocator(name),
+  });
 }
 
 /**

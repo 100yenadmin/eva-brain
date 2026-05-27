@@ -127,10 +127,9 @@ export const EMBEDDING_MODEL = 'text-embedding-3-large';
 export const EMBEDDING_DIMENSIONS = 1536;
 
 /**
- * v0.20.0 Cathedral II Layer 8 (D1): USD cost per 1k tokens for
- * text-embedding-3-large. Used by `gbrain sync --all` cost preview and
- * the reindex-code backfill command to surface expected spend before
- * the agent/user accepts an expensive operation.
+ * USD cost per 1k tokens for text-embedding-3-large. Used by
+ * `gbrain sync --all` cost preview and `reindex-code` to surface
+ * expected spend before accepting expensive operations.
  */
 export const EMBEDDING_COST_PER_1K_TOKENS = 0.00013;
 

@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import { buildSyncManifest, isSyncable, pathToSlug, pruneDir, isCodeFilePath } from '../src/core/sync.ts';
 import { buildAutoEmbedArgs, buildGitInvocation } from '../src/commands/sync.ts';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -80,11 +80,6 @@ describe('isSyncable', () => {
     expect(isSyncable('.git/config')).toBe(false);
     expect(isSyncable('.obsidian/plugins.md')).toBe(false);
     expect(isSyncable('people/.hidden/secret.md')).toBe(false);
-  });
-
-  test('rejects files in dependency directories', () => {
-    expect(isSyncable('node_modules/pkg/README.md')).toBe(false);
-    expect(isSyncable('tools/server/node_modules/pkg/HISTORY.md')).toBe(false);
   });
 
   test('rejects .raw/ sidecar directories', () => {
@@ -350,74 +345,6 @@ describe('performSync dry-run never writes', () => {
     // Bookmark NOT set — this is the regression the guard enforces.
     expect(await engine.getConfig('sync.last_commit')).toBeNull();
     expect(await engine.getConfig('sync.repo_path')).toBeNull();
-  });
-
-  test('source-scoped full sync does NOT rewrite the global sync checkpoint', async () => {
-    const { performSync } = await import('../src/commands/sync.ts');
-    const head = execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();
-    await engine.setConfig('sync.repo_path', '/default/brain');
-    await engine.setConfig('sync.last_commit', 'default-commit');
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, local_path, last_commit, config)
-       VALUES ('supportkb', 'Support KB', $1, NULL, '{}'::jsonb)`,
-      [repoPath],
-    );
-
-    const result = await performSync(engine, {
-      sourceId: 'supportkb',
-      noPull: true,
-      noEmbed: true,
-    });
-
-    expect(result.status).toBe('first_sync');
-    expect(await engine.getConfig('sync.repo_path')).toBe('/default/brain');
-    expect(await engine.getConfig('sync.last_commit')).toBe('default-commit');
-    expect(await engine.getPage('people/alice', { sourceId: 'supportkb' })).not.toBeNull();
-    expect(await engine.getPage('people/alice')).toBeNull();
-
-    const rows = await engine.executeRaw<{ local_path: string; last_commit: string | null; last_sync_at: unknown }>(
-      `SELECT local_path, last_commit, last_sync_at FROM sources WHERE id = 'supportkb'`,
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].local_path).toBe(repoPath);
-    expect(rows[0].last_commit).toBe(head);
-    expect(rows[0].last_sync_at).toBeTruthy();
-  });
-
-  test('source-scoped up-to-date sync refreshes last_sync_at for freshness doctor', async () => {
-    const { performSync } = await import('../src/commands/sync.ts');
-    const head = execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, local_path, last_commit, config)
-       VALUES ('supportkb', 'Support KB', $1, NULL, '{}'::jsonb)`,
-      [repoPath],
-    );
-
-    const first = await performSync(engine, {
-      sourceId: 'supportkb',
-      noPull: true,
-      noEmbed: true,
-    });
-    expect(first.status).toBe('first_sync');
-
-    const staleIso = '2026-01-01T00:00:00.000Z';
-    await engine.executeRaw(
-      `UPDATE sources SET last_sync_at = $1 WHERE id = 'supportkb'`,
-      [staleIso],
-    );
-
-    const second = await performSync(engine, {
-      sourceId: 'supportkb',
-      noPull: true,
-      noEmbed: true,
-    });
-    expect(second.status).toBe('up_to_date');
-
-    const rows = await engine.executeRaw<{ last_commit: string | null; last_sync_at: unknown }>(
-      `SELECT last_commit, last_sync_at FROM sources WHERE id = 'supportkb'`,
-    );
-    expect(rows[0].last_commit).toBe(head);
-    expect(new Date(rows[0].last_sync_at as string).getTime()).toBeGreaterThan(new Date(staleIso).getTime());
   });
 
   test('first sync without origin skips git pull noise and uses local working tree', async () => {
@@ -726,15 +653,6 @@ describe('git() helper invocation order (CJK wave v0.32.7)', () => {
       '-c', 'core.quotepath=false',
       '-C', '/repo',
     ]);
-  });
-});
-
-describe('source-scoped sync wiring guards', () => {
-  test('threads source id through ingest log, facts lookup, and auto-embed', () => {
-    const source = readFileSync(join(process.cwd(), 'src/commands/sync.ts'), 'utf-8');
-    expect(source).toContain('engine.getPage(slug, { sourceId: factsSourceId })');
-    expect(source).toContain('const embedOpts = opts.sourceId');
-    expect(source).toContain('sourceId: opts.sourceId');
   });
 });
 

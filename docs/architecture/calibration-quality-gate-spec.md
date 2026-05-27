@@ -45,7 +45,7 @@ future outcomes** where we can check what actually happened.
 
 **Genuine predictions (grade-worthy):**
 - "X will reach $1M ARR very soon" → company_outcome
-- "X is going to leave Y" → people_move
+- "X is going to leave Y" → people_move  
 - "AI will make authentic authorship more important" → technology
 - "X was convinced Y would win the Z market" → market_call
 

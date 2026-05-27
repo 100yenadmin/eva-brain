@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
 import {
   configureGateway,
   resetGateway,
@@ -9,6 +9,14 @@ import {
   getExpansionModel,
   VoyageResponseTooLargeError,
 } from '../../src/core/ai/gateway.ts';
+
+// v0.39.x ship-wave fix: gateway module is process-scoped. Without an
+// afterAll cleanup, the last test's configureGateway({env: {OPENAI_API_KEY:
+// 'openai-fake'}}) state leaked into sibling files in the same bun shard
+// (capture / ingest-capture tests), where it produced "Incorrect API key
+// provided: openai-fake" against the real OpenAI endpoint and wedged
+// the shard. Reset once at file teardown so no caller sees the residue.
+afterAll(() => resetGateway());
 import { parseModelId, resolveRecipe } from '../../src/core/ai/model-resolver.ts';
 import {
   dimsProviderOptions,
@@ -32,10 +40,13 @@ describe('gateway configuration', () => {
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 
-  test('Eva defaults are Voyage 4 Large 2048d; ZE remains opt-in via ze-switch', () => {
+  test('defaults are ZE 1280d as of v0.36.0.0 (D3)', () => {
+    // The default flipped from openai:text-embedding-3-large 1536d to
+    // zeroentropyai:zembed-1 1280d in v0.36.0.0. The cost story is in
+    // CHANGELOG.md; the rationale lives in src/core/ai/gateway.ts:45-54.
     configureGateway({ env: {} });
-    expect(getEmbeddingModel()).toBe('voyage:voyage-4-large');
-    expect(getEmbeddingDimensions()).toBe(2048);
+    expect(getEmbeddingModel()).toBe('zeroentropyai:zembed-1');
+    expect(getEmbeddingDimensions()).toBe(1280);
     expect(getExpansionModel()).toBe('anthropic:claude-haiku-4-5-20251001');
   });
 });
@@ -318,12 +329,12 @@ describe('Voyage OOM-cap: too-large response throws (Codex P3 follow-up)', () =>
 
 // ─────────────────────────────────────────────────────────────────────
 // Voyage flexible-dim runtime validation (Codex P3 follow-up after PR #962).
-// The bug class: brain configured for a Voyage flexible-dim model with an
-// invalid `embedding_dimensions` value → Voyage HTTP 400. Catch it at the
-// embed-call boundary with a clear AIConfigError.
+// The bug class: brain configured for Voyage flexible-dim model without
+// `embedding_dimensions` → gateway falls back to DEFAULT 1536 → Voyage
+// HTTP 400. Catch it at the embed-call boundary with a clear AIConfigError.
 // ─────────────────────────────────────────────────────────────────────
 describe('Voyage flexible-dim runtime validation', () => {
-  test('rejects 1536 with AIConfigError', () => {
+  test('rejects 1536 (the default that bites Voyage-first users) with AIConfigError', () => {
     expect(() => dimsProviderOptions('openai-compatible', 'voyage-4-large', 1536))
       .toThrow(AIConfigError);
     expect(() => dimsProviderOptions('openai-compatible', 'voyage-4-large', 1536))

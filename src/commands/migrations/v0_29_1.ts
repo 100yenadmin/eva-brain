@@ -2,14 +2,14 @@
  * v0.29.1 migration orchestrator — backfill effective_date for existing
  * pages.
  *
- * Migration v42 added pages.effective_date / effective_date_source /
+ * Migration v38 added pages.effective_date / effective_date_source /
  * import_filename / salience_touched_at as nullable columns. Fresh imports
  * post-v0.29.1 populate effective_date via the importer's
  * `computeEffectiveDate`. Pre-v0.29.1 rows have NULL until this orchestrator
  * walks them.
  *
  * Phases (all idempotent, resumable):
- *   A. Schema  — `gbrain init --migrate-only` ensures v42 ran.
+ *   A. Schema  — `gbrain init --migrate-only` ensures v38 ran.
  *   B. Backfill — keyset-paginated UPDATE via `backfillEffectiveDate`.
  *                 Resumable via the `backfill.effective_date.last_id`
  *                 checkpoint key in the config table. Statement timeout

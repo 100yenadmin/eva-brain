@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
-import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers, hasPendingMigrations, buildTakesAndSynthesisEvidenceSql } from '../src/core/migrate.ts';
+import { LATEST_VERSION, runMigrations, MIGRATIONS, getIdleBlockers, hasPendingMigrations } from '../src/core/migrate.ts';
 import type { IdleBlocker } from '../src/core/migrate.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
@@ -249,32 +249,6 @@ describe('migrate v36 — subagent_provider_neutral_persistence_v0_27', () => {
     expect(SCHEMA_SQL).toContain('schema_version');
     expect(SCHEMA_SQL).toContain('provider_id');
     expect(SCHEMA_SQL).toContain('idx_subagent_messages_provider');
-  });
-});
-
-describe('migrate v37 — takes embedding dimensions follow brain config', () => {
-  const v37 = MIGRATIONS.find(m => m.version === 37);
-
-  test('v37 builds SQL dynamically instead of hard-coding vector(1536)', () => {
-    expect(v37).toBeDefined();
-    expect(v37!.name).toBe('takes_and_synthesis_evidence');
-    expect(v37!.sql).toBe('');
-    expect(v37!.sqlBuilder).toBeDefined();
-  });
-
-  test('Voyage 2048 keeps exact scans and skips unsupported HNSW', () => {
-    const sql = buildTakesAndSynthesisEvidenceSql('pglite', 2048);
-    expect(sql).toContain('embedding        VECTOR(2048)');
-    expect(sql).toContain('idx_takes_embedding_hnsw skipped');
-    expect(sql).not.toContain('USING hnsw (embedding vector_cosine_ops)');
-  });
-
-  test('1536-dimensional brains still get the takes HNSW index', () => {
-    const sql = buildTakesAndSynthesisEvidenceSql('postgres', 1536);
-    expect(sql).toContain('embedding        VECTOR(1536)');
-    expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_takes_embedding_hnsw ON takes');
-    expect(sql).toContain('USING hnsw (embedding vector_cosine_ops)');
-    expect(sql).toContain('ENABLE ROW LEVEL SECURITY');
   });
 });
 
@@ -669,21 +643,6 @@ describe('migrate v14 — pages_updated_at_index (handler-based, engine-aware)',
     expect(dropIdx).toBeLessThan(createIdx);
     expect(v14Block).toContain('engine.kind');
   });
-
-  test('v14 invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside a DO block', async () => {
-    const { readFileSync } = await import('fs');
-    const src = readFileSync('src/core/migrate.ts', 'utf-8');
-    const v14Start = src.indexOf("name: 'pages_updated_at_index'");
-    expect(v14Start).toBeGreaterThan(-1);
-    const v14Block = src.slice(v14Start, v14Start + 3000);
-    expect(v14Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS idx_pages_updated_at_desc');
-    const doBlockStart = v14Block.indexOf('DO $$');
-    if (doBlockStart !== -1) {
-      const doBlockEnd = v14Block.indexOf('END $$', doBlockStart);
-      const doBlock = v14Block.slice(doBlockStart, doBlockEnd === -1 ? v14Block.length : doBlockEnd);
-      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
-    }
-  });
 });
 
 describe('migrate v15 — minion_jobs_max_stalled_default_5', () => {
@@ -797,21 +756,6 @@ describe('migrate v66 — embed_stale_partial_index (D6)', () => {
     expect(dropIdx).toBeLessThan(createIdx);
     // Branches on engine.kind (handler-pattern from v14).
     expect(v66Block).toContain('engine.kind');
-  });
-
-  test('v66 invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside a DO block', async () => {
-    const { readFileSync } = await import('fs');
-    const src = readFileSync('src/core/migrate.ts', 'utf-8');
-    const v66Start = src.indexOf("name: 'embed_stale_partial_index'");
-    expect(v66Start).toBeGreaterThan(-1);
-    const v66Block = src.slice(v66Start, v66Start + 3000);
-    expect(v66Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS idx_chunks_embedding_null');
-    const doBlockStart = v66Block.indexOf('DO $$');
-    if (doBlockStart !== -1) {
-      const doBlockEnd = v66Block.indexOf('END $$', doBlockStart);
-      const doBlock = v66Block.slice(doBlockStart, doBlockEnd === -1 ? v66Block.length : doBlockEnd);
-      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
-    }
   });
 
   test('v66 idempotent flag is true (re-run safety)', () => {
@@ -1395,64 +1339,20 @@ describe('migration v31 — eval_capture_tables', () => {
   });
 });
 
-describe('migration v32 — oauth_server_core RLS hardening', () => {
-  test('uses engine-specific SQL paths so PGLite avoids Postgres-only RLS SQL', () => {
-    const v32 = MIGRATIONS.find(m => m.version === 32)!;
-    expect(v32.sql).toBe('');
-    expect(v32.sqlFor?.postgres).toBeDefined();
-    expect(v32.sqlFor?.pglite).toBeDefined();
-  });
-
-  test('Postgres variant fails loudly on non-BYPASSRLS roles instead of silently bumping version', () => {
-    const pgSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.postgres!;
-    expect(pgSql).toContain('rolbypassrls');
-    expect(pgSql).toMatch(/RAISE EXCEPTION[^;]*BYPASSRLS/);
-    expect(pgSql).not.toMatch(/RAISE WARNING[^;]*BYPASSRLS/);
-    expect(pgSql).toContain('ALTER TABLE oauth_clients ENABLE ROW LEVEL SECURITY');
-    expect(pgSql).toContain('ALTER TABLE oauth_tokens ENABLE ROW LEVEL SECURITY');
-    expect(pgSql).toContain('ALTER TABLE oauth_codes ENABLE ROW LEVEL SECURITY');
-  });
-
-  test('PGLite variant creates OAuth tables without pg_roles or RLS statements', () => {
-    const pgliteSql = MIGRATIONS.find(m => m.version === 32)!.sqlFor!.pglite!;
-    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_clients');
-    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_tokens');
-    expect(pgliteSql).toContain('CREATE TABLE IF NOT EXISTS oauth_codes');
-    expect(pgliteSql).not.toContain('pg_roles');
-    expect(pgliteSql).not.toContain('ENABLE ROW LEVEL SECURITY');
-    expect(pgliteSql).not.toContain('DO $$');
-  });
-});
-
-describe('migration v34 — destructive_guard_columns', () => {
-  test('Postgres invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside DO block', () => {
-    const src = readFileSync(resolve('src/core/migrate.ts'), 'utf-8');
-    const v34Start = src.indexOf("name: 'destructive_guard_columns'");
-    expect(v34Start).toBeGreaterThan(-1);
-    const v34Block = src.slice(v34Start, v34Start + 5000);
-    expect(v34Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS pages_deleted_at_purge_idx');
-    const doBlockStart = v34Block.indexOf('DO $$');
-    if (doBlockStart !== -1) {
-      const doBlockEnd = v34Block.indexOf('END $$', doBlockStart);
-      const doBlock = v34Block.slice(doBlockStart, doBlockEnd === -1 ? v34Block.length : doBlockEnd);
-      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
-    }
-  });
-});
-
-describe('migration v41 — pages_emotional_weight (v0.29)', () => {
-  // Eva already owns v40 for source-scoped files.storage_path uniqueness.
-  // Upstream v0.29 salience lands at v41 in the fork so both migration lines
-  // remain append-only and existing Eva brains keep their source-safety patch.
+describe('migration v40 — pages_emotional_weight (v0.29)', () => {
+  // v0.29 ships off master. Master is at v39 (multimodal_dual_column_v0_27_1);
+  // v0.29 lands at v40. Idempotent ADD COLUMN IF NOT EXISTS, so brains that
+  // applied this at any prior number on a feature branch see v40 as new and
+  // run cleanly.
   test('exists with the expected name', () => {
-    const v41 = MIGRATIONS.find(m => m.version === 41);
-    expect(v41).toBeDefined();
-    expect(v41?.name).toBe('pages_emotional_weight');
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    expect(v40).toBeDefined();
+    expect(v40?.name).toBe('pages_emotional_weight');
   });
 
   test('adds emotional_weight REAL NOT NULL DEFAULT 0.0 to pages', () => {
-    const v41 = MIGRATIONS.find(m => m.version === 41);
-    const sql = v41!.sql || '';
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    const sql = v40!.sql || '';
     expect(sql).toContain('ALTER TABLE pages');
     expect(sql).toContain('ADD COLUMN IF NOT EXISTS emotional_weight');
     expect(sql).toContain('REAL');
@@ -1462,30 +1362,14 @@ describe('migration v41 — pages_emotional_weight (v0.29)', () => {
   test('does NOT create an idx_pages_emotional_weight index (eng review D6)', () => {
     // Salience query orders by computed score, not raw weight; the index
     // would never be used. Adding it later requires a separate migration.
-    const v41 = MIGRATIONS.find(m => m.version === 41);
-    const sql = v41!.sql || '';
+    const v40 = MIGRATIONS.find(m => m.version === 40);
+    const sql = v40!.sql || '';
     expect(sql).not.toContain('idx_pages_emotional_weight');
     expect(sql).not.toContain('CREATE INDEX');
   });
 
-  test('LATEST_VERSION caught up to 43', () => {
-    expect(LATEST_VERSION).toBeGreaterThanOrEqual(43);
-  });
-});
-
-describe('migration v42 — pages_recency_columns', () => {
-  test('Postgres invalid-index cleanup does not run DROP INDEX CONCURRENTLY inside DO block', () => {
-    const src = readFileSync(resolve('src/core/migrate.ts'), 'utf-8');
-    const v42Start = src.indexOf("name: 'pages_recency_columns'");
-    expect(v42Start).toBeGreaterThan(-1);
-    const v42Block = src.slice(v42Start, v42Start + 5000);
-    expect(v42Block).toContain('DROP INDEX CONCURRENTLY IF EXISTS pages_coalesce_date_idx');
-    const doBlockStart = v42Block.indexOf('DO $$');
-    if (doBlockStart !== -1) {
-      const doBlockEnd = v42Block.indexOf('END $$', doBlockStart);
-      const doBlock = v42Block.slice(doBlockStart, doBlockEnd === -1 ? v42Block.length : doBlockEnd);
-      expect(doBlock).not.toContain('DROP INDEX CONCURRENTLY');
-    }
+  test('LATEST_VERSION caught up to 40', () => {
+    expect(LATEST_VERSION).toBeGreaterThanOrEqual(40);
   });
 });
 
@@ -2254,3 +2138,4 @@ describe('migrate v89 — round-trip on PGLite', () => {
     expect(LATEST_VERSION).toBeGreaterThanOrEqual(89);
   });
 });
+

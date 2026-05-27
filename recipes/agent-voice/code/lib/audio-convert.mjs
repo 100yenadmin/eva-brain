@@ -1,6 +1,6 @@
 /**
  * audio-convert.mjs — µ-law ↔ PCM conversion for Twilio ↔ Gemini bridge
- *
+ * 
  * Twilio sends:  µ-law 8kHz mono base64 (20ms chunks = 160 bytes)
  * Gemini wants:  PCM 16-bit 16kHz mono base64 (buffered ~300ms)
  * Gemini sends:  PCM 16-bit 24kHz mono base64 (variable chunks)
@@ -102,7 +102,7 @@ export function gemini16kToUlaw(base64Pcm) {
  */
 export function createUpsampler() {
   let lastSample = 0;
-
+  
   return function upsample(pcm8k) {
     const pcm16k = new Int16Array(pcm8k.length * 2);
     for (let i = 0; i < pcm8k.length; i++) {
@@ -121,7 +121,7 @@ export function createUpsampler() {
  */
 export function createDownsampler24to8() {
   let remainder = new Int16Array(0);
-
+  
   return function downsample(pcm24k) {
     // Prepend any remainder from last chunk
     let input;
@@ -132,20 +132,20 @@ export function createDownsampler24to8() {
     } else {
       input = pcm24k;
     }
-
+    
     const numOut = Math.floor(input.length / 3);
     const leftover = input.length - numOut * 3;
     const out = new Int16Array(numOut);
-
+    
     for (let i = 0; i < numOut; i++) {
       // Average 3 samples (simple low-pass)
       const idx = i * 3;
       out[i] = Math.round((input[idx] + input[idx + 1] + input[idx + 2]) / 3);
     }
-
+    
     // Save leftover samples for next chunk
     remainder = leftover > 0 ? input.slice(input.length - leftover) : new Int16Array(0);
-
+    
     return out;
   };
 }
@@ -153,7 +153,7 @@ export function createDownsampler24to8() {
 /**
  * Create a buffered audio processor for Twilio→Gemini.
  * Buffers µ-law chunks and flushes PCM 16kHz every ~300ms.
- *
+ * 
  * @param {Function} onFlush - (base64Pcm16k) => void
  * @param {number} flushMs - buffer duration before flushing (default 200ms)
  */
@@ -163,7 +163,7 @@ export function createTwilioToGeminiProcessor(onFlush, flushMs = 200) {
   const FLUSH_BYTES = Math.floor(16000 * 2 * flushMs / 1000);
   let pcmBuffer = [];
   let totalBytes = 0;
-
+  
   return {
     /** Process a base64 µ-law chunk from Twilio */
     push(base64Ulaw) {
@@ -172,12 +172,12 @@ export function createTwilioToGeminiProcessor(onFlush, flushMs = 200) {
       const pcm16k = upsample(pcm8k);
       pcmBuffer.push(Buffer.from(pcm16k.buffer));
       totalBytes += pcm16k.length * 2;
-
+      
       if (totalBytes >= FLUSH_BYTES) {
         this.flush();
       }
     },
-
+    
     /** Force flush any buffered audio */
     flush() {
       if (pcmBuffer.length === 0) return;
@@ -186,7 +186,7 @@ export function createTwilioToGeminiProcessor(onFlush, flushMs = 200) {
       totalBytes = 0;
       onFlush(combined.toString('base64'));
     },
-
+    
     /** Get current buffer size in bytes */
     get bufferedBytes() { return totalBytes; },
   };
@@ -198,14 +198,14 @@ export function createTwilioToGeminiProcessor(onFlush, flushMs = 200) {
  */
 export function createGeminiToTwilioProcessor() {
   const downsample = createDownsampler24to8();
-
+  
   return {
     /** Process base64 PCM 24kHz from Gemini → base64 µ-law 8kHz for Twilio */
     process(base64Pcm) {
       const pcmBuf = Buffer.from(base64Pcm, 'base64');
       const pcm24k = new Int16Array(pcmBuf.buffer, pcmBuf.byteOffset, pcmBuf.length / 2);
       const pcm8k = downsample(pcm24k);
-
+      
       const ulawBuf = Buffer.alloc(pcm8k.length);
       for (let i = 0; i < pcm8k.length; i++) {
         ulawBuf[i] = pcmToUlaw(pcm8k[i]);

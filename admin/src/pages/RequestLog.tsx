@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '../api';
 
 interface LogEntry {
@@ -14,31 +14,18 @@ interface LogEntry {
 }
 
 export function RequestLogPage() {
-  const loadSeq = useRef(0);
   const [data, setData] = useState<{ rows: LogEntry[]; total: number; page: number; pages: number }>({
     rows: [], total: 0, page: 1, pages: 1,
   });
   const [page, setPage] = useState(1);
   const [agentFilter, setAgentFilter] = useState('all');
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
-  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { loadPage(page); }, [page, agentFilter]);
 
   const loadPage = (p: number) => {
-    const seq = ++loadSeq.current;
     const qs = agentFilter !== 'all' ? `&agent=${encodeURIComponent(agentFilter)}` : '';
-    api.requests(p, qs)
-      .then((next) => {
-        if (seq !== loadSeq.current) return;
-        setData(next);
-        setLoadError('');
-      })
-      .catch((err) => {
-        if (seq !== loadSeq.current) return;
-        setData({ rows: [], total: 0, page: p, pages: 1 });
-        setLoadError(err instanceof Error ? err.message : 'Failed to load request log');
-      });
+    api.requests(p, qs).then(setData).catch(() => {});
   };
 
   const timeAgo = (ts: string) => {
@@ -77,17 +64,8 @@ export function RequestLogPage() {
           {[...agentMap.entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
       </div>
-      {loadError && (
-        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
-          {loadError}
-        </div>
-      )}
 
-      {loadError ? (
-        <div style={{ textAlign: 'center', padding: 48, color: 'var(--error)' }}>
-          Request log could not be loaded.
-        </div>
-      ) : data.rows.length === 0 ? (
+      {data.rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
           No requests yet.
         </div>
@@ -111,11 +89,10 @@ export function RequestLogPage() {
                       style={{ cursor: 'pointer' }}>
                     <td style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{timeAgo(r.created_at)}</td>
                     <td>
-                      <button type="button"
-                         style={{ background: 'none', border: 0, padding: 0, color: 'var(--text-link, #88aaff)', cursor: 'pointer', textDecoration: 'none', fontWeight: 500 }}
+                      <a style={{ color: 'var(--text-link, #88aaff)', cursor: 'pointer', textDecoration: 'none', fontWeight: 500 }}
                          onClick={(e) => { e.stopPropagation(); setAgentFilter(r.token_name); setPage(1); }}>
                         {r.agent_name || r.token_name}
-                      </button>
+                      </a>
                     </td>
                     <td className="mono">{r.operation}</td>
                     <td style={{ color: 'var(--text-secondary)', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

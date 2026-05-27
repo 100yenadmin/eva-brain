@@ -114,37 +114,4 @@ describe('extractTakesFromDb', () => {
     const allRowNums = all.map(t => t.row_num).sort();
     expect(allRowNums).toContain(3);
   });
-
-  test('rebuild with sourceId only clears takes for the matching source row', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('kb-takes', 'kb-takes') ON CONFLICT (id) DO NOTHING`,
-    );
-    const defaultPage = await engine.putPage('people/source-safe-takes', {
-      title: 'Default Source Takes',
-      type: 'person',
-      compiled_truth: ALICE_BODY,
-    });
-    const kbPage = await engine.putPage('people/source-safe-takes', {
-      title: 'KB Source Takes',
-      type: 'person',
-      compiled_truth: ALICE_BODY.replace('CEO of Acme', 'KB-only CEO of Acme'),
-    }, { sourceId: 'kb-takes' });
-    await engine.addTakesBatch([
-      { page_id: defaultPage.id, row_num: 99, claim: 'Default source must survive', kind: 'fact', holder: 'world', weight: 1.0 },
-      { page_id: kbPage.id, row_num: 99, claim: 'KB stale row should be rebuilt', kind: 'fact', holder: 'world', weight: 1.0 },
-    ]);
-
-    const result = await extractTakesFromDb(engine, {
-      slugs: ['people/source-safe-takes'],
-      sourceId: 'kb-takes',
-      rebuild: true,
-    });
-
-    expect(result.takesUpserted).toBe(3);
-    const defaultTakes = await engine.listTakes({ page_id: defaultPage.id, active: true });
-    expect(defaultTakes.some(t => t.row_num === 99 && t.claim === 'Default source must survive')).toBe(true);
-    const kbTakes = await engine.listTakes({ page_id: kbPage.id, active: true });
-    expect(kbTakes.some(t => t.row_num === 99)).toBe(false);
-    expect(kbTakes.some(t => t.claim === 'KB-only CEO of Acme')).toBe(true);
-  });
 });

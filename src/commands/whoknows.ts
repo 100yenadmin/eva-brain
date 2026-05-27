@@ -331,10 +331,19 @@ export async function runWhoknows(
     }, { timeoutMs: 30_000 });
     results = unpackToolResult<WhoknowsResult[]>(raw);
   } else {
+    // v0.40.6.0 T1.5 wiring (D4): consult the active pack for expert
+    // types. Pack-load failure → empty filter (NOT hardcoded defaults
+    // per the silent-violation bug class Finding 1.3 closed). Local
+    // CLI: ctx.remote=false so the trust gate accepts the resolution.
+    const { loadActivePackBestEffort, expertTypesFromPack } = await import('../core/schema-pack/index.ts');
+    const fakeCtx = { engine, config: {}, logger: console, dryRun: false, remote: false, sourceId: undefined } as unknown as import('../core/operations.ts').OperationContext;
+    const pack = await loadActivePackBestEffort(fakeCtx);
+    const types = pack ? (expertTypesFromPack(pack.manifest) as PageType[]) : [];
     results = await findExperts(engine, {
       topic: parsed.topic,
       limit: parsed.limit,
       explain: parsed.explain,
+      types,
     });
   }
 

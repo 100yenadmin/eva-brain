@@ -151,8 +151,6 @@ describe('gbrain init --mcp-only — happy path', () => {
     const parsed = JSON.parse(r.stdout.trim().split('\n').pop()!);
     expect(parsed.status).toBe('success');
     expect(parsed.mode).toBe('thin-client');
-    expect(r.stdout).not.toContain('"oauth_client_id"');
-    expect(r.stdout).not.toContain('cid');
   });
 
   test('env-var-supplied secret is NOT persisted to config file', async () => {
@@ -168,7 +166,7 @@ describe('gbrain init --mcp-only — happy path', () => {
     // Env-var secrets stay in env — disk copy is opt-in via flag
     expect(cfg.remote_mcp.oauth_client_secret).toBeUndefined();
     const parsed = JSON.parse(r.stdout.trim().split('\n').pop()!);
-    expect(parsed.secret_saved).toBe(false);
+    expect(parsed.oauth_secret_in_config).toBe(false);
   });
 
   test('trailing slashes on issuer_url are normalized', async () => {

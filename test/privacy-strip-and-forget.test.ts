@@ -12,7 +12,7 @@
  * Real PGLite + tempdir filesystem.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,6 @@ import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { chunkText } from '../src/core/chunkers/recursive.ts';
 import { forgetFactInFence } from '../src/core/facts/forget.ts';
 import { FACTS_FENCE_BEGIN, FACTS_FENCE_END, parseFactsFence } from '../src/core/facts-fence.ts';
-import { resetPgliteState } from './helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
 let brainDir: string;
@@ -38,19 +37,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   brainDir = mkdtempSync(join(tmpdir(), 'privacy-test-'));
-  await resetPgliteState(engine);
-  await engine.executeRaw(`UPDATE sources SET local_path = $1 WHERE id = 'default'`, [brainDir]);
-});
-
-afterEach(() => {
-  if (!brainDir) return;
-  try {
-    rmSync(brainDir, { recursive: true, force: true });
-  } catch {
-    /* best-effort */
-  } finally {
-    brainDir = '';
-  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (engine as any).db.query('DELETE FROM facts');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (engine as any).db.query(`UPDATE sources SET local_path = $1 WHERE id = 'default'`, [brainDir]);
 });
 
 const FENCE_BODY = (rows: string): string => `# Page
@@ -93,24 +83,6 @@ describe('Layer A — chunker strips private fact rows (Codex R2-#1)', () => {
     expect(allText).not.toContain('SECRET');
     // The prose ("Some text.") is preserved.
     expect(allText).toContain('Some text.');
-  });
-
-  test('unbalanced facts fence is stripped before chunking', () => {
-    const body = `# Page
-
-Some text.
-
-${FACTS_FENCE_BEGIN}
-| # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
-|---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
-| 1 | PRIVATE_UNBALANCED_CHUNK_PROOF | fact | 1.0 | private | high | 2026-01-01 |  | s |  |
-`;
-    const chunks = chunkText(body);
-    const allText = chunks.map(c => c.text).join('\n');
-
-    expect(allText).toContain('Some text.');
-    expect(allText).not.toContain('PRIVATE_UNBALANCED_CHUNK_PROOF');
-    expect(allText).not.toContain(FACTS_FENCE_BEGIN);
   });
 
   test('no fence at all → chunker behavior unchanged', () => {

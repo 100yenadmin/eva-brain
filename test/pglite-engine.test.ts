@@ -76,48 +76,11 @@ describe('PGLiteEngine: Pages', () => {
     expect(result).toBeNull();
   });
 
-  test('getPage defaults to the default source when duplicate slugs exist', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('alt-read', 'alt-read') ON CONFLICT (id) DO NOTHING`,
-    );
-    await engine.putPage('test/source-read', testPage);
-    await engine.executeRaw(
-      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-read', 'test/source-read', 'note', 'Alt')`,
-    );
-
-    expect((await engine.getPage('test/source-read'))?.title).toBe('Test Page');
-    expect((await engine.getPage('test/source-read', { sourceId: 'alt-read' }))?.title).toBe('Alt');
-  });
-
   test('deletePage removes page', async () => {
     await engine.putPage('test/delete-me', testPage);
     await engine.deletePage('test/delete-me');
     const result = await engine.getPage('test/delete-me');
     expect(result).toBeNull();
-  });
-
-  test('deletePage is source-scoped when duplicate slugs exist', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('alt-delete', 'alt-delete') ON CONFLICT (id) DO NOTHING`,
-    );
-    await engine.putPage('test/source-delete', testPage);
-    await engine.executeRaw(
-      `INSERT INTO pages (source_id, slug, type, title) VALUES ('alt-delete', 'test/source-delete', 'note', 'Alt')`,
-    );
-
-    await engine.deletePage('test/source-delete');
-    let rows = await engine.executeRaw<{ source_id: string }>(
-      `SELECT source_id FROM pages WHERE slug = $1 ORDER BY source_id`,
-      ['test/source-delete'],
-    );
-    expect(rows.map(r => r.source_id)).toEqual(['alt-delete']);
-
-    await engine.deletePage('test/source-delete', { sourceId: 'alt-delete' });
-    rows = await engine.executeRaw<{ source_id: string }>(
-      `SELECT source_id FROM pages WHERE slug = $1`,
-      ['test/source-delete'],
-    );
-    expect(rows.length).toBe(0);
   });
 
   test('listPages with type filter', async () => {
@@ -189,22 +152,6 @@ describe('PGLiteEngine: Pages', () => {
     expect((await engine.getPage('test/new-name'))?.title).toBe('Test Page');
   });
 
-  test('updateSlug only renames the selected source', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, config)
-         VALUES ('kb', 'kb', '{}'::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
-    );
-    await engine.putPage('test/shared', { ...testPage, title: 'Default' });
-    await engine.putPage('test/shared', { ...testPage, title: 'KB' }, { sourceId: 'kb' });
-
-    await engine.updateSlug('test/shared', 'test/renamed', { sourceId: 'kb' });
-
-    expect((await engine.getPage('test/shared'))?.title).toBe('Default');
-    expect(await engine.getPage('test/shared', { sourceId: 'kb' })).toBeNull();
-    expect((await engine.getPage('test/renamed', { sourceId: 'kb' }))?.title).toBe('KB');
-  });
-
   test('validateSlug rejects path traversal', async () => {
     expect(() => engine.putPage('../etc/passwd', testPage)).toThrow();
   });
@@ -261,36 +208,6 @@ describe('PGLiteEngine: Search', () => {
     // stresses the chunk-grain tsvector directly.
     const results = await engine.searchKeyword('AI agents');
     expect(results.length).toBeGreaterThan(0);
-  });
-
-  test('searchKeyword keeps duplicate slugs distinct across sources', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, config) VALUES ('kb-search', 'kb-search', '{"federated": true}'::jsonb)
-       ON CONFLICT (id) DO NOTHING`,
-    );
-    await engine.putPage('docs/setup', {
-      type: 'note',
-      title: 'Default Setup',
-      compiled_truth: 'sharedneedle default setup instructions',
-    });
-    await engine.upsertChunks('docs/setup', [
-      { chunk_index: 0, chunk_text: 'sharedneedle default setup instructions', chunk_source: 'compiled_truth' },
-    ]);
-    await engine.putPage('docs/setup', {
-      type: 'note',
-      title: 'KB Setup',
-      compiled_truth: 'sharedneedle support knowledge setup instructions',
-    }, { sourceId: 'kb-search' });
-    await engine.upsertChunks('docs/setup', [
-      { chunk_index: 0, chunk_text: 'sharedneedle support knowledge setup instructions', chunk_source: 'compiled_truth' },
-    ], { sourceId: 'kb-search' });
-
-    const results = await engine.searchKeyword('sharedneedle', { limit: 10 });
-    const sourceIds = results
-      .filter(r => r.slug === 'docs/setup')
-      .map(r => r.source_id)
-      .sort();
-    expect(sourceIds).toEqual(['default', 'kb-search']);
   });
 
   test('searchVector returns empty when no embeddings', async () => {
@@ -905,51 +822,6 @@ describe('PGLiteEngine: batch ops source-awareness (v0.18.0)', () => {
     expect(rows[0].to_src).toBe('alt');
   });
 
-  test('addLink with explicit source ids does NOT fan out across duplicate slugs', async () => {
-    await engine.addLink(
-      'topics/ai',
-      'topics/ml',
-      'alt mention',
-      'mention',
-      'markdown',
-      undefined,
-      undefined,
-      { fromSourceId: 'alt', toSourceId: 'alt' },
-    );
-    const db = (engine as any).db;
-    const { rows } = await db.query(
-      `SELECT f.source_id AS from_src, t.source_id AS to_src, l.context
-       FROM links l
-       JOIN pages f ON f.id = l.from_page_id
-       JOIN pages t ON t.id = l.to_page_id`
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].from_src).toBe('alt');
-    expect(rows[0].to_src).toBe('alt');
-    expect(rows[0].context).toBe('alt mention');
-  });
-
-  test('removeLink with explicit source ids removes only that source pair', async () => {
-    await engine.addLinksBatch([
-      { from_slug: 'topics/ai', to_slug: 'topics/ml', link_type: 'mention' },
-      { from_slug: 'topics/ai', to_slug: 'topics/ml', link_type: 'mention', from_source_id: 'alt', to_source_id: 'alt' },
-    ]);
-    await engine.removeLink('topics/ai', 'topics/ml', 'mention', undefined, {
-      fromSourceId: 'alt',
-      toSourceId: 'alt',
-    });
-    const db = (engine as any).db;
-    const { rows } = await db.query(
-      `SELECT f.source_id AS from_src, t.source_id AS to_src
-       FROM links l
-       JOIN pages f ON f.id = l.from_page_id
-       JOIN pages t ON t.id = l.to_page_id`
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].from_src).toBe('default');
-    expect(rows[0].to_src).toBe('default');
-  });
-
   test('addTimelineEntriesBatch default source_id does NOT fan out across sources', async () => {
     const inserted = await engine.addTimelineEntriesBatch([
       { slug: 'topics/ai', date: '2024-01-15', summary: 'Founded' },
@@ -978,21 +850,6 @@ describe('PGLiteEngine: batch ops source-awareness (v0.18.0)', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].source_id).toBe('alt');
   });
-
-  test('addTimelineEntry with explicit source id lands in that source only', async () => {
-    await engine.addTimelineEntry('topics/ai', {
-      date: '2024-01-16',
-      summary: 'Alt only event',
-    }, { sourceId: 'alt' });
-    const db = (engine as any).db;
-    const { rows } = await db.query(
-      `SELECT p.source_id, te.summary FROM timeline_entries te
-       JOIN pages p ON p.id = te.page_id`
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].source_id).toBe('alt');
-    expect(rows[0].summary).toBe('Alt only event');
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -1009,32 +866,6 @@ describe('PGLiteEngine: RawData', () => {
     const data = await engine.getRawData('test/raw', 'crunchbase');
     expect(data.length).toBe(1);
     expect((data[0].data as any).funding).toBe('$10M');
-  });
-
-  test('putRawData fails loud when the source-scoped page is missing', async () => {
-    await expect(
-      engine.putRawData('test/raw', 'crunchbase', { funding: '$10M' }, { sourceId: 'missing-source' }),
-    ).rejects.toThrow('source=missing-source');
-  });
-
-  test('putRawData fails loud when the page is missing', async () => {
-    await expect(
-      engine.putRawData('test/missing', 'crunchbase', { funding: '$10M' }),
-    ).rejects.toThrow('page "test/missing" not found');
-  });
-
-  test('putRawData without sourceId targets default only when duplicate slugs exist', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, config)
-       VALUES ('alt-raw', 'Alt Raw', '{}'::jsonb)
-       ON CONFLICT (id) DO NOTHING`,
-    );
-    await engine.putPage('test/raw', { ...testPage, title: 'Alt Raw' }, { sourceId: 'alt-raw' });
-
-    await engine.putRawData('test/raw', 'crunchbase', { funding: '$20M' });
-
-    expect(await engine.getRawData('test/raw', 'crunchbase', { sourceId: 'default' })).toHaveLength(1);
-    expect(await engine.getRawData('test/raw', 'crunchbase', { sourceId: 'alt-raw' })).toHaveLength(0);
   });
 });
 
@@ -1116,28 +947,6 @@ describe('PGLiteEngine: Stats & Health', () => {
     expect(health.missing_embeddings).toBe(1); // chunk has no embedding
     expect(health.embed_coverage).toBe(0);
   });
-
-  test('getHealth treats embedding presence, not embedded_at timestamp, as coverage truth', async () => {
-    await truncateAll();
-    await engine.putPage('test/embedded-no-timestamp', testPage);
-    await engine.upsertChunks('test/embedded-no-timestamp', [
-      {
-        chunk_index: 0,
-        chunk_text: 'chunk with vector but missing timestamp',
-        chunk_source: 'compiled_truth',
-        embedding: new Float32Array(1536).fill(0.01),
-      },
-    ]);
-    await (engine as any).db.query(
-      `UPDATE content_chunks SET embedded_at = NULL WHERE chunk_text = $1`,
-      ['chunk with vector but missing timestamp'],
-    );
-
-    const health = await engine.getHealth();
-    expect(health.missing_embeddings).toBe(0);
-    expect(health.embed_coverage).toBe(1);
-  });
-
 });
 
 // ─────────────────────────────────────────────────────────────────

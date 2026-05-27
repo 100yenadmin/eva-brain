@@ -27,6 +27,7 @@ test/check-resolvable-cli.test.ts
 test/claw-test-cli.test.ts
 test/code-def-refs.test.ts
 test/core/cycle.test.ts
+test/destructive-guard.test.ts
 test/doctor-minions-check.test.ts
 test/doctor.test.ts
 test/dream.test.ts
@@ -37,7 +38,6 @@ test/friction.test.ts
 test/gbrain-home-isolation.test.ts
 test/helpers/with-env.test.ts
 test/http-transport.test.ts
-test/hybrid-meta.test.ts
 test/init-migrate-only.test.ts
 test/integrations.test.ts
 test/mcp-eval-capture.test.ts
@@ -62,7 +62,6 @@ test/resolvers.test.ts
 test/scenarios.test.ts
 test/schema-bootstrap-coverage.test.ts
 test/search-limit.test.ts
-test/seed-pglite.test.ts
 test/skillpack-check.test.ts
 test/source-resolver.test.ts
 test/storage-sync.test.ts

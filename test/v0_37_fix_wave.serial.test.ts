@@ -19,30 +19,28 @@ describe('v0.37 Lane A — defaults sweep', () => {
     // CDX2-1: these were file-private const; Lane A consumers (schema
     // helpers, registry) need them exported. Importing here is the test.
     const { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } = await import('../src/core/ai/gateway.ts');
-    expect(DEFAULT_EMBEDDING_MODEL).toBe('voyage:voyage-4-large');
-    expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(2048);
+    expect(DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
   test('A.0: ai/defaults.ts is the canonical source (leaf module, no SDK pulls)', async () => {
     const defaults = await import('../src/core/ai/defaults.ts');
-    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('voyage:voyage-4-large');
-    expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(2048);
+    expect(defaults.DEFAULT_EMBEDDING_MODEL).toBe('zeroentropyai:zembed-1');
+    expect(defaults.DEFAULT_EMBEDDING_DIMENSIONS).toBe(1280);
   });
 
   // T-11 / T-12: registry + schema defaults track gateway constants.
-  test("A.1: getPGLiteSchema() default-args produce Eva's vector(2048) column", async () => {
+  test('A.1: getPGLiteSchema() default-args produce a vector(1280) column', async () => {
     const { getPGLiteSchema } = await import('../src/core/pglite-schema.ts');
     const sql = getPGLiteSchema(); // no args — uses defaults
-    expect(sql).toContain('vector(2048)');
-    expect(sql).not.toContain('vector(1280)');
+    expect(sql).toContain('vector(1280)');
     expect(sql).not.toContain('vector(1536)');
   });
 
-  test("A.2: getPostgresSchema() default-args produce Eva's vector(2048) column", async () => {
+  test('A.2: getPostgresSchema() default-args produce a vector(1280) column', async () => {
     const { getPostgresSchema } = await import('../src/core/postgres-engine.ts');
     const sql = getPostgresSchema();
-    expect(sql).toContain('vector(2048)');
-    expect(sql).not.toContain('vector(1280)');
+    expect(sql).toContain('vector(1280)');
     expect(sql).not.toContain('vector(1536)');
   });
 
@@ -54,18 +52,18 @@ describe('v0.37 Lane A — defaults sweep', () => {
     expect(sql).toContain('voyage:voyage-4-large');
   });
 
-  test('A.5: embedding-column registry builtin defaults to Eva Voyage/2048 on empty config + gateway', async () => {
+  test('A.5: embedding-column registry builtin defaults to ZE/1280 on empty config + gateway', async () => {
     // The registry's resolution chain is cfg > gateway > DEFAULT. With
     // no cfg AND no gateway, it should fall through to the canonical
-    // downstream default (Voyage 4 Large / 2048). Reset gateway first to exercise that path.
+    // default (ZE/1280). Reset gateway first to exercise that path.
     const { resetGateway } = await import('../src/core/ai/gateway.ts');
     const { getEmbeddingColumnRegistry } = await import('../src/core/search/embedding-column.ts');
     resetGateway();
     try {
       const reg = getEmbeddingColumnRegistry({ engine: 'pglite' } as any);
       expect(reg['embedding']).toBeDefined();
-      expect(reg['embedding'].provider).toBe('voyage:voyage-4-large');
-      expect(reg['embedding'].dimensions).toBe(2048);
+      expect(reg['embedding'].provider).toBe('zeroentropyai:zembed-1');
+      expect(reg['embedding'].dimensions).toBe(1280);
     } finally {
       // Re-apply legacy preload defaults so the rest of the file's tests
       // (and subsequent files in this shard) see a configured gateway.

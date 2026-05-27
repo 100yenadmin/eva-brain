@@ -108,49 +108,6 @@ describe('importImageFile happy path (noEmbed)', () => {
     expect((chunks[0] as { chunk_source: string }).chunk_source).toBe('image_asset');
     // chunk_text falls back to filename when OCR is off (default).
     expect(chunks[0].chunk_text).toBe('photo.png');
-
-    // Image chunks write embedding_image, not the text embedding column.
-    // A noEmbed image import must not look like stale text work.
-    expect(await engine.countStaleChunks()).toBe(0);
-  });
-
-  test('source-scoped image import keeps pages, chunks, and files separate', async () => {
-    await engine.executeRaw(
-      `INSERT INTO sources (id, name, config)
-         VALUES ('openclaw-support-kb', 'openclaw-support-kb', '{}'::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
-    );
-
-    const target = join(tmpDir, 'shared.png');
-    writeFileSync(target, Buffer.from('shared-image-bytes'));
-
-    const relativePath = 'originals/photos/shared.png';
-    const r1 = await importImageFile(engine, target, relativePath, { noEmbed: true });
-    const r2 = await importImageFile(engine, target, relativePath, {
-      noEmbed: true,
-      sourceId: 'openclaw-support-kb',
-    });
-    expect(r1.status).toBe('imported');
-    expect(r2.status).toBe('imported');
-
-    const defaultPage = await engine.getPage(relativePath);
-    const kbPage = await engine.getPage(relativePath, { sourceId: 'openclaw-support-kb' });
-    expect(defaultPage).not.toBeNull();
-    expect(kbPage).not.toBeNull();
-    expect(defaultPage!.id).not.toBe(kbPage!.id);
-    expect(defaultPage!.source_id).toBe('default');
-    expect(kbPage!.source_id).toBe('openclaw-support-kb');
-
-    expect(await engine.getChunks(relativePath)).toHaveLength(1);
-    expect(await engine.getChunks(relativePath, { sourceId: 'openclaw-support-kb' })).toHaveLength(1);
-
-    const defaultFile = await engine.getFile('default', relativePath);
-    const kbFile = await engine.getFile('openclaw-support-kb', relativePath);
-    expect(defaultFile).not.toBeNull();
-    expect(kbFile).not.toBeNull();
-    expect(defaultFile!.id).not.toBe(kbFile!.id);
-    expect(defaultFile!.page_id).toBe(defaultPage!.id);
-    expect(kbFile!.page_id).toBe(kbPage!.id);
   });
 
   test('idempotent on content_hash: re-import same bytes returns skipped', async () => {

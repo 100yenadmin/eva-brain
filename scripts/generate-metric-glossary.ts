@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 const OUT_PATH = join(REPO_ROOT, 'docs', 'eval', 'METRIC_GLOSSARY.md');
 
-const md = renderMetricGlossaryMarkdown().replace(/\n+$/, '\n');
+const md = renderMetricGlossaryMarkdown();
 
 mkdirSync(dirname(OUT_PATH), { recursive: true });
 writeFileSync(OUT_PATH, md, 'utf-8');

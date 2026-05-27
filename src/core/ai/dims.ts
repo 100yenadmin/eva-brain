@@ -34,8 +34,9 @@ const VOYAGE_OUTPUT_DIMENSION_MODELS = new Set([
 // Per Voyage's API docs (2026-05). Out-of-range requests are rejected with
 // HTTP 400 by the upstream — catching it locally produces a clearer error
 // with the valid-values hint. The most common way to hit this in
-// production: `embedding_model: voyage:voyage-4-large` configured with an
-// invalid `embedding_dimensions` value inherited from another provider.
+// production: `embedding_model: voyage:voyage-4-large` configured without
+// `embedding_dimensions`, where the gateway falls back to
+// DEFAULT_EMBEDDING_DIMENSIONS=1536 (an OpenAI default, not a Voyage one).
 export const VOYAGE_VALID_OUTPUT_DIMS = [256, 512, 1024, 2048] as const;
 
 export function supportsVoyageOutputDimension(modelId: string): boolean {
@@ -50,10 +51,9 @@ export function isValidVoyageOutputDim(dims: number): boolean {
 // from zerank-2 (Matryoshka-style); smaller dims trade quality for storage.
 // ZE rejects any other value with HTTP 400; catching it locally produces a
 // clearer error with the valid-values hint. Same failure mode as the Voyage
-// case: `embedding_model: zeroentropyai:zembed-1` configured without a
-// compatible `embedding_dimensions` falls back to the downstream default,
-// which ZE doesn't accept unless the brain has explicitly opted into a valid
-// ZE dimension.
+// case: `embedding_model: zeroentropyai:zembed-1` configured without
+// `embedding_dimensions` falls back to DEFAULT_EMBEDDING_DIMENSIONS=1536
+// (an OpenAI default), which ZE doesn't accept.
 const ZEROENTROPY_DIM_MODELS = new Set(['zembed-1']);
 export const ZEROENTROPY_VALID_DIMS = [2560, 1280, 640, 320, 160, 80, 40] as const;
 
@@ -172,7 +172,10 @@ export function dimsProviderOptions(
       // When threaded explicitly by embedQuery()/embed(), it reaches Voyage.
       if (supportsVoyageOutputDimension(modelId)) {
         // Fail-loud at the embed boundary if the user configured a dim
-        // Voyage doesn't accept. Without this guard, Voyage's HTTP 400 is
+        // Voyage doesn't accept. The most common path here: a brain with
+        // `embedding_model: voyage:voyage-4-large` but no explicit
+        // `embedding_dimensions`, where the gateway falls back to the
+        // module default (1536). Without this guard, Voyage's HTTP 400 is
         // the only signal — usually mis-attributed as a transient network
         // error.
         if (!isValidVoyageOutputDim(dims)) {

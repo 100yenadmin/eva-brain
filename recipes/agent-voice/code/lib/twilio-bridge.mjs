@@ -1,10 +1,10 @@
 /**
  * twilio-venus-bridge.mjs — Bridge Twilio Media Streams to Gemini Live API
- *
+ * 
  * Supports TWO-PHASE authentication:
  *   Phase 1: Gatekeeper (zero context, auth tools only)
  *   Phase 2: Full Venus (all context + tools, loaded after auth)
- *
+ * 
  * The Twilio WebSocket stays connected throughout. On upgrade,
  * the Gemini connection is closed and a new one opened with full context.
  */
@@ -14,7 +14,7 @@ import { createTwilioToGeminiProcessor, createGeminiToTwilioProcessor } from './
 
 /**
  * Create a Twilio↔Venus bridge with upgrade support.
- *
+ * 
  * @param {WebSocket} twilioWs - Twilio media stream WebSocket
  * @param {Object} opts
  * @param {string} opts.geminiApiKey
@@ -22,7 +22,7 @@ import { createTwilioToGeminiProcessor, createGeminiToTwilioProcessor } from './
  * @param {string} opts.systemPrompt - Initial prompt (gatekeeper or full)
  * @param {Array} opts.toolDefs - Initial tool declarations
  * @param {Function} opts.onToolCall - (name, args) => Promise<result>
- * @param {Function} opts.onTranscript - (entry) => void
+ * @param {Function} opts.onTranscript - (entry) => void  
  * @param {Function} opts.onCallStart - (callSid, callerPhone) => void
  * @param {Function} opts.onCallEnd - (callSid, callerPhone, duration, transcript) => void
  * @param {string} opts.voiceName
@@ -57,7 +57,7 @@ export function createBridge(twilioWs, opts) {
   let currentToolCall = opts.onToolCall;
   let _twilioToolAbort = null;
   let _twilioToolCancelled = false;
-
+  
   // Audio processors — recreated on upgrade for clean state
   let inProcessor = null;
   let outProcessor = null;
@@ -259,7 +259,7 @@ export function createBridge(twilioWs, opts) {
      */
     upgrade(newPrompt, newTools, newToolHandler, newVoice) {
       console.log('[twilio-venus] ⬆️ UPGRADING: gatekeeper → full Venus');
-
+      
       // Close gatekeeper Gemini
       if (geminiWs?.readyState === WebSocket.OPEN) {
         geminiWs.close();

@@ -2,28 +2,17 @@ import { execSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, realpathSync } from 'fs';
 import { basename, join, dirname, resolve } from 'path';
 import { VERSION } from '../version.ts';
-import type { GBrainConfig } from '../core/config.ts';
 
-const GBRAIN_GITHUB_REPO = 'electricsheephq/eva-brain';
-const GBRAIN_GITHUB_URL = `https://github.com/${GBRAIN_GITHUB_REPO}`;
-const GBRAIN_RELEASES_URL = 'https://github.com/electricsheephq/eva-brain/releases';
-const EVA_SOURCE_UPDATE_COMMAND = 'cd ~/eva-brain && scripts/update-local-install.sh';
-const DEFAULT_EMBEDDING_MODEL = 'openai:text-embedding-3-large';
-
-export function resolvePostUpgradeEmbeddingModel(config: Pick<GBrainConfig, 'embedding_model'> | null | undefined): string {
-  const model = config?.embedding_model?.trim();
-  return model || DEFAULT_EMBEDDING_MODEL;
-}
+const GBRAIN_GITHUB_REPO = 'garrytan/gbrain';
 
 export async function runUpgrade(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: gbrain upgrade\n\nSelf-update the Eva Brain CLI.\n\nSource-linked installs are fast-forwarded in place. Package, binary, and bundle installs are pointed at the public source updater so Eva-specific OpenClaw and support-KB setup stays intact.');
+    console.log('Usage: gbrain upgrade\n\nSelf-update the CLI.\n\nDetects install method (bun, binary, clawhub) and runs the appropriate update.\nAfter upgrading, shows what\'s new and offers to set up new features.');
     return;
   }
 
   // Capture old version BEFORE upgrading (Codex finding: old binary runs this code)
   const oldVersion = VERSION;
-  const upgradeFrom = oldVersion;
   const method = detectInstallMethod();
 
   console.log(`Detected install method: ${method}`);
@@ -48,27 +37,41 @@ export async function runUpgrade(args: string[]) {
       break;
     }
 
-    case 'bun':
-      console.log('This looks like a package install. Eva Brain updates should use the source updater so plugin and support-KB setup stay aligned.');
-      printSourceUpdaterCommands();
+    case 'bun': {
+      console.log('Upgrading via bun...');
+      const bunGlobalRoot = resolveBunGlobalRoot();
+      try {
+        execFileSync('bun', ['update', 'gbrain'], { cwd: bunGlobalRoot, stdio: 'inherit', timeout: 120_000 });
+        upgraded = true;
+      } catch {
+        console.error('Upgrade failed. Try running manually:');
+        console.error(`  cd ${bunGlobalRoot} && bun update gbrain`);
+      }
       break;
+    }
 
     case 'binary':
       console.log('Binary self-update not yet implemented.');
       console.log('Download the latest binary from GitHub Releases:');
-      console.log(`  ${GBRAIN_RELEASES_URL}`);
+      console.log('  https://github.com/garrytan/gbrain/releases');
       break;
 
     case 'clawhub':
-      console.log('ClawHub bundle updates alone do not refresh the source checkout, OpenClaw plugin, Codex plugin, or support KB.');
-      printSourceUpdaterCommands();
+      console.log('Upgrading via ClawHub...');
+      try {
+        execSync('clawhub update gbrain', { stdio: 'inherit', timeout: 120_000 });
+        upgraded = true;
+      } catch {
+        console.error('ClawHub upgrade failed. Try: clawhub update gbrain');
+      }
       break;
 
     default:
       console.error('Could not detect installation method.');
       console.log('Try one of:');
-      printSourceUpdaterCommands();
-      console.log(`  Download from ${GBRAIN_RELEASES_URL}`);
+      console.log('  bun update gbrain');
+      console.log('  clawhub update gbrain');
+      console.log('  Download from https://github.com/garrytan/gbrain/releases');
   }
 
   if (upgraded) {
@@ -106,13 +109,6 @@ export async function runUpgrade(args: string[]) {
       // features scan is best-effort
     }
   }
-}
-
-function printSourceUpdaterCommands(): void {
-  console.log('  # If the source checkout is missing:');
-  console.log(`  git clone ${GBRAIN_GITHUB_URL}.git ~/eva-brain`);
-  console.log('  # Then run the public updater:');
-  console.log(`  ${EVA_SOURCE_UPDATE_COMMAND}`);
 }
 
 export function resolveBunGlobalRoot(): string {
@@ -245,7 +241,6 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     console.log('Idempotent — safe to re-run any time.');
     return;
   }
-  let upgradeFrom = VERSION;
 
   // v0.35.8.0: lay down ~/.gbrain/.gitignore retroactively. Existing users
   // never re-run `gbrain init`, so init-only coverage misses them entirely
@@ -263,7 +258,6 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
       const state = JSON.parse(readFileSync(statePath, 'utf-8'));
       const from = state?.last_upgrade?.from;
       if (from) {
-        upgradeFrom = from;
         const { migrations } = await import('./migrations/index.ts');
         for (const m of migrations) {
           if (isNewerThan(m.version, from)) {
@@ -363,20 +357,22 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
           // Banner is cosmetic; never block the upgrade.
         }
 
-        // v0.32.7 CJK wave: chunker-version bump → re-embed advisory.
-        // Eva policy: upgrade must not automatically reindex or embed user
-        // content. The advisory prints a cost/size estimate and manual command.
+        // v0.32.7 CJK wave: chunker-version bump → re-embed sweep.
+        // Idempotent — `runReindex` short-circuits when no pages are pending.
         try {
           const { runPostUpgradeReembedPrompt } = await import('../core/post-upgrade-reembed.ts');
-          // Use the loaded config directly. The gateway may not be configured
-          // yet during upgrade, and falling back through it can mislabel a
-          // Voyage/other-provider brain as OpenAI in the cost prompt.
-          const modelString = resolvePostUpgradeEmbeddingModel(cfgSchema);
-          await runPostUpgradeReembedPrompt(engine, modelString);
+          const { getEmbeddingModel } = await import('../core/ai/gateway.ts');
+          let modelString = 'openai:text-embedding-3-large';
+          try { modelString = getEmbeddingModel(); } catch { /* gateway not configured — keep default */ }
+          const promptResult = await runPostUpgradeReembedPrompt(engine, modelString);
+          if (promptResult.proceeded) {
+            const { runReindex } = await import('./reindex.ts');
+            await runReindex(engine, ['--markdown']);
+          }
         } catch (re) {
           const msg = re instanceof Error ? re.message : String(re);
-          console.warn(`\nChunker-bump advisory skipped: ${msg}`);
-          console.warn('Run `gbrain reindex --markdown --repo <brain-repo>` manually when ready.');
+          console.warn(`\nChunker-bump reindex skipped: ${msg}`);
+          console.warn('Run `gbrain reindex --markdown` manually when ready.');
         }
       } finally {
         try { await engine.disconnect(); } catch { /* best-effort */ }
@@ -386,7 +382,8 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
     // Non-fatal: connection or DDL failure here falls back to the existing
     // user-facing WARN. apply-migrations.ts:296-302 already surfaces the
     // hint to run `gbrain init --migrate-only`.
-    console.warn('\nSchema auto-apply skipped.');
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`\nSchema auto-apply skipped: ${msg}`);
     console.warn('Run `gbrain init --migrate-only` manually if your brain is wedged.');
   }
 
@@ -395,9 +392,7 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
   try {
     const { printAdvisoryIfRecommended } = await import('../core/skillpack/post-install-advisory.ts');
     const { VERSION } = await import('../version.ts');
-    if (isNewerThan('0.25.1', upgradeFrom) && !isNewerThan('0.25.1', VERSION)) {
-      printAdvisoryIfRecommended({ version: VERSION, context: 'upgrade' });
-    }
+    printAdvisoryIfRecommended({ version: VERSION, context: 'upgrade' });
   } catch {
     // Best-effort cosmetic surface; never block post-upgrade.
   }
@@ -414,6 +409,20 @@ export async function runPostUpgrade(args: string[] = []): Promise<void> {
   //     compare gbrain against itself)
   //   - every scaffolded skill is identical (nothing to say)
   await postUpgradeReferenceSweep();
+
+  // v0.41.18.0 (A4 + A18, T14): post-upgrade onboard banner. Fail-open;
+  // doesn't engine-connect (lightweight TTY check only). The actual
+  // recommendations need engine access via `gbrain onboard --check`;
+  // the banner just nudges the user to run it.
+  try {
+    const { runUpgradeBanner } = await import('../core/onboard/init-nudge.ts');
+    // The banner doesn't actually use the engine today; passing null-equivalent
+    // would require a type widening. Skip the engine arg and let the banner
+    // print the static nudge text.
+    await runUpgradeBanner(null as never);
+  } catch {
+    // Fail-open per A18: never crash post-upgrade from the banner.
+  }
 }
 
 /**
@@ -503,8 +512,8 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
   const bunLinkResult = detectBunLink();
   if (bunLinkResult) return 'bun-link';
 
-  // Check if running from node_modules (bun/npm install). Could be the Eva
-  // source package metadata OR the squatter (npm `gbrain@1.3.x`).
+  // Check if running from node_modules (bun/npm install). Could be canonical
+  // (we publish under garrytan/gbrain) OR the squatter (npm `gbrain@1.3.x`).
   // Sub-classify and warn loudly on suspect installs (#658).
   if (execPath.includes('node_modules') || process.argv[1]?.includes('node_modules')) {
     const verdict = classifyBunInstall();
@@ -534,7 +543,7 @@ export function detectInstallMethod(): 'bun' | 'bun-link' | 'binary' | 'clawhub'
  * Detect bun-link source-clone installs (closes #656, fixes #368).
  *
  * Walk up from argv[1] looking for a `.git/config` whose remote url
- * contains the Eva Brain repo slug (case-insensitive substring).
+ * contains `garrytan/gbrain` (case-insensitive substring).
  *
  * v0.28.5 gated on lstatSync(argv1).isSymbolicLink(), but bun resolves
  * the entire symlink chain before setting process.argv[1], so the check
@@ -579,7 +588,7 @@ function detectBunLink(): { repoRoot: string } | null {
  * npm, the package is the squatter — an unrelated `gbrain@1.3.x` that
  * silently overwrites our binary. This function reads the install
  * directory's package.json and checks two non-spoofable signals:
- *   - `repository.url` contains `electricsheephq/eva-brain` (case-insensitive)
+ *   - `repository.url` contains `garrytan/gbrain` (case-insensitive)
  *   - the install dir contains a `src/cli.ts` file (squatter ships
  *     compiled binary, not source)
  *
@@ -587,7 +596,7 @@ function detectBunLink(): { repoRoot: string } | null {
  * recovery message. Codex's plan-review noted these signals are spoofable
  * by a determined squatter — accepted; this is best-effort warning, not
  * an assertion. The right structural fix is publishing under a scoped
- * name like `@electricsheephq/eva-brain` (tracked v0.29 follow-up).
+ * name like `@garrytan/gbrain` (tracked v0.29 follow-up).
  */
 function classifyBunInstall(): 'canonical' | 'suspect' {
   try {
@@ -629,18 +638,18 @@ function classifyBunInstall(): 'canonical' | 'suspect' {
 
 function printSquatterRecovery(): void {
   console.warn('');
-  console.warn('  WARNING: gbrain install does not appear to be from electricsheephq/eva-brain.');
+  console.warn('  WARNING: gbrain install does not appear to be from garrytan/gbrain.');
   console.warn('  This is likely the npm-name collision tracked in issue #658:');
   console.warn('    https://www.npmjs.com/package/gbrain (an unrelated package).');
   console.warn('');
   console.warn('  Recovery options:');
   console.warn('    1. Install from source:');
   console.warn('         bun remove -g gbrain');
-  console.warn('         git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain');
-  console.warn('         cd ~/eva-brain && bun install && bun link');
+  console.warn('         git clone https://github.com/garrytan/gbrain.git');
+  console.warn('         cd gbrain && bun install && bun link');
   console.warn('');
   console.warn('    2. Download a release binary:');
-  console.warn(`         ${GBRAIN_RELEASES_URL}`);
+  console.warn('         https://github.com/garrytan/gbrain/releases');
   console.warn('');
   console.warn('  See docs/INSTALL_FOR_AGENTS.md for the canonical install paths.');
   console.warn('');

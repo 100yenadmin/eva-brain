@@ -38,14 +38,12 @@ import {
 
 import type {
   AIGatewayConfig,
-  AuthResolution,
   EmbedMultimodalOpts,
   MultimodalBatchResult,
   MultimodalInput,
   Recipe,
   TouchpointKind,
 } from './types.ts';
-import { resolveProviderAuth } from './auth.ts';
 import { resolveRecipe, assertTouchpoint, parseModelId } from './model-resolver.ts';
 import { resolveModel, TIER_DEFAULTS } from '../model-config.ts';
 import type { BrainEngine } from '../engine.ts';
@@ -53,10 +51,20 @@ import { dimsProviderOptions } from './dims.ts';
 import { AIConfigError, AITransientError, normalizeAIError } from './errors.ts';
 
 const MAX_CHARS = 8000;
+// v0.36.0.0 (D3 + D4): ZeroEntropy zembed-1 at 1280d via Matryoshka is the
+// new default for embedding. Real-corpus benchmark across 20 queries:
+//   - ZE wins 11/20 (OpenAI 6, Voyage 4)
+//   - 442ms avg vs OpenAI 973ms (2.2x faster)
+//   - $0.05/M tokens vs OpenAI $0.13/M (2.6x cheaper at regular pricing)
+// ZE valid Matryoshka steps are {2560, 1280, 640, 320, 160, 80, 40}; 1280 is
+// the closest analog to current OpenAI 1536d (smaller -> smaller HNSW index
+// -> faster queries) while staying in the high-recall zone of the Matryoshka
+// curve. 1024 (Voyage's step) is NOT a valid ZE dim — see
+// src/core/ai/dims.ts:ZEROENTROPY_VALID_DIMS.
+// New installs without ZEROENTROPY_API_KEY size for 1280d anyway — the
+// AIConfigError surfaces at first embed with a paste-ready setup hint.
 // Re-exported from the leaf `defaults.ts` so heavy schema/registry modules
 // don't transitively load every provider SDK just to read the defaults.
-// Eva overrides upstream's general ZeroEntropy default in that leaf to keep
-// fresh OpenClaw fleet installs on Voyage 4 Large at 2048d.
 export { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './defaults.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './defaults.ts';
 const DEFAULT_EXPANSION_MODEL = 'anthropic:claude-haiku-4-5-20251001';
@@ -120,6 +128,11 @@ function getExtendedModelsForProvider(providerId: string): ReadonlySet<string> |
  */
 type EmbedManyFn = typeof embedMany;
 let _embedTransport: EmbedManyFn = embedMany;
+// v0.41.6.0 D1: tests that install a transport stub also pass the
+// embedding-creds preflight, matching the chat-transport fast-path
+// pattern. Set when __setEmbedTransportForTests is called with a
+// non-null fn; cleared when called with null or on resetGateway().
+let _embedTransportInstalled = false;
 // Test-only seam for chat(). When set, chat() skips provider resolution and
 // returns this function's result directly. See __setChatTransportForTests.
 let _chatTransport: ((opts: ChatOpts) => Promise<ChatResult>) | null = null;
@@ -259,7 +272,9 @@ export function applyResolveAuth(
   cfg: AIGatewayConfig,
   touchpoint: 'embedding' | 'expansion' | 'chat' | 'reranker',
 ): { apiKey?: string; headers?: Record<string, string> } {
-  const resolved = resolveRecipeAuthHeader(recipe, cfg, touchpoint);
+  const resolved = recipe.resolveAuth
+    ? recipe.resolveAuth(cfg.env)
+    : defaultResolveAuth(recipe, cfg.env, touchpoint);
 
   // v0.37.6.0 — resolve default_headers (static or env-templated). Mutually
   // exclusive; declaring both is a config error.
@@ -309,31 +324,6 @@ export function applyResolveAuth(
   return { headers: { ...(defaults ?? {}), [resolved.headerName]: resolved.token } };
 }
 
-function resolveRecipeAuthHeader(
-  recipe: Recipe,
-  cfg: AIGatewayConfig,
-  touchpoint: 'embedding' | 'expansion' | 'chat' | 'reranker',
-): { headerName: string; token: string } {
-  const authConfig = cfg.provider_auth?.[recipe.id];
-  if (authConfig?.prefer === 'openclaw-codex' || authConfig?.prefer === 'openclaw-openai') {
-    const resolved = resolveProviderAuth(recipe, cfg);
-    const value = requireAuth(resolved, recipe, touchpoint);
-    const authEnv = { ...cfg.env };
-    const authKey =
-      recipe.auth_env?.required?.[0] ??
-      recipe.auth_env?.optional?.find(k => !/_(BASE_)?URL$/.test(k)) ??
-      'OPENAI_API_KEY';
-    authEnv[authKey] = value;
-    return recipe.resolveAuth
-      ? recipe.resolveAuth(authEnv)
-      : defaultResolveAuth(recipe, authEnv, touchpoint);
-  }
-
-  return recipe.resolveAuth
-    ? recipe.resolveAuth(cfg.env)
-    : defaultResolveAuth(recipe, cfg.env, touchpoint);
-}
-
 /**
  * Resolve the openai-compatible URL + optional fetch wrapper. Defaults to
  * `cfg.base_urls?.[recipe.id] ?? recipe.base_url_default` (the pre-v0.32
@@ -360,16 +350,6 @@ export function applyOpenAICompatConfig(
   return { baseURL };
 }
 
-function requireAuth(resolution: AuthResolution, recipe: Recipe, action: string): string {
-  if (!resolution.isConfigured || !resolution.value) {
-    throw new AIConfigError(
-      `${recipe.name} ${action} requires ${resolution.credentialKey ?? recipe.auth_env?.required?.[0] ?? 'credentials'}.`,
-      resolution.missingReason ?? recipe.setup_hint,
-    );
-  }
-  return resolution.value;
-}
-
 /** Configure the gateway. Called by cli.ts#connectEngine. Clears cached models. */
 export function configureGateway(config: AIGatewayConfig): void {
   _config = {
@@ -385,7 +365,6 @@ export function configureGateway(config: AIGatewayConfig): void {
     // wanted it. isAvailable('reranker') returns false when unset.
     reranker_model: config.reranker_model,
     base_urls: config.base_urls,
-    provider_auth: config.provider_auth,
     env: config.env,
   };
   _modelCache.clear();
@@ -527,6 +506,7 @@ export function resetGateway(): void {
   _modelCache.clear();
   _shrinkState.clear();
   _embedTransport = embedMany;
+  _embedTransportInstalled = false;
   _chatTransport = null;
   _warnedRecipes.clear();
   _extendedModels.clear();
@@ -543,6 +523,7 @@ export function resetGateway(): void {
  */
 export function __setEmbedTransportForTests(fn: EmbedManyFn | null): void {
   _embedTransport = fn ?? embedMany;
+  _embedTransportInstalled = fn !== null;
 }
 
 /**
@@ -615,6 +596,113 @@ export function getRerankerModel(): string | undefined {
 }
 
 /**
+ * v0.41.6.0 — structured diagnosis for the embedding touchpoint. Returns
+ * a tagged union naming exactly why the gateway can't serve embeddings.
+ * The old `isAvailable('embedding')` collapsed 5 distinct conditions
+ * (no gateway config, no model configured, unknown provider, no
+ * embedding touchpoint on the recipe, missing env vars) into one
+ * boolean — useful for hot-path branching but useless for surfacing a
+ * paste-ready error message to the user.
+ *
+ * D1 preflight in `src/core/embed-preflight.ts` consumes this to produce
+ * `EmbeddingCredentialError` with the exact env var name + recipe id +
+ * model. CLI catch sites format the error with a `--no-embed` hint.
+ *
+ * `isAvailable('embedding', ...)` delegates here so existing callers
+ * (search hybrid path, etc.) keep their boolean contract.
+ */
+export type EmbeddingDiagnosis =
+  | { ok: true; model: string; provider: string; recipeId: string }
+  | { ok: false; reason: 'no_gateway_config' }
+  | { ok: false; reason: 'no_model_configured' }
+  | { ok: false; reason: 'unknown_provider'; model: string; provider: string; message: string }
+  | { ok: false; reason: 'no_touchpoint'; model: string; provider: string; recipeId: string }
+  | { ok: false; reason: 'user_provided_model_unset'; model: string; provider: string; recipeId: string }
+  | { ok: false; reason: 'missing_env'; model: string; provider: string; recipeId: string; missingEnvVars: string[] };
+
+export function diagnoseEmbedding(modelOverride?: string): EmbeddingDiagnosis {
+  // Test-transport fast path: matches the `if (touchpoint === 'chat' &&
+  // _chatTransport) return true` shortcut in isAvailable() so tests that
+  // install an embed transport stub also pass the preflight without
+  // having to configure real provider env vars.
+  if (_embedTransportInstalled) {
+    const modelStr = modelOverride ?? _config?.embedding_model ?? DEFAULT_EMBEDDING_MODEL;
+    return { ok: true, model: modelStr, provider: '<test-transport>', recipeId: '<test-transport>' };
+  }
+
+  if (!_config) return { ok: false, reason: 'no_gateway_config' };
+
+  const modelStr = modelOverride ?? _config.embedding_model ?? DEFAULT_EMBEDDING_MODEL;
+  if (!modelStr) return { ok: false, reason: 'no_model_configured' };
+
+  let parsed;
+  let recipe;
+  try {
+    const resolved = resolveRecipe(modelStr);
+    parsed = resolved.parsed;
+    recipe = resolved.recipe;
+  } catch (err) {
+    const { providerId = 'unknown' } = (() => {
+      try { return parseModelId(modelStr); } catch { return { providerId: 'unknown' }; }
+    })();
+    return {
+      ok: false,
+      reason: 'unknown_provider',
+      model: modelStr,
+      provider: providerId,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  const tp = recipe.touchpoints.embedding;
+  if (!tp) {
+    return {
+      ok: false,
+      reason: 'no_touchpoint',
+      model: modelStr,
+      provider: parsed.providerId,
+      recipeId: recipe.id,
+    };
+  }
+
+  // Openai-compat recipes with empty models list require a user-provided model.
+  const isUserProvided = (tp as any).user_provided_models === true;
+  if (
+    Array.isArray(tp.models) &&
+    tp.models.length === 0 &&
+    (recipe.id === 'litellm' || isUserProvided)
+  ) {
+    return {
+      ok: false,
+      reason: 'user_provided_model_unset',
+      model: modelStr,
+      provider: parsed.providerId,
+      recipeId: recipe.id,
+    };
+  }
+
+  const required = recipe.auth_env?.required ?? [];
+  const missing = required.filter(k => !_config!.env[k]);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: 'missing_env',
+      model: modelStr,
+      provider: parsed.providerId,
+      recipeId: recipe.id,
+      missingEnvVars: missing,
+    };
+  }
+
+  return {
+    ok: true,
+    model: modelStr,
+    provider: parsed.providerId,
+    recipeId: recipe.id,
+  };
+}
+
+/**
  * Check whether a touchpoint can be served given the current config.
  * Replaces scattered `!process.env.OPENAI_API_KEY` checks (Codex C3).
  *
@@ -624,6 +712,10 @@ export function getRerankerModel(): string | undefined {
  * provider reachable?" rather than "is the global default reachable?" —
  * otherwise an unreachable global default disables vector search even
  * when the active column's provider works fine.
+ *
+ * v0.41.6.0: the 'embedding' branch delegates to diagnoseEmbedding() so
+ * the predicate and the diagnostic stay in sync. Other touchpoints keep
+ * their inline logic for now.
  */
 export function isAvailable(touchpoint: TouchpointKind, modelOverride?: string): boolean {
   // Test seam: when a transport stub is installed for this touchpoint, the
@@ -632,13 +724,13 @@ export function isAvailable(touchpoint: TouchpointKind, modelOverride?: string):
   // __setEmbedTransportForTests.
   if (touchpoint === 'chat' && _chatTransport) return true;
 
+  if (touchpoint === 'embedding') return diagnoseEmbedding(modelOverride).ok;
+
   if (!_config) return false;
   try {
     const modelStr =
       modelOverride
         ? modelOverride
-        : touchpoint === 'embedding'
-        ? getEmbeddingModel()
         : touchpoint === 'expansion'
         ? getExpansionModel()
         : touchpoint === 'chat'
@@ -652,32 +744,13 @@ export function isAvailable(touchpoint: TouchpointKind, modelOverride?: string):
     // Recipe must actually support the requested touchpoint.
     // Anthropic declares only expansion + chat (no embedding model); requesting
     // embedding from an anthropic-configured brain is unavailable regardless of auth.
-    const touchpointConfig = recipe.touchpoints[touchpoint as 'embedding' | 'expansion' | 'chat' | 'reranker'];
+    const touchpointConfig = recipe.touchpoints[touchpoint as 'expansion' | 'chat' | 'reranker'];
     if (!touchpointConfig) return false;
-    // Openai-compat recipes with empty models list require a user-provided
-    // model. Either the recipe explicitly opts in via
-    // EmbeddingTouchpoint.user_provided_models (D8=A), or the legacy
-    // `recipe.id === 'litellm'` heuristic (back-compat for pre-v0.32 builds
-    // where the field hadn't been declared yet).
-    const isUserProvided =
-      touchpoint === 'embedding' &&
-      (touchpointConfig as any).user_provided_models === true;
-    if (
-      Array.isArray(touchpointConfig.models) &&
-      touchpointConfig.models.length === 0 &&
-      (recipe.id === 'litellm' || isUserProvided)
-    ) return false;
 
-    const auth = resolveProviderAuth(recipe, _config!);
-    if (!auth.isConfigured) return false;
-
-    // OpenAI-compatible recipes can also require URL/deployment config
-    // (Azure, local servers). Validate that side before advertising readiness.
-    if (recipe.implementation === 'openai-compatible') {
-      applyOpenAICompatConfig(recipe, _config!);
-    }
-
-    return true;
+    // For openai-compatible without auth requirements (Ollama local), treat as always-available.
+    const required = recipe.auth_env?.required ?? [];
+    if (required.length === 0) return true;
+    return required.every(k => !!_config!.env[k]);
   } catch {
     return false;
   }
@@ -999,10 +1072,13 @@ async function resolveEmbeddingProvider(modelStr: string): Promise<{ model: any;
 }
 
 function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayConfig): any {
-  const resolvedAuth = resolveProviderAuth(recipe, cfg);
   switch (recipe.implementation) {
     case 'native-openai': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'embedding');
+      const apiKey = cfg.env.OPENAI_API_KEY;
+      if (!apiKey) throw new AIConfigError(
+        `OpenAI embedding requires OPENAI_API_KEY.`,
+        recipe.setup_hint,
+      );
       const client = createOpenAI({ apiKey });
       // AI SDK v6: use .textEmbeddingModel() for embeddings
       return (client as any).textEmbeddingModel
@@ -1010,7 +1086,11 @@ function instantiateEmbedding(recipe: Recipe, modelId: string, cfg: AIGatewayCon
         : (client as any).embedding(modelId);
     }
     case 'native-google': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'embedding');
+      const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      if (!apiKey) throw new AIConfigError(
+        `Google embedding requires GOOGLE_GENERATIVE_AI_API_KEY.`,
+        recipe.setup_hint,
+      );
       const client = createGoogleGenerativeAI({ apiKey });
       return (client as any).textEmbeddingModel
         ? (client as any).textEmbeddingModel(modelId)
@@ -1280,22 +1360,15 @@ export function splitByTokenBudget(
  * @internal exported for tests; not part of the public gateway API.
  */
 export function isTokenLimitError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const msg = err instanceof Error ? err.message : String(err);
   return (
-    wordsInOrder(msg, ['max', 'allowed', 'tokens', 'batch']) ||
-    wordsInOrder(msg, ['batch', 'too', 'many', 'tokens']) ||
-    wordsInOrder(msg, ['token', 'limit', 'exceeded'])
+    /max.*allowed.*tokens.*batch/i.test(msg) ||
+    /batch.*too.*many.*tokens/i.test(msg) ||
+    /token.*limit.*exceeded/i.test(msg) ||
+    // OpenAI embeddings: "Invalid 'input': maximum request size is 300000 tokens per request."
+    /maximum request size.*tokens/i.test(msg) ||
+    /max.*tokens.*per.*request/i.test(msg)
   );
-}
-
-function wordsInOrder(text: string, words: string[]): boolean {
-  let offset = 0;
-  for (const word of words) {
-    const next = text.indexOf(word, offset);
-    if (next < 0) return false;
-    offset = next + word.length;
-  }
-  return true;
 }
 
 /**
@@ -1507,7 +1580,13 @@ export async function embedMultimodal(
     );
   }
 
-  const apiKey = requireAuth(resolveProviderAuth(recipe, cfg), recipe, 'multimodal embedding');
+  const apiKey = cfg.env[recipe.auth_env?.required[0] ?? 'VOYAGE_API_KEY'];
+  if (!apiKey) {
+    throw new AIConfigError(
+      `${recipe.name} requires ${recipe.auth_env?.required[0]} for multimodal embedding.`,
+      recipe.setup_hint,
+    );
+  }
   const baseUrl = cfg.base_urls?.[recipe.id] ?? recipe.base_url_default;
   if (!baseUrl) {
     throw new AIConfigError(
@@ -1643,7 +1722,9 @@ async function embedMultimodalOpenAICompat(
   // hard-required-auth recipes (OpenAI Authorization: Bearer
   // OPENAI_API_KEY) both work via the same code path. Throws AIConfigError
   // when required env is missing.
-  const authResult = resolveRecipeAuthHeader(recipe, cfg, 'embedding');
+  const authResult = recipe.resolveAuth
+    ? recipe.resolveAuth(cfg.env)
+    : defaultResolveAuth(recipe, cfg.env, 'embedding');
   const baseUrl = cfg.base_urls?.[recipe.id] ?? recipe.base_url_default;
   if (!baseUrl) {
     throw new AIConfigError(
@@ -1894,18 +1975,20 @@ async function resolveExpansionProvider(modelStr: string): Promise<{ model: any;
 }
 
 function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayConfig): any {
-  const resolvedAuth = resolveProviderAuth(recipe, cfg);
   switch (recipe.implementation) {
     case 'native-openai': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'expansion');
+      const apiKey = cfg.env.OPENAI_API_KEY;
+      if (!apiKey) throw new AIConfigError(`OpenAI expansion requires OPENAI_API_KEY.`, recipe.setup_hint);
       return createOpenAI({ apiKey }).languageModel(modelId);
     }
     case 'native-google': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'expansion');
+      const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      if (!apiKey) throw new AIConfigError(`Google expansion requires GOOGLE_GENERATIVE_AI_API_KEY.`, recipe.setup_hint);
       return createGoogleGenerativeAI({ apiKey }).languageModel(modelId);
     }
     case 'native-anthropic': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'expansion');
+      const apiKey = cfg.env.ANTHROPIC_API_KEY;
+      if (!apiKey) throw new AIConfigError(`Anthropic expansion requires ANTHROPIC_API_KEY.`, recipe.setup_hint);
       return createAnthropic({ apiKey }).languageModel(modelId);
     }
     case 'openai-compatible': {
@@ -2137,18 +2220,20 @@ async function resolveChatProvider(modelStr: string): Promise<{ model: any; reci
 }
 
 function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig): any {
-  const resolvedAuth = resolveProviderAuth(recipe, cfg);
   switch (recipe.implementation) {
     case 'native-openai': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'chat');
+      const apiKey = cfg.env.OPENAI_API_KEY;
+      if (!apiKey) throw new AIConfigError(`OpenAI chat requires OPENAI_API_KEY.`, recipe.setup_hint);
       return createOpenAI({ apiKey }).languageModel(modelId);
     }
     case 'native-google': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'chat');
+      const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      if (!apiKey) throw new AIConfigError(`Google chat requires GOOGLE_GENERATIVE_AI_API_KEY.`, recipe.setup_hint);
       return createGoogleGenerativeAI({ apiKey }).languageModel(modelId);
     }
     case 'native-anthropic': {
-      const apiKey = requireAuth(resolvedAuth, recipe, 'chat');
+      const apiKey = cfg.env.ANTHROPIC_API_KEY;
+      if (!apiKey) throw new AIConfigError(`Anthropic chat requires ANTHROPIC_API_KEY.`, recipe.setup_hint);
       return createAnthropic({ apiKey }).languageModel(modelId);
     }
     case 'openai-compatible': {
@@ -2790,7 +2875,12 @@ export async function rerank(input: RerankInput): Promise<RerankResult[]> {
   // Resolve base URL + auth from the recipe (same path Voyage/ZE embeddings use).
   const cfg = requireConfig();
   const compat = applyOpenAICompatConfig(recipe, cfg);
-  const url = `${compat.baseURL.replace(/\/$/, '')}/models/rerank`;
+  // v0.40.6.1: rerank URL path is recipe-pluggable. Defaults to ZeroEntropy's
+  // legacy `/models/rerank`; openai-style providers like llama.cpp's
+  // llama-server set `/v1/rerank`. Wire shape is unchanged — any provider
+  // whose request/response shape differs from ZE/llama.cpp (e.g. Voyage with
+  // `top_k` / `data[]`) needs separate adapter hooks in a follow-up plan.
+  const url = `${compat.baseURL.replace(/\/$/, '')}${tp.path ?? '/models/rerank'}`;
   const auth = applyResolveAuth(recipe, cfg, 'reranker');
   // applyResolveAuth returns { apiKey } for Bearer-style auth (SDK's native
   // path) or { headers } for custom-header providers (Azure). v0.37.6.0:

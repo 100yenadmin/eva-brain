@@ -10,7 +10,7 @@
 import { createEngine } from '../core/engine-factory.ts';
 import { loadConfig, saveConfig, toEngineConfig, gbrainPath, type GBrainConfig } from '../core/config.ts';
 import type { BrainEngine } from '../core/engine.ts';
-import type { EffectiveDateSource, EngineConfig } from '../core/types.ts';
+import type { EngineConfig } from '../core/types.ts';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
@@ -53,53 +53,6 @@ interface MigrateManifest {
   completed_slugs: string[];
   target_engine: string;
   started_at: string;
-}
-
-interface LinkMigrationRow {
-  from_slug: string;
-  to_slug: string;
-  from_source_id: string;
-  to_source_id: string;
-  link_type: string;
-  context: string | null;
-  link_source: string | null;
-  origin_slug: string | null;
-  origin_field: string | null;
-  origin_source_id: string | null;
-}
-
-interface PageMigrationMetadata {
-  page_kind: 'markdown' | 'code' | 'image' | null;
-  effective_date: string | Date | null;
-  effective_date_source: EffectiveDateSource | null;
-  import_filename: string | null;
-  chunker_version: number | string | null;
-  source_path: string | null;
-}
-
-interface SourceMigrationRow {
-  id: string;
-  name: string;
-  local_path: string | null;
-  last_commit: string | null;
-  last_sync_at: string | Date | null;
-  config: unknown;
-  chunker_version: string | null;
-  archived: boolean | null;
-  archived_at: string | Date | null;
-  archive_expires_at: string | Date | null;
-  created_at: string | Date | null;
-}
-
-function normalizeDateValue(raw: string | Date | null | undefined): Date | null | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === null) return null;
-  return raw instanceof Date ? raw : new Date(raw);
-}
-
-function normalizeJsonValue(raw: unknown): string {
-  if (raw == null) return '{}';
-  return typeof raw === 'string' ? raw : JSON.stringify(raw);
 }
 
 function loadManifest(): MigrateManifest | null {
@@ -167,64 +120,10 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
     // v0.18.0+ multi-source: deletePage(slug) is now source-scoped (defaults
     // to 'default'), so per-page iteration would skip non-default-source
     // rows. migrate-engine --force is a destructive wipe across the entire
-    // brain — all sources, all pages — so we issue raw deletes that match
-    // the original semantic. Page deletion cascades through content_chunks /
-    // page_links / tags / timeline_entries / page_versions via existing FKs.
+    // brain — all sources, all pages — so we issue a raw DELETE that matches
+    // the original semantic. Cascades through content_chunks / page_links /
+    // tags / timeline_entries / page_versions via existing FKs.
     await targetEngine.executeRaw('DELETE FROM pages');
-    await targetEngine.executeRaw(`DELETE FROM sources WHERE id <> 'default'`);
-  }
-
-  // Copy source rows before pages so non-default-source page inserts satisfy
-  // the pages.source_id foreign key. Earlier migrations implicitly assumed
-  // the default source existed and failed on a fresh target for any multi-
-  // source brain.
-  const sources = await sourceEngine.executeRaw<SourceMigrationRow>(
-    `SELECT id,
-            name,
-            local_path,
-            last_commit,
-            last_sync_at,
-            config,
-            chunker_version,
-            archived,
-            archived_at,
-            archive_expires_at,
-            created_at
-       FROM sources
-      ORDER BY (id = 'default') DESC, id`,
-  );
-  for (const source of sources) {
-    await targetEngine.executeRaw(
-      `INSERT INTO sources (
-         id, name, local_path, last_commit, last_sync_at, config,
-         chunker_version, archived, archived_at, archive_expires_at, created_at
-       )
-       VALUES ($1, $2, $3, $4, $5::timestamptz, $6::jsonb,
-               $7, COALESCE($8, false), $9::timestamptz, $10::timestamptz, COALESCE($11::timestamptz, now()))
-       ON CONFLICT (id) DO UPDATE SET
-         name = EXCLUDED.name,
-         local_path = EXCLUDED.local_path,
-         last_commit = EXCLUDED.last_commit,
-         last_sync_at = EXCLUDED.last_sync_at,
-         config = EXCLUDED.config,
-         chunker_version = EXCLUDED.chunker_version,
-         archived = EXCLUDED.archived,
-         archived_at = EXCLUDED.archived_at,
-         archive_expires_at = EXCLUDED.archive_expires_at`,
-      [
-        source.id,
-        source.name,
-        source.local_path,
-        source.last_commit,
-        normalizeDateValue(source.last_sync_at),
-        normalizeJsonValue(source.config),
-        source.chunker_version,
-        source.archived ?? false,
-        normalizeDateValue(source.archived_at),
-        normalizeDateValue(source.archive_expires_at),
-        normalizeDateValue(source.created_at),
-      ],
-    );
   }
 
   // Load or create manifest for resume
@@ -268,17 +167,6 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
     const sourceOpts = { sourceId: page.source_id };
 
     // Copy page (preserve source_id)
-    const [metadata] = await sourceEngine.executeRaw<PageMigrationMetadata>(
-      `SELECT page_kind,
-              effective_date,
-              effective_date_source,
-              import_filename,
-              chunker_version,
-              source_path
-         FROM pages
-        WHERE slug = $1 AND source_id = $2`,
-      [page.slug, page.source_id],
-    );
     await targetEngine.putPage(page.slug, {
       type: page.type,
       title: page.title,
@@ -286,12 +174,6 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
       timeline: page.timeline,
       frontmatter: page.frontmatter,
       content_hash: page.content_hash,
-      ...(metadata?.page_kind ? { page_kind: metadata.page_kind } : {}),
-      ...(metadata?.effective_date !== undefined ? { effective_date: normalizeDateValue(metadata.effective_date) } : {}),
-      ...(metadata?.effective_date_source !== undefined ? { effective_date_source: metadata.effective_date_source } : {}),
-      ...(metadata?.import_filename !== undefined ? { import_filename: metadata.import_filename } : {}),
-      ...(metadata?.chunker_version != null ? { chunker_version: Number(metadata.chunker_version) } : {}),
-      ...(metadata?.source_path !== undefined ? { source_path: metadata.source_path } : {}),
     }, sourceOpts);
 
     // Copy chunks with embeddings.
@@ -316,7 +198,7 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
     // Copy timeline
     const timeline = await sourceEngine.getTimeline(page.slug, sourceOpts);
     for (const entry of timeline) {
-      await targetEngine.addTimelineEntry(page.slug, { // gbrain-allow-direct-insert: migrate-engine copies existing derived timeline rows during database migration
+      await targetEngine.addTimelineEntry(page.slug, {
         date: entry.date,
         source: entry.source,
         summary: entry.summary,
@@ -332,35 +214,8 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
 
     // Copy versions
     const versions = await sourceEngine.getVersions(page.slug, sourceOpts);
-    if (versions.length > 0) {
-      // Resume-safe exact copy: clear any partially copied snapshots for this
-      // target page, then preserve the original snapshot payload + timestamp.
-      await targetEngine.executeRaw(
-        `DELETE FROM page_versions
-          WHERE page_id IN (
-            SELECT id FROM pages WHERE slug = $1 AND source_id = $2
-          )`,
-        [page.slug, page.source_id],
-      );
-      for (const version of versions) {
-        const snapshotAt = version.snapshot_at instanceof Date
-          ? version.snapshot_at.toISOString()
-          : version.snapshot_at;
-        await targetEngine.executeRaw(
-          `INSERT INTO page_versions (page_id, compiled_truth, frontmatter, snapshot_at)
-           SELECT id, $2, $3::jsonb, $4
-             FROM pages
-            WHERE slug = $1 AND source_id = $5`,
-          [
-            page.slug,
-            version.compiled_truth,
-            JSON.stringify(version.frontmatter ?? {}),
-            snapshotAt,
-            page.source_id,
-          ],
-        );
-      }
-    }
+    // Versions are snapshots, we recreate them on the target
+    // (createVersion takes a snapshot of current state, which we just set)
 
     // Track progress with composite key so multi-source resume is correct.
     manifest!.completed_slugs.push(makeManifestKey(page.source_id, page.slug));
@@ -375,37 +230,14 @@ export async function runMigrateEngine(sourceEngine: BrainEngine, args: string[]
   console.log('Copying links...');
   progress.start('migrate.copy_links', allPages.length);
   for (const page of allPages) {
-    const links = await sourceEngine.executeRaw<LinkMigrationRow>(
-      `SELECT f.slug AS from_slug,
-              t.slug AS to_slug,
-              f.source_id AS from_source_id,
-              t.source_id AS to_source_id,
-              l.link_type,
-              l.context,
-              l.link_source,
-              o.slug AS origin_slug,
-              l.origin_field,
-              o.source_id AS origin_source_id
-         FROM links l
-         JOIN pages f ON f.id = l.from_page_id
-         JOIN pages t ON t.id = l.to_page_id
-         LEFT JOIN pages o ON o.id = l.origin_page_id
-        WHERE f.slug = $1 AND f.source_id = $2`,
-      [page.slug, page.source_id],
-    );
+    const sourceOpts = { sourceId: page.source_id };
+    const links = await sourceEngine.getLinks(page.slug, sourceOpts);
     for (const link of links) {
-      await targetEngine.addLink( // gbrain-allow-direct-insert: migrate-engine copies existing derived link rows during database migration
+      await targetEngine.addLink(
         link.from_slug, link.to_slug,
-        link.context ?? undefined,
-        link.link_type,
-        link.link_source ?? undefined,
-        link.origin_slug ?? undefined,
-        link.origin_field ?? undefined,
-        {
-          fromSourceId: link.from_source_id,
-          toSourceId: link.to_source_id,
-          originSourceId: link.origin_source_id ?? undefined,
-        },
+        link.context, link.link_type,
+        undefined, undefined, undefined,
+        { fromSourceId: page.source_id, toSourceId: page.source_id },
       );
     }
     progress.tick(1);

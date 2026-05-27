@@ -3,15 +3,15 @@ import { getPGLiteSchema, PGLITE_SCHEMA_SQL } from '../../src/core/pglite-schema
 import { getPostgresSchema } from '../../src/core/postgres-engine.ts';
 
 describe('getPGLiteSchema', () => {
-  test('default produces Eva install-default schema (2048d + voyage:voyage-4-large)', () => {
-    // Eva keeps Voyage 4 Large 2048d as the downstream install posture while
-    // adopting upstream's provider gateway. Bare `gbrain init --pglite` must
-    // therefore template the same 2048d schema the gateway will use at embed
-    // time, and skip HNSW because pgvector only supports HNSW up to 2000 dims.
+  test('default produces gateway-default schema (v0.37+: 1280d + zeroentropyai:zembed-1)', () => {
+    // v0.37 fix wave Lane A.1 + CDX2-1: defaults now track the canonical
+    // gateway constants in `ai/defaults.ts` instead of the stale v0.13
+    // OpenAI literals (1536 / text-embedding-3-large). Fixes the
+    // headline bug where bare `gbrain init --pglite` produced a 1536
+    // schema while the ZE default model emitted 1280-dim vectors.
     const sql = getPGLiteSchema();
-    expect(sql).toMatch(/vector\(2048\)/);
-    expect(sql).toMatch(/'voyage:voyage-4-large'/);
-    expect(sql).not.toContain('idx_chunks_embedding ON content_chunks USING hnsw');
+    expect(sql).toMatch(/vector\(1280\)/);
+    expect(sql).toMatch(/'zeroentropyai:zembed-1'/);
     expect(sql).not.toMatch(/__EMBEDDING_DIMS__/);
     expect(sql).not.toMatch(/__EMBEDDING_MODEL__/);
   });

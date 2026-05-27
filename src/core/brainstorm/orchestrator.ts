@@ -1,4 +1,14 @@
 /**
+ * v0.41.13.0 T16 retrofit note: brainstorm already wraps in
+ * `withBudgetTracker` AND has its own pre-run cost estimate + TTY grace
+ * window (the patterns the `src/core/progressive-batch/` primitive
+ * extracts). Routing the existing per-cross-call loop through the
+ * primitive would duplicate that machinery without observable value
+ * (the primitive's audit JSONL covers a different shape: ramp-then-full,
+ * not per-cross). The cleaner retrofit waits for v0.41.14.0+ when the
+ * primitive grows a "fan-out audit" mode that captures per-call
+ * telemetry from gateway.chat. Filed in TODOS.md.
+ *
  * v0.37.0 — brainstorm + LSD orchestrator.
  *
  * Shared 4-phase pipeline driven by a `BrainstormProfile` config object
@@ -1020,24 +1030,18 @@ export function buildBrainstormFrontmatter(result: BrainstormResult, opts: { slu
   const date = new Date().toISOString().slice(0, 10);
   const judgeFailed = result.judge_failed ? '\njudge_failed: true' : '';
   const unscored = result.judge_failed ? '\nunscored: true' : '';
-  const titleQuestion = yamlDoubleQuoted(result.question.slice(0, 100));
-  const question = yamlDoubleQuoted(result.question.slice(0, 200));
   return `---
-title: "${result.profile_label === 'lsd' ? 'LSD' : 'Brainstorm'}: ${titleQuestion}"
+title: "${result.profile_label === 'lsd' ? 'LSD' : 'Brainstorm'}: ${result.question.replace(/"/g, '\\"').slice(0, 100)}"
 mode: ${result.profile_label}
 generated_at: ${new Date().toISOString()}
 date: ${date}
-question: "${question}"
-close_slugs: [${result.close_set.map((c) => `"${yamlDoubleQuoted(c.slug)}"`).join(', ')}]
-far_slugs: [${result.far_set.map((f) => `"${yamlDoubleQuoted(f.slug)}"`).join(', ')}]
+question: "${result.question.replace(/"/g, '\\"').slice(0, 200)}"
+close_slugs: [${result.close_set.map((c) => `"${c.slug}"`).join(', ')}]
+far_slugs: [${result.far_set.map((f) => `"${f.slug}"`).join(', ')}]
 short_of_target: ${result.short_of_target}
 calibration_cold_start: ${result.active_bias_tags === null}${judgeFailed}${unscored}
 cost_usd: ${result.cost.actual_usd.toFixed(4)}
 ---
 
 `;
-}
-
-function yamlDoubleQuoted(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

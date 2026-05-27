@@ -130,10 +130,6 @@ export function selectSourcesForDispatch(
   const stale: SourceRow[] = [];
   const fresh: SourceRow[] = [];
   for (const s of sources) {
-    if (s.config?.cycle_freshness === false) {
-      fresh.push(s);
-      continue;
-    }
     (isSourceStale(s, now, floorMin) ? stale : fresh).push(s);
   }
   // Oldest-first ordering: NULL last_full_cycle_at sorts before any timestamp.

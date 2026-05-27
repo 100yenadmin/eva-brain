@@ -34,26 +34,6 @@ interface ApiKey {
   status: 'active' | 'revoked';
 }
 
-async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      document.execCommand('copy');
-    } finally {
-      document.body.removeChild(textarea);
-    }
-  }
-}
-
 export function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [hideRevoked, setHideRevoked] = useState(true);
@@ -62,15 +42,10 @@ export function AgentsPage() {
   const [showApiKeyCreate, setShowApiKeyCreate] = useState(false);
   const [showApiKeyToken, setShowApiKeyToken] = useState<{ name: string; token: string } | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
-  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { loadAgents(); }, []);
 
-  const loadAgents = () => {
-    api.agents()
-      .then((next) => { setAgents(next); setLoadError(''); })
-      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load agents'));
-  };
+  const loadAgents = () => { api.agents().then(setAgents).catch(() => {}); };
 
   return (
     <>
@@ -84,11 +59,6 @@ export function AgentsPage() {
           <button className="btn btn-primary" onClick={() => setShowRegister(true)}>+ OAuth Client</button>
         </div>
       </div>
-      {loadError && (
-        <div style={{ color: 'var(--error)', fontSize: 13, marginBottom: 16 }}>
-          {loadError}
-        </div>
-      )}
 
       {(() => {
         // Filter once and reuse, so the empty-state guard sees the same
@@ -239,7 +209,7 @@ function ApiKeyTokenModal({ token, onClose }: {
   token: { name: string; token: string };
   onClose: () => void;
 }) {
-  const copy = copyText;
+  const copy = (text: string) => navigator.clipboard.writeText(text);
 
   return (
     <div className="modal-overlay">
@@ -296,7 +266,7 @@ function RegisterModal({ onClose, onRegistered }: {
     { label: '7 days', value: '604800' },
     { label: '30 days', value: '2592000' },
     { label: '1 year', value: '31536000' },
-    { label: '10 years', value: '315360000' },
+    { label: 'No expiry', value: '0' },
   ];
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -311,12 +281,9 @@ function RegisterModal({ onClose, onRegistered }: {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), scopes: selectedScopes, tokenTtl: Number(ttl) }),
+        body: JSON.stringify({ name: name.trim(), scopes: selectedScopes, tokenTtl: ttl === '0' ? 315360000 : Number(ttl) }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(typeof body.error === 'string' ? body.error : 'Registration failed');
-      }
+      if (!res.ok) throw new Error('Registration failed');
       const data = await res.json();
       onRegistered({ clientId: data.clientId, clientSecret: data.clientSecret, name: name.trim() });
     } catch (err) {
@@ -368,7 +335,7 @@ function CredentialsModal({ credentials, onClose }: {
   credentials: { clientId: string; clientSecret: string; name: string };
   onClose: () => void;
 }) {
-  const copy = copyText;
+  const copy = (text: string) => navigator.clipboard.writeText(text);
   const downloadJson = () => {
     const blob = new Blob([JSON.stringify(credentials, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -416,7 +383,7 @@ function CredentialsModal({ credentials, onClose }: {
 
 function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () => void; onRevoked: () => void }) {
   const [tab, setTab] = useState<'claude-code' | 'chatgpt' | 'claude-cowork' | 'perplexity' | 'cursor' | 'json'>('claude-code');
-  const copy = copyText;
+  const copy = (text: string) => navigator.clipboard.writeText(text);
   const serverUrl = window.location.origin;
 
   const cid = agent.id || agent.client_id || '';
@@ -575,7 +542,7 @@ function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () 
         <div className="section-title">Details</div>
         <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '6px 12px', fontSize: 13 }}>
           <span style={{ color: 'var(--text-secondary)' }}>Client ID</span>
-          <span className="mono">{(agent.id || agent.client_id || '').substring(0, 24)}...</span>
+          <span className="mono">{(agent.id || agent.id || agent.client_id || '').substring(0, 24)}...</span>
           <span style={{ color: 'var(--text-secondary)' }}>Scopes</span>
           <span>{(agent.scope || '').split(' ').filter(Boolean).map(s => (
             <span key={s} className={`badge badge-${s}`} style={{ marginRight: 4 }}>{s}</span>
@@ -583,7 +550,7 @@ function AgentDrawer({ agent, onClose, onRevoked }: { agent: Agent; onClose: () 
           <span style={{ color: 'var(--text-secondary)' }}>Registered</span>
           <span>{new Date(agent.created_at).toLocaleDateString()}</span>
           <span style={{ color: 'var(--text-secondary)' }}>Token TTL</span>
-          <span>{agent.token_ttl ? (agent.token_ttl >= 31536000 ? `${Math.floor(agent.token_ttl / 31536000)}y` : agent.token_ttl >= 86400 ? `${Math.floor(agent.token_ttl / 86400)}d` : agent.token_ttl >= 3600 ? `${Math.floor(agent.token_ttl / 3600)}h` : `${agent.token_ttl}s`) : '1h (default)'}</span>
+          <span>{agent.token_ttl ? (agent.token_ttl >= 31536000 ? 'No expiry' : agent.token_ttl >= 86400 ? `${Math.floor(agent.token_ttl / 86400)}d` : agent.token_ttl >= 3600 ? `${Math.floor(agent.token_ttl / 3600)}h` : `${agent.token_ttl}s`) : '1h (default)'}</span>
         </div>
 
         {/*

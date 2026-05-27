@@ -225,11 +225,7 @@ const AMBIGUOUS_REFERENCE_MARKERS: RegExp[] = [
 // ─────────────────────────────────────────────────────────
 
 function matches(patterns: RegExp[], q: string): boolean {
-  const haystack = q.length > 512 ? q.slice(0, 512) : q;
-  for (const re of patterns) {
-    re.lastIndex = 0;
-    if (re.test(haystack)) return true;
-  }
+  for (const re of patterns) if (re.test(q)) return true;
   return false;
 }
 

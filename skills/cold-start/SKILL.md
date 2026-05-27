@@ -207,10 +207,12 @@ const contacts = await clawvisor('google.contacts', 'list_contacts', {
 });
 ```
 
-### Via offline Google Takeout
+### Via direct Google People API
 
-If ClawVisor is not configured, ask the user for a Google Takeout contacts
-export instead. Do not request or store raw Google OAuth tokens.
+```bash
+curl -s -H "Authorization: Bearer $GOOGLE_TOKEN" \
+  "https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers,organizations,biographies&pageSize=1000"
+```
 
 ### Processing rules
 

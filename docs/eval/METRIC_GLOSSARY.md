@@ -121,3 +121,4 @@ Every metric `gbrain eval *` and `gbrain search stats` reports has a plain-Engli
 ## Coverage
 
 Every metric printed by any `gbrain eval *` or `gbrain search stats` command resolves through `getMetricGloss()` in `src/core/eval/metric-glossary.ts`. Adding a new metric to the glossary REQUIRES updating this doc; the CI guard catches drift.
+

@@ -115,10 +115,10 @@ budgets:
   # Global defaults
   default:
     max_input_tokens: 500_000    # per-command input token cap
-    max_output_tokens: 200_000   # per-command output token cap
+    max_output_tokens: 200_000   # per-command output token cap  
     max_cost_usd: 5.00           # per-command dollar cap
     max_runtime_seconds: 300     # 5-minute wall-clock cap
-
+    
   # Per-command overrides
   brainstorm:
     max_cost_usd: 2.00

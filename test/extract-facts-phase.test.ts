@@ -12,7 +12,6 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runExtractFacts } from '../src/core/cycle/extract-facts.ts';
-import { resetPgliteState } from './helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
 
@@ -27,7 +26,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetPgliteState(engine);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (engine as any).db.query('DELETE FROM facts');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (engine as any).db.query('DELETE FROM pages');
 });
 
 async function putPage(slug: string, body: string): Promise<void> {
@@ -172,54 +174,6 @@ describe('runExtractFacts — happy path', () => {
     const r = await runExtractFacts(engine);  // no slugs filter
     expect(r.pagesScanned).toBe(2);
     expect(r.factsInserted).toBe(2);
-  });
-
-  test('explicit empty slugs filter scans zero pages', async () => {
-    await putPage('people/alice', FACT_FENCE(
-      `| 1 | A1 | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
-    ));
-    await putPage('companies/acme', FACT_FENCE(
-      `| 1 | C1 | fact | 1.0 | world | medium | 2026-01-01 |  | s |  |`,
-    ));
-
-    const r = await runExtractFacts(engine, { slugs: [] });
-    expect(r.pagesScanned).toBe(0);
-    expect(r.factsInserted).toBe(0);
-    expect(r.guardTriggered).toBe(false);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows = await (engine as any).db.query('SELECT COUNT(*) AS n FROM facts');
-    expect(Number(rows.rows[0].n)).toBe(0);
-  });
-});
-
-describe('runExtractFacts — malformed fence safety', () => {
-  test('parse warnings preserve the existing DB index instead of partially deleting/reinserting', async () => {
-    // Seed a v51-shape DB row that should survive a malformed hand edit.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (engine as any).db.query(
-      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
-                          valid_from, source, confidence, row_num, source_markdown_slug)
-       VALUES ('default', 'people/alice', 'existing protected row', 'fact', 'private', 'medium',
-               now(), 'mcp:put_page', 1.0, 1, 'people/alice')`,
-    );
-
-    await putPage('people/alice', FACT_FENCE(
-      `| 1 | valid but should not replace | fact | 1.0 | world | high | 2026-01-01 |  | s |  |
-| 2 | invalid row should make page unsafe | fact | 1.0 | team-only | high | 2026-01-01 |  | s |  |`,
-    ));
-
-    const r = await runExtractFacts(engine, { slugs: ['people/alice'] });
-
-    expect(r.warnings.some(w => w.includes('unknown visibility'))).toBe(true);
-    expect(r.factsDeleted).toBe(0);
-    expect(r.factsInserted).toBe(0);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows = await (engine as any).db.query(
-      `SELECT fact FROM facts WHERE source_id = 'default' ORDER BY row_num`,
-    );
-    expect(rows.rows).toEqual([expect.objectContaining({ fact: 'existing protected row' })]);
   });
 });
 

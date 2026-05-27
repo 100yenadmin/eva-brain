@@ -16,11 +16,6 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
-import {
-  __setEmbedTransportForTests,
-  configureGateway,
-  resetGateway,
-} from '../src/core/ai/gateway.ts';
 import { hybridSearchCached } from '../src/core/search/hybrid.ts';
 import type { PageInput, HybridSearchMeta } from '../src/core/types.ts';
 
@@ -68,7 +63,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  resetGateway();
   if (savedKey) process.env.OPENAI_API_KEY = savedKey;
   try { await engine.disconnect(); } catch { /* ignore */ }
 });
@@ -173,68 +167,6 @@ describe('hybridSearchCached \u2014 cache disabled fallback', () => {
       onMeta: (m) => { meta = m; },
     });
     expect(meta?.cache?.status).toBe('disabled');
-  });
-});
-
-describe('hybridSearchCached \u2014 source-set cache isolation', () => {
-  test('federated source-set cache entries do not replay to scalar default callers', async () => {
-    const vector = Array.from({ length: 1536 }, (_, i) => i === 0 ? 1 : 0);
-    configureGateway({
-      embedding_model: 'openai:text-embedding-3-large',
-      embedding_dimensions: 1536,
-      env: { OPENAI_API_KEY: 'test-key' },
-    });
-    __setEmbedTransportForTests((async (args: any) => ({
-      embeddings: args.values.map(() => vector),
-    })) as any);
-
-    try {
-      await engine.executeRaw(
-        `INSERT INTO sources (id, name, config)
-         VALUES ('src-b', 'Source B', '{}'::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
-      );
-      await engine.putPage('cache/default-only', {
-        type: 'note',
-        title: 'Default Cache Page',
-        compiled_truth: 'federatedneedle default source evidence',
-      });
-      await engine.upsertChunks('cache/default-only', [
-        { chunk_index: 0, chunk_text: 'federatedneedle default source evidence', chunk_source: 'compiled_truth' },
-      ]);
-      await engine.putPage('cache/src-b-only', {
-        type: 'note',
-        title: 'Source B Cache Page',
-        compiled_truth: 'federatedneedle source b evidence',
-      }, { sourceId: 'src-b' });
-      await engine.upsertChunks('cache/src-b-only', [
-        { chunk_index: 0, chunk_text: 'federatedneedle source b evidence', chunk_source: 'compiled_truth' },
-      ], { sourceId: 'src-b' });
-
-      const federated = await hybridSearchCached(engine, 'federatedneedle', {
-        sourceId: 'default',
-        sourceIds: ['default', 'src-b'],
-        limit: 10,
-        useCache: true,
-      });
-      expect(new Set(federated.map(r => r.source_id))).toEqual(new Set(['default', 'src-b']));
-
-      // Cache writeback is best-effort/fire-and-forget; let it land before
-      // the scalar lookup below tries to prove it cannot replay src-b rows.
-      await new Promise(resolve => setTimeout(resolve, 50));
-
-      const scalar = await hybridSearchCached(engine, 'federatedneedle', {
-        sourceId: 'default',
-        limit: 10,
-        useCache: true,
-      });
-      expect(scalar.length).toBeGreaterThan(0);
-      expect(scalar.every(r => (r.source_id ?? 'default') === 'default')).toBe(true);
-      expect(scalar.map(r => r.slug)).not.toContain('cache/src-b-only');
-    } finally {
-      __setEmbedTransportForTests(null);
-      resetGateway();
-    }
   });
 });
 

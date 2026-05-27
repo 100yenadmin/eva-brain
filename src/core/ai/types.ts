@@ -157,12 +157,6 @@ export interface ExpansionTouchpoint {
   price_last_verified?: string;
 }
 
-export interface AuthEnvConfig {
-  required: string[];
-  optional?: string[];
-  setup_url?: string;
-}
-
 /**
  * Chat touchpoint: tool-using conversational LLMs that can drive Minions
  * subagents. `supports_tools` and `supports_subagent_loop` are intentionally
@@ -192,6 +186,20 @@ export interface RerankerTouchpoint {
   cost_per_1m_tokens_usd?: number;
   price_last_verified?: string;
   max_payload_bytes: number;
+  /**
+   * Override the rerank URL path. Defaults to '/models/rerank' (ZeroEntropy's
+   * legacy path; ZE-compatible-wire-shape providers like llama.cpp set
+   * '/v1/rerank').
+   */
+  path?: string;
+  /**
+   * Recipe-level timeout fallback for `gateway.rerank()` and search-mode
+   * resolution. Caller's `input.timeoutMs` and `search.reranker.timeout_ms`
+   * config still win when set. Used to give CPU-only local rerankers (e.g.
+   * llama.cpp serving Qwen3-Reranker-4B) headroom for first-call warmup
+   * without forcing every user to discover the config key.
+   */
+  default_timeout_ms?: number;
 }
 
 export interface ChatTouchpoint {
@@ -223,7 +231,11 @@ export interface Recipe {
   /** For openai-compatible tier: default base URL. May be overridden by env or wizard. */
   base_url_default?: string;
   /** Env var name(s) for auth; first is required, rest are optional. */
-  auth_env?: AuthEnvConfig;
+  auth_env?: {
+    required: string[];
+    optional?: string[];
+    setup_url?: string;
+  };
   touchpoints: {
     embedding?: EmbeddingTouchpoint;
     expansion?: ExpansionTouchpoint;
@@ -324,26 +336,6 @@ export interface Recipe {
   probe?(baseURL?: string): Promise<{ ready: boolean; hint?: string }>;
 }
 
-export type AuthSourceClass = 'env' | 'openclaw-codex' | 'openclaw-openai' | 'unauthenticated' | 'missing';
-
-export interface ProviderAuthConfig {
-  /** Explicit credential-source selection. When set, this source wins over stray env API keys. */
-  prefer?: Exclude<AuthSourceClass, 'env' | 'unauthenticated' | 'missing'>;
-  /** Optional profile name for OpenClaw-backed auth. */
-  profile?: string;
-  /** Optional auth store override for tests or nonstandard installs. */
-  openclawAuthPath?: string;
-}
-
-export interface AuthResolution {
-  source: AuthSourceClass;
-  credentialKey?: string;
-  value?: string;
-  isConfigured: boolean;
-  missingReason?: string;
-  meta?: Record<string, unknown>;
-}
-
 export interface AIGatewayConfig {
   /** Current embedding model as "provider:modelId" (e.g. "openai:text-embedding-3-large"). */
   embedding_model?: string;
@@ -374,8 +366,6 @@ export interface AIGatewayConfig {
   chat_fallback_chain?: string[];
   /** Optional per-provider base URL override (openai-compatible variants). */
   base_urls?: Record<string, string>;
-  /** Optional provider auth source overrides keyed by recipe id. */
-  provider_auth?: Record<string, ProviderAuthConfig>;
   /** Env snapshot read once at configuration time. Gateway never reads process.env at call time. */
   env: Record<string, string | undefined>;
 }

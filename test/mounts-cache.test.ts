@@ -224,25 +224,6 @@ describe('composeManifests', () => {
     };
     expect(() => composeManifests(hostSkills, [mount])).not.toThrow();
   });
-
-  test('malformed manifest skills are ignored instead of crashing composition', () => {
-    const hostSkills = makeSkillsDir([]);
-    const mountRoot = mktmp();
-    mkdirSync(join(mountRoot, 'skills'), { recursive: true });
-    writeFileSync(
-      join(mountRoot, 'skills', 'manifest.json'),
-      JSON.stringify({ skills: [{}, { name: 'ok', path: 'ok/SKILL.md' }, { name: 'bad', path: 1 }] }),
-    );
-    const mount: MountEntry = {
-      id: 'manifest-test',
-      path: mountRoot,
-      engine: 'pglite',
-      database_path: `${mountRoot}/.pg`,
-      enabled: true,
-    };
-    const result = composeManifests(hostSkills, [mount]);
-    expect(result.entries.map(e => e.name)).toEqual(['manifest-test::ok']);
-  });
 });
 
 describe('renderResolverMarkdown', () => {
@@ -253,16 +234,11 @@ describe('renderResolverMarkdown', () => {
     const md = renderResolverMarkdown(composed);
     expect(md).toContain('# GBrain Skill Resolver (aggregated)');
     expect(md).toContain('Auto-generated');
-    expect(md).toContain('agent-client-example');
-    expect(md).not.toContain('OpenClaw / Claude Code');
     expect(md).toContain('| Trigger | Skill | Brain |');
     expect(md).toContain('| search');
     expect(md).toContain('| host |');
     expect(md).toContain('| media ingest');
     expect(md).toContain('| yc-media |');
-    expect(md).toContain('`skills/query/SKILL.md`');
-    expect(md).toContain('`skills/ingest/SKILL.md`');
-    expect(md).not.toContain('/skills/query/SKILL.md`');
   });
 
   test('shadows section appears only when shadows exist', () => {
