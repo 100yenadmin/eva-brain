@@ -1,6 +1,6 @@
 {
   "name": "gbrain",
-  "version": "0.41.18.5",
+  "version": "0.41.18.6",
   "conformance_version": "1.0.0",
   "description": "Personal knowledge brain with hybrid RAG search \u2014 GStack mod for agent platforms",
   "skills": [

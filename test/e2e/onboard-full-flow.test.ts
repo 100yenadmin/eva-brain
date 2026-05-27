@@ -66,19 +66,19 @@ describe('onboard E2E — runAllOnboardChecks', () => {
     ]);
   });
 
-  test('empty brain: stale/link/timeline ok, takes_count warns (0 takes)', async () => {
+  test('empty brain: stale/link/timeline ok, takes_count ok when bootstrap disabled', async () => {
     const results = await runAllOnboardChecks(engine);
     const byName = Object.fromEntries(results.map((r) => [r.check.name, r.check.status]));
     expect(byName.embed_staleness).toBe('ok');
     expect(byName.entity_link_coverage).toBe('ok');
     expect(byName.timeline_coverage).toBe('ok');
-    expect(byName.takes_count).toBe('warn'); // 0 takes is a warn
+    expect(byName.takes_count).toBe('ok');
   });
 
   test('empty brain returns 0 remediations (takes_count gated by bootstrap_enabled=false)', async () => {
     const results = await runAllOnboardChecks(engine);
     const total = results.reduce((s, r) => s + r.remediations.length, 0);
-    // takes_count warns but does NOT emit a remediation because
+    // takes_count stays ok and does NOT emit a remediation because
     // takes.bootstrap_enabled defaults to false (A12 two-gate consent).
     expect(total).toBe(0);
   });
