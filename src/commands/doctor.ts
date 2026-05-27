@@ -3991,7 +3991,7 @@ export async function buildChecks(
       checks.push({
         name: 'graph_coverage',
         status: 'ok',
-        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). Quality follow-up: gbrain extract all`,
+        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). Quality follow-up. Run: gbrain extract all`,
       });
     }
 
