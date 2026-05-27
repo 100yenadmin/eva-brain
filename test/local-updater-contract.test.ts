@@ -300,7 +300,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.0');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.1');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
@@ -477,6 +477,7 @@ describe('public local updater and Codex plugin packaging', () => {
     const stdout = new TextDecoder().decode(result.stdout);
     const stderr = new TextDecoder().decode(result.stderr);
     expect(stderr).toContain('Support KB checkout has local changes; archiving it');
+    expect(stderr).toContain("Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'.");
     expect(stdout).toContain(`mv ${kbDir}`);
     expect(stdout).toContain(`git clone ${kbRepo} ${kbDir}`);
     expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
