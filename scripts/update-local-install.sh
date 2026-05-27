@@ -343,7 +343,9 @@ disable_support_kb_cycle_freshness_if_supported() {
     printf '%s\n' "$output"
     return
   fi
-  if printf '%s\n' "$output" | grep -q 'Unknown sources subcommand: cycle-freshness'; then
+  local normalized_output
+  normalized_output="$(printf '%s' "$output" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
+  if [ "$normalized_output" = 'Unknown sources subcommand: cycle-freshness' ]; then
     log "Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'."
     return
   fi

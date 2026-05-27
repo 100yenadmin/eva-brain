@@ -95,7 +95,7 @@ if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
   if [ "${cycleExit}" = "unknown" ]; then
     echo "Unknown sources subcommand: cycle-freshness" >&2
   else
-    echo "database locked while updating source freshness" >&2
+    echo "Unknown sources subcommand: cycle-freshness; database locked while updating source freshness" >&2
   fi
   exit 2
 fi
