@@ -578,6 +578,33 @@ async function runFederate(engine: BrainEngine, args: string[], value: boolean):
   }
 }
 
+async function runCycleFreshness(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  const mode = args[1];
+  if (!id || !mode || !['on', 'off'].includes(mode)) {
+    console.error('Usage: gbrain sources cycle-freshness <id> <on|off>');
+    process.exit(2);
+  }
+  const src = await fetchSource(engine, id);
+  if (!src) {
+    console.error(`Source "${id}" not found.`);
+    process.exit(4);
+  }
+
+  const config = parseConfig(src.config);
+  if (mode === 'off') {
+    config.cycle_freshness = false;
+  } else {
+    delete config.cycle_freshness;
+  }
+  await engine.executeRaw(
+    `UPDATE sources SET config = $1::jsonb WHERE id = $2`,
+    [JSON.stringify(config), id],
+  );
+
+  console.log(`Source "${id}" cycle freshness check ${mode === 'off' ? 'disabled' : 'enabled'}.`);
+}
+
 // ── v0.40 sources status (D12) ──────────────────────────────
 async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
   const json = args.includes('--json');
@@ -1110,6 +1137,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'detach':     runDetach(); return;
     case 'federate':   return runFederate(engine, rest, true);
     case 'unfederate': return runFederate(engine, rest, false);
+    case 'cycle-freshness': return runCycleFreshness(engine, rest);
     case 'archive':    return runArchive(engine, rest);
     case 'restore':    return runRestore(engine, rest);
     case 'purge':      return runPurge(engine, rest);
@@ -1173,6 +1201,8 @@ Subcommands:
                                     targeting the brain you think you are.
   federate <id>                     Make source appear in cross-source default search.
   unfederate <id>                   Isolate source from default search.
+  cycle-freshness <id> <on|off>     Enable/disable doctor's full-cycle freshness
+                                    check for updater-managed sources.
   set-cr-mode <id> <none|title|per_chunk_synopsis>
                                     Per-source contextual retrieval mode
                                     override (v0.40.3.0). Pass "unset" or

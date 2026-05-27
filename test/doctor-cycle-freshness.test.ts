@@ -87,6 +87,17 @@ describe('doctor checkCycleFreshness', () => {
     expect(result.message).toMatch(/never completed a full cycle/);
   });
 
+  test('source with cycle_freshness=false is skipped', async () => {
+    await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config, archived, created_at)
+       VALUES ('updater-managed', 'updater-managed', '/tmp/updater-managed', '{"cycle_freshness":false}'::jsonb, false, NOW())`,
+    );
+    const result = await checkCycleFreshness(engine, { nowMs: NOW });
+    expect(result.status).toBe('ok');
+    expect(result.message).toMatch(/updater-managed source/);
+  });
+
   test('mixed sources: highest severity wins (fail > warn > ok)', async () => {
     await engine.executeRaw(`UPDATE sources SET local_path = NULL WHERE id = 'default'`);
     await seed('fresh', agoH(1));     // ok

@@ -2458,11 +2458,16 @@ export async function checkCycleFreshness(
     const issues: string[] = [];
     let hasWarnings = false;
     let hasFailures = false;
+    let skipped = 0;
 
     for (const source of sources) {
       const display = source.name && source.name !== source.id
         ? `'${source.id}' (${source.name})`
         : `'${source.id}'`;
+      if (source.config?.cycle_freshness === false) {
+        skipped++;
+        continue;
+      }
       const raw = source.config?.last_full_cycle_at;
       if (typeof raw !== 'string') {
         issues.push(`Source ${display} has never completed a full cycle`);
@@ -2508,7 +2513,9 @@ export async function checkCycleFreshness(
     return {
       name: 'cycle_freshness',
       status: 'ok',
-      message: `All ${sources.length} federated source(s) cycled recently`,
+      message: skipped > 0
+        ? `All ${sources.length - skipped} cycle-managed federated source(s) cycled recently (${skipped} updater-managed source(s) skipped)`
+        : `All ${sources.length} federated source(s) cycled recently`,
     };
   } catch (e) {
     return {
