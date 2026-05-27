@@ -78,9 +78,10 @@ done
 SEED_ELAPSED=$((SECONDS - SEED_START))
 echo "[fm_wallclock] fixture seeded in ${SEED_ELAPSED}s" | tee -a "$LOG"
 
-# Step 2: init brain + register the source.
+# Step 2: init brain + register the source. This heavy test never embeds
+# content, so keep CI provider-free instead of requiring real API credentials.
 echo "[fm_wallclock] init brain..." | tee -a "$LOG"
-timeout 120s bun run src/cli.ts init --pglite --yes >> "$LOG" 2>&1 || {
+timeout 120s bun run src/cli.ts init --pglite --yes --no-embedding >> "$LOG" 2>&1 || {
   echo "[fm_wallclock] FAIL: gbrain init exited non-zero" >&2
   echo "Log tail:" >&2
   tail -30 "$LOG" >&2
@@ -90,7 +91,7 @@ timeout 120s bun run src/cli.ts init --pglite --yes >> "$LOG" 2>&1 || {
 # Register the brain dir as a source. Use raw SQL since `gbrain sources add`
 # might not exist in this version-window; the schema is what doctor reads.
 echo "[fm_wallclock] register source..." | tee -a "$LOG"
-bun run -e "
+bun -e "
 import { PGLiteEngine } from './src/core/pglite-engine.ts';
 const e = new PGLiteEngine();
 await e.connect({});

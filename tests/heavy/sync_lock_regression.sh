@@ -78,11 +78,19 @@ EOF
 # git-init so sync's diff-walk has something to anchor (sync expects a git repo)
 (cd "$BRAIN_DIR" && git init -q && git add . && git -c user.email=test@test -c user.name=test commit -q -m "seed" >/dev/null 2>&1) || true
 
-# Tell gbrain to use this brain dir
-bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
+# Tell current source-aware sync to use this brain dir. Older versions read
+# sync.repo_path, but current sync resolves the default source local_path.
+escaped_brain_dir=${BRAIN_DIR//\'/\'\'}
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+  "INSERT INTO sources (id, name, local_path, config)
+   VALUES ('default', 'default', '$escaped_brain_dir', '{}'::jsonb)
+   ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" \
+  >/dev/null 2>>"$LOG"
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
+# Embeddings are unrelated to the writer-lock contract, so keep this scheduled
+# heavy test provider-free.
 PIDS=()
 EXIT_FILES=()
 OUT_FILES=()
@@ -91,7 +99,7 @@ for ((i=1; i<=NUM_PARALLEL; i+=1)); do
   OUT_F=$(mktemp -t sync-lock-out-XXXXXX)
   EXIT_FILES+=("$EXIT_F")
   OUT_FILES+=("$OUT_F")
-  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
+  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" --no-embed >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
   PIDS+=($!)
 done
 
