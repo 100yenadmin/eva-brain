@@ -83,6 +83,8 @@ bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || tru
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
+# Embeddings are unrelated to the writer-lock contract, so keep this scheduled
+# heavy test provider-free.
 PIDS=()
 EXIT_FILES=()
 OUT_FILES=()
@@ -91,7 +93,7 @@ for ((i=1; i<=NUM_PARALLEL; i+=1)); do
   OUT_F=$(mktemp -t sync-lock-out-XXXXXX)
   EXIT_FILES+=("$EXIT_F")
   OUT_FILES+=("$OUT_F")
-  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
+  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" --no-embed >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
   PIDS+=($!)
 done
 
