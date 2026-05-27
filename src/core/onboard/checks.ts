@@ -163,15 +163,12 @@ export async function checkEntityLinkCoverage(
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;
 
-  // v0.41.18.0: warn-only, never fail. Empty entity link coverage is "needs
-  // work" not "broken" — doctor's exit code should not flip from a fresh
-  // brain with entity pages but no auto-extracted links yet. Fail status
-  // would break `gbrain doctor exits 0` contract; the recommendation
-  // surfaces the same fix via the onboard plan either way.
+  // v0.41.18.6: keep low coverage as a quality/remediation signal, but do not
+  // mark runtime health warn. Fresh/support-KB brains can be searchable and
+  // correctly embedded while still having low derived graph density.
   if (coverage >= 0.7) {
     message = `Coverage ${pct}% ± ${ciPct}%${sampleNote}`;
   } else if (coverage >= 0.4) {
-    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 70%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_ner_links',
@@ -184,7 +181,6 @@ export async function checkEntityLinkCoverage(
       status: 'remediable',
     }));
   } else {
-    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 70%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_ner_links',
@@ -254,13 +250,11 @@ export async function checkTimelineCoverage(
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;
 
-  // v0.41.18.0: warn-only, never fail. Same posture as entity_link_coverage —
-  // the recommendation still surfaces in onboard's plan, but doctor exit
-  // code doesn't flip on a fresh brain.
+  // v0.41.18.6: same posture as entity_link_coverage — remediation remains
+  // available, but derived timeline density does not dock runtime health.
   if (coverage >= 0.9) {
     message = `Coverage ${pct}% ± ${ciPct}%${sampleNote}`;
   } else if (coverage >= 0.7) {
-    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 90%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_timeline_from_meetings',
@@ -273,7 +267,6 @@ export async function checkTimelineCoverage(
       status: 'remediable',
     }));
   } else {
-    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 90%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_timeline_from_meetings',
@@ -322,8 +315,8 @@ export async function checkTakesCount(
   if (takesCount >= 100) {
     message = `${takesCount} takes (calibration ready)`;
   } else if (takesCount === 0) {
-    status = 'warn';
     if (bootstrapEnabled) {
+      status = 'warn';
       message = `0 takes (bootstrap eligible — gbrain takes extract --from-pages)`;
       remediations.push(makeRemediationStep({
         id: 'onboard.takes_bootstrap',

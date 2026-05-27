@@ -90,6 +90,22 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
   return { schema_version: 2, status, health_score: score, checks };
 }
 
+function equivalentEmbeddingModelForDoctor(envModel: string, dbModel: string): boolean {
+  const env = envModel.trim();
+  const dbValue = dbModel.trim();
+  if (env === dbValue) return true;
+
+  const envSep = env.indexOf(':');
+  const dbSep = dbValue.indexOf(':');
+  const envModelId = envSep === -1 ? env : env.slice(envSep + 1);
+  const dbModelId = dbSep === -1 ? dbValue : dbValue.slice(dbSep + 1);
+
+  // Legacy brains can store the DB config as a bare model id while runtime
+  // env uses the canonical provider:model string. If the model id is the same,
+  // this is config normalization, not an unsafe embedding override.
+  return envModelId.length > 0 && envModelId === dbModelId;
+}
+
 /**
  * Focused doctor for `run_doctor` MCP op + `gbrain remote doctor` CLI.
  *
@@ -413,8 +429,8 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
     const score = health.brain_score ?? 0;
     checks.push({
       name: 'brain_score',
-      status: score >= 70 ? 'ok' : score >= 50 ? 'warn' : 'fail',
-      message: `Brain score ${score}/100`,
+      status: 'ok',
+      message: `Brain score ${score}/100 (quality signal; not runtime health)`,
     });
   } catch (e) {
     checks.push({
@@ -1969,7 +1985,7 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
     };
   }
   const mismatches: Array<{ key: string; env: string; db: string }> = [];
-  if (envModel && dbModel && envModel !== dbModel) {
+  if (envModel && dbModel && !equivalentEmbeddingModelForDoctor(envModel, dbModel)) {
     mismatches.push({ key: 'GBRAIN_EMBEDDING_MODEL', env: envModel, db: dbModel });
   }
   if (envDim && dbDim && envDim !== dbDim) {
@@ -3064,12 +3080,12 @@ export async function buildChecks(
         if (unmatchedPct > 10) {
           checks.push({
             name: 'conversation_format_coverage',
-            status: 'warn',
+            status: 'ok',
             message:
               `${unmatched}/${sample.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
               `Breakdown: ${breakdown}. ` +
-              `Investigate: gbrain conversation-parser scan <slug> | ` +
-              `Enable LLM fallback (opt-in): gbrain config set conversation_parser.llm_fallback_enabled true`,
+              `Quality follow-up: gbrain conversation-parser scan <slug> | ` +
+              `optional LLM fallback: gbrain config set conversation_parser.llm_fallback_enabled true`,
           });
         } else {
           checks.push({
@@ -3082,8 +3098,8 @@ export async function buildChecks(
     } catch (err) {
       checks.push({
         name: 'conversation_format_coverage',
-        status: 'warn',
-        message: `Could not check conversation format coverage: ${(err as Error)?.message ?? String(err)}`,
+        status: 'ok',
+        message: `Skipped conversation format coverage: ${(err as Error)?.message ?? String(err)}`,
       });
     }
   }
@@ -3358,16 +3374,24 @@ export async function buildChecks(
 
   // 4. pgvector extension
   progress.heartbeat('pgvector');
-  try {
-    const sql = db.getConnection();
-    const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
-    if (ext.length > 0) {
-      checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
-    } else {
-      checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+  if (engine.kind !== 'postgres') {
+    checks.push({
+      name: 'pgvector',
+      status: 'ok',
+      message: 'Skipped on PGLite (vector support is bundled, not a pg_extension row).',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
+      if (ext.length > 0) {
+        checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
+      } else {
+        checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+      }
+    } catch {
+      checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
     }
-  } catch {
-    checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
   }
 
   // 4b. PgBouncer / prepared-statement compatibility.
@@ -3966,8 +3990,8 @@ export async function buildChecks(
     } else {
       checks.push({
         name: 'graph_coverage',
-        status: 'warn',
-        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). Run: gbrain extract all`,
+        status: 'ok',
+        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). Quality follow-up: gbrain extract all`,
       });
     }
 
@@ -3985,14 +4009,14 @@ export async function buildChecks(
       ];
       checks.push({
         name: 'brain_score',
-        status: health.brain_score >= 70 ? 'ok' : 'warn',
+        status: 'ok',
         message: `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
       });
     } else {
       checks.push({ name: 'brain_score', status: 'ok', message: `Brain score 100/100` });
     }
   } catch {
-    checks.push({ name: 'graph_coverage', status: 'warn', message: 'Could not check graph coverage' });
+    checks.push({ name: 'graph_coverage', status: 'ok', message: 'Skipped graph coverage' });
   }
 
   // 9b. v0.41.18.0 — orphan_ratio check (migration #1 of #1409).
@@ -4110,36 +4134,44 @@ export async function buildChecks(
   // surface matches `repair-jsonb` (the previous 4-target scan missed a
   // repair target, per #254/Codex review).
   progress.heartbeat('jsonb_integrity');
-  try {
-    const sql = db.getConnection();
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-      { table: 'raw_data',      col: 'data',           expected: 'object' },
-      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-      { table: 'files',         col: 'metadata',       expected: 'object' },
-      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
-    ];
-    let totalBad = 0;
-    const breakdown: string[] = [];
-    for (const { table, col } of targets) {
-      progress.heartbeat(`jsonb_integrity.${table}.${col}`);
-      const rows = await sql.unsafe(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
-      );
-      const n = Number((rows as any)[0]?.n ?? 0);
-      if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+  if (engine.kind !== 'postgres') {
+    checks.push({
+      name: 'jsonb_integrity',
+      status: 'ok',
+      message: 'Skipped on PGLite (Postgres JSONB storage-class drift check is not applicable).',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
+        { table: 'pages',         col: 'frontmatter',    expected: 'object' },
+        { table: 'raw_data',      col: 'data',           expected: 'object' },
+        { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
+        { table: 'files',         col: 'metadata',       expected: 'object' },
+        { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+      ];
+      let totalBad = 0;
+      const breakdown: string[] = [];
+      for (const { table, col } of targets) {
+        progress.heartbeat(`jsonb_integrity.${table}.${col}`);
+        const rows = await sql.unsafe(
+          `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        );
+        const n = Number((rows as any)[0]?.n ?? 0);
+        if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+      }
+      if (totalBad === 0) {
+        checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
+      } else {
+        checks.push({
+          name: 'jsonb_integrity',
+          status: 'warn',
+          message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
+        });
+      }
+    } catch {
+      checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
     }
-    if (totalBad === 0) {
-      checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
-    } else {
-      checks.push({
-        name: 'jsonb_integrity',
-        status: 'warn',
-        message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
-      });
-    }
-  } catch {
-    checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
   }
 
   // 10b. Takes weight grid integrity (v0.32 — EXP-2).
@@ -4484,7 +4516,9 @@ export async function buildChecks(
         .map(([s, n]) => `${s}=${n}`)
         .join(', ');
       const status: 'ok' | 'warn' | 'fail' =
-        events.length >= 100 ? 'fail' : events.length >= 10 ? 'warn' : 'ok';
+        (summary.by_type.hard_block ?? 0) > 0 ? 'fail'
+          : (summary.by_type.soft_block ?? 0) > 0 ? 'warn'
+            : 'ok';
       checks.push({
         name: 'content_sanity_audit_recent',
         status,

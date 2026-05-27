@@ -69,6 +69,19 @@ describe('embedding_env_override check (buildChecks seam)', () => {
     );
   });
 
+  test('canonical provider:model env agrees with legacy bare DB model id', async () => {
+    await engine.setConfig('embedding_model', 'voyage-4-large');
+    await withEnv(
+      { GBRAIN_EMBEDDING_MODEL: 'voyage:voyage-4-large' },
+      async () => {
+        const checks = await buildChecks(engine, []);
+        const check = findCheck(checks, 'embedding_env_override');
+        expect(check!.status).toBe('ok');
+        expect(check!.message).toContain('agree with DB config');
+      },
+    );
+  });
+
   test('env model disagrees with DB → warn with details.mismatches', async () => {
     await engine.setConfig('embedding_model', 'zeroentropyai:zembed-1');
     await withEnv(

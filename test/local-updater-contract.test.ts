@@ -356,7 +356,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.5');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.6');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
