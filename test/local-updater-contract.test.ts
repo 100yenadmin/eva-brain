@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,6 +47,7 @@ function makeRepoWithEvaTags(home: string, tags: string[]): string {
   writeFileSync(join(repo, 'README.md'), '# tagged repo\n');
   runGit(repo, ['add', 'README.md']);
   runGit(repo, ['commit', '-m', 'initial']);
+  runGit(repo, ['branch', '-M', 'master']);
   for (const tag of tags) {
     writeFileSync(join(repo, 'README.md'), `# tagged repo\n${tag}\n`);
     runGit(repo, ['add', 'README.md']);
@@ -54,6 +55,55 @@ function makeRepoWithEvaTags(home: string, tags: string[]): string {
     runGit(repo, ['tag', tag]);
   }
   return repo;
+}
+
+function makeSupportKbRepo(home: string): string {
+  const repo = join(home, 'support-kb-src');
+  mkdirSync(join(repo, 'scripts'), { recursive: true });
+  writeFileSync(join(repo, 'README.md'), '# support kb\n');
+  writeFileSync(join(repo, 'scripts/update-client.mjs'), 'console.log("update-client ok");\n');
+  writeFileSync(join(repo, 'scripts/status.mjs'), 'console.log("status ok");\n');
+  runGit(repo, ['init']);
+  runGit(repo, ['config', 'user.email', 'agent@example.invalid']);
+  runGit(repo, ['config', 'user.name', 'Agent']);
+  runGit(repo, ['add', '.']);
+  runGit(repo, ['commit', '-m', 'initial support kb']);
+  return repo;
+}
+
+function writeFakeInstallBins(home: string, cycleExit: 'unknown' | 'other'): void {
+  const binDir = join(home, '.bun/bin');
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(
+    join(binDir, 'bun'),
+    '#!/usr/bin/env bash\nexit 0\n',
+  );
+  writeFileSync(
+    join(binDir, 'gbrain'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "sync" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "embed" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
+  if [ "${cycleExit}" = "unknown" ]; then
+    echo "Unknown sources subcommand: cycle-freshness" >&2
+  else
+    echo "Unknown sources subcommand: cycle-freshness; database locked while updating source freshness" >&2
+  fi
+  exit 2
+fi
+exit 0
+`,
+  );
+  chmodSync(join(binDir, 'bun'), 0o755);
+  chmodSync(join(binDir, 'gbrain'), 0o755);
 }
 
 describe('public local updater and Codex plugin packaging', () => {
@@ -300,7 +350,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.1');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.2');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
@@ -477,10 +527,90 @@ describe('public local updater and Codex plugin packaging', () => {
     const stdout = new TextDecoder().decode(result.stdout);
     const stderr = new TextDecoder().decode(result.stderr);
     expect(stderr).toContain('Support KB checkout has local changes; archiving it');
-    expect(stderr).toContain("Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'.");
+    expect(stderr).toContain('Dry-run: skipping optional cycle-freshness disable execution');
     expect(stdout).toContain(`mv ${kbDir}`);
     expect(stdout).toContain(`git clone ${kbRepo} ${kbDir}`);
     expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
+  });
+
+  test('local updater treats missing cycle-freshness support as optional during real support KB install', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeSupportKbRepo(tempHome());
+    writeFakeInstallBins(home, 'unknown');
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stderr).toContain("Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'.");
+  });
+
+  test('local updater still fails non-compatibility cycle-freshness errors', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeSupportKbRepo(tempHome());
+    writeFakeInstallBins(home, 'other');
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).not.toBe(0);
+    expect(stderr).toContain('database locked while updating source freshness');
   });
 
   test('Codex installer rejects missing option values instead of falling back to cwd', () => {
