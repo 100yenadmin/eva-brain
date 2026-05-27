@@ -330,13 +330,25 @@ install_support_kb() {
 }
 
 disable_support_kb_cycle_freshness_if_supported() {
-  local sources_help
-  sources_help="$("$HOME/.bun/bin/gbrain" sources 2>&1 || true)"
-  if printf '%s\n' "$sources_help" | grep -q 'cycle-freshness'; then
-    run "$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off
-  else
-    log "Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'."
+  local output
+  local cmd=("$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off)
+  printf '+'
+  printf ' %q' "${cmd[@]}"
+  printf '\n'
+  if [ "$DRY_RUN" = "true" ]; then
+    log "Dry-run: skipping optional cycle-freshness disable execution"
+    return
   fi
+  if output="$("${cmd[@]}" 2>&1)"; then
+    printf '%s\n' "$output"
+    return
+  fi
+  if printf '%s\n' "$output" | grep -q 'Unknown sources subcommand: cycle-freshness'; then
+    log "Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'."
+    return
+  fi
+  printf '%s\n' "$output" >&2
+  return 1
 }
 
 main() {

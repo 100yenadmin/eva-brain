@@ -1,6 +1,6 @@
 {
   "name": "@eva-brain/openclaw-gbrain",
-  "version": "0.41.18.1",
+  "version": "0.41.18.2",
   "description": "OpenClaw native plugin for Eva Brain/GBrain search, query, and OAuth-backed media extraction.",
   "type": "module",
   "main": "index.js",
