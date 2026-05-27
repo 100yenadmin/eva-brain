@@ -8,9 +8,10 @@
  * responses.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
+import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
 
@@ -21,7 +22,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await engine.disconnect();
+  try {
+    await engine.disconnect();
+  } finally {
+    resetGateway();
+  }
 });
 
 async function putAndReadBackstop(slug: string, content: string): Promise<{ queued: boolean } | { skipped: string } | undefined> {
@@ -35,6 +40,17 @@ async function putAndReadBackstop(slug: string, content: string): Promise<{ queu
 }
 
 describe('put_page facts backstop', () => {
+  beforeEach(() => {
+    // These tests assert put_page facts-backstop eligibility only. Keep the
+    // gateway configured but credentialless so CI's fake OPENAI_API_KEY does
+    // not route importFromContent into a real embedding attempt first.
+    configureGateway({
+      embedding_model: 'openai:text-embedding-3-large',
+      embedding_dimensions: 1536,
+      env: {},
+    });
+  });
+
   test('skipped on too-short body', async () => {
     const result = await putAndReadBackstop(
       'note/short',
