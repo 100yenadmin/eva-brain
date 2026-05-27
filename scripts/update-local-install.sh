@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ORIGINAL_ARGS=("$@")
 
 REPO_URL="${EVA_BRAIN_REPO_URL:-https://github.com/electricsheephq/eva-brain.git}"
 INSTALL_DIR="${EVA_BRAIN_DIR:-$HOME/eva-brain}"
@@ -158,6 +159,22 @@ checkout_repo() {
     log "Cloning $REPO_URL into $INSTALL_DIR"
     run git clone --branch "$REF" "$REPO_URL" "$INSTALL_DIR"
   fi
+}
+
+reexec_from_checked_out_updater() {
+  if [ "${EVA_BRAIN_UPDATER_REEXECED:-}" = "1" ]; then
+    return
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    return
+  fi
+  local updated_script="$INSTALL_DIR/scripts/update-local-install.sh"
+  if [ ! -f "$updated_script" ]; then
+    return
+  fi
+  log "Re-executing updater from checked-out ref: $updated_script"
+  cd "$INSTALL_DIR"
+  exec env EVA_BRAIN_UPDATER_REEXECED=1 bash "$updated_script" "${ORIGINAL_ARGS[@]}"
 }
 
 ensure_bun() {
@@ -398,6 +415,7 @@ main() {
   load_gbrain_env
   resolve_ref
   checkout_repo
+  reexec_from_checked_out_updater
   if [ -d "$INSTALL_DIR" ]; then
     cd "$INSTALL_DIR"
   elif [ "$DRY_RUN" = "true" ]; then

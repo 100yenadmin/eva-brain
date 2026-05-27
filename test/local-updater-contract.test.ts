@@ -131,6 +131,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/GBRAIN_DIR="\$GBRAIN_ROOT\/\.gbrain"/);
     expect(script).toMatch(/GBRAIN_ENV_FILE="\$\{GBRAIN_ENV_FILE:-\$GBRAIN_DIR\/gbrain\.env\}"/);
     expect(script).toContain('load_gbrain_env');
+    expect(script).toContain('ORIGINAL_ARGS=("$@")');
+    expect(script).toContain('reexec_from_checked_out_updater');
+    expect(script).toContain('EVA_BRAIN_UPDATER_REEXECED=1');
     expect(script).toContain('Skipping Support KB embedding because');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
@@ -353,7 +356,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.4');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.5');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
