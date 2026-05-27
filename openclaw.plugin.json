@@ -1,21 +1,14 @@
 {
+  "id": "gbrain",
   "name": "gbrain",
-  "version": "0.32.3.0",
-  "description": "Personal knowledge brain with Postgres + pgvector hybrid search",
+  "version": "0.41.18.0",
+  "description": "Eva Brain/GBrain skills and personal knowledge brain with provider-neutral hybrid search",
   "family": "bundle-plugin",
   "configSchema": {
     "database_url": {
       "type": "string",
-      "required": true,
-      "description": "PostgreSQL connection URL (Supabase recommended)",
-      "uiHints": {
-        "sensitive": true
-      }
-    },
-    "openai_api_key": {
-      "type": "string",
       "required": false,
-      "description": "OpenAI API key for embeddings (uses OPENAI_API_KEY env var if not set)",
+      "description": "Optional PostgreSQL connection URL. Omit for local PGLite.",
       "uiHints": {
         "sensitive": true
       }
@@ -23,7 +16,7 @@
   },
   "mcpServers": {
     "gbrain": {
-      "command": "./bin/gbrain",
+      "command": "gbrain",
       "args": [
         "serve"
       ]
@@ -45,6 +38,7 @@
     "skills/daily-task-prep",
     "skills/data-research",
     "skills/enrich",
+    "skills/frontmatter-guard",
     "skills/functional-area-resolver",
     "skills/idea-ingest",
     "skills/ingest",
@@ -60,12 +54,15 @@
     "skills/skill-creator",
     "skills/skillify",
     "skills/skillpack-check",
+    "skills/smoke-test",
     "skills/skillpack-harvest",
     "skills/soul-audit",
     "skills/strategic-reading",
     "skills/testing",
     "skills/voice-note-ingest",
-    "skills/webhook-transforms"
+    "skills/webhook-transforms",
+    "skills/cold-start",
+    "skills/ask-user"
   ],
   "shared_deps": [
     "skills/conventions",

@@ -1,6 +1,10 @@
 {
   "name": "gbrain",
   "description": "Postgres-native personal knowledge brain with hybrid RAG search",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/electricsheephq/eva-brain.git"
+  },
   "type": "module",
   "main": "src/core/index.ts",
   "bin": {
@@ -30,8 +34,9 @@
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "build": "bun build --compile --outfile bin/gbrain src/cli.ts",
-    "build:all": "bun build --compile --target=bun-darwin-arm64 --outfile bin/gbrain-darwin-arm64 src/cli.ts && bun build --compile --target=bun-linux-x64 --outfile bin/gbrain-linux-x64 src/cli.ts",
+    "build": "bun run build:openclaw && bun build --compile --outfile bin/gbrain src/cli.ts",
+    "build:openclaw": "bun build src/openclaw-context-engine.ts --target=node --format=esm --outfile dist/openclaw-context-engine.js",
+    "build:all": "bun run build:openclaw && bun build --compile --target=bun-darwin-arm64 --outfile bin/gbrain-darwin-arm64 src/cli.ts && bun build --compile --target=bun-linux-x64 --outfile bin/gbrain-linux-x64 src/cli.ts",
     "build:admin": "cd admin && bun run build && cd .. && bun run scripts/build-admin-embedded.ts",
     "build:admin-embedded": "bun run scripts/build-admin-embedded.ts",
     "build:schema": "bash scripts/build-schema.sh",
@@ -78,7 +83,7 @@
     "check:fixture-privacy": "scripts/check-fixture-privacy.sh",
     "check:conversation-parser": "bun src/cli.ts eval conversation-parser test/fixtures/conversation-formats/all.jsonl --no-llm",
     "check:source-scope-onboard": "scripts/check-source-scope-onboard.sh",
-    "postinstall": "command -v gbrain >/dev/null 2>&1 && gbrain apply-migrations --yes --non-interactive || echo '[gbrain] postinstall skipped. If installed via bun install -g github:...: run `gbrain doctor` and `gbrain apply-migrations --yes` manually. See https://github.com/garrytan/gbrain/issues/218' 1>&2",
+    "postinstall": "echo '[gbrain] dependencies installed. Run `bun link`, then `gbrain init --pglite` or follow INSTALL_FOR_AGENTS.md.' 1>&2",
     "prepublish:clawhub": "bun run build:all",
     "publish:clawhub": "clawhub package publish . --family bundle-plugin"
   },
