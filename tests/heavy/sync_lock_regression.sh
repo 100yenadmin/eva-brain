@@ -78,8 +78,13 @@ EOF
 # git-init so sync's diff-walk has something to anchor (sync expects a git repo)
 (cd "$BRAIN_DIR" && git init -q && git add . && git -c user.email=test@test -c user.name=test commit -q -m "seed" >/dev/null 2>&1) || true
 
-# Tell gbrain to use this brain dir
-bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
+# Tell current source-aware sync to use this brain dir. Older versions read
+# sync.repo_path, but current sync resolves the default source local_path.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v brain_path="$BRAIN_DIR" -c \
+  "INSERT INTO sources (id, name, local_path, config)
+   VALUES ('default', 'default', :'brain_path', '{}'::jsonb)
+   ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" \
+  >/dev/null 2>>"$LOG"
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
