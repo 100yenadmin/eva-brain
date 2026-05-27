@@ -97,6 +97,11 @@ function equivalentEmbeddingModelForDoctor(envModel: string, dbModel: string): b
 
   const envSep = env.indexOf(':');
   const dbSep = dbValue.indexOf(':');
+  const envHasProvider = envSep !== -1;
+  const dbHasProvider = dbSep !== -1;
+
+  if (envHasProvider && dbHasProvider) return false;
+
   const envModelId = envSep === -1 ? env : env.slice(envSep + 1);
   const dbModelId = dbSep === -1 ? dbValue : dbValue.slice(dbSep + 1);
 
