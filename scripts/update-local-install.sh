@@ -10,6 +10,7 @@ if [ "${GBRAIN_ROOT%/.gbrain}" != "$GBRAIN_ROOT" ]; then
   export GBRAIN_HOME="$GBRAIN_ROOT"
 fi
 GBRAIN_DIR="$GBRAIN_ROOT/.gbrain"
+GBRAIN_ENV_FILE="${GBRAIN_ENV_FILE:-$GBRAIN_DIR/gbrain.env}"
 WITH_OPENCLAW="auto"
 WITH_CODEX_PLUGIN="auto"
 WITH_SUPPORT_KB="false"
@@ -76,6 +77,17 @@ run() {
   if [ "$DRY_RUN" = "false" ]; then
     "$@"
   fi
+}
+
+load_gbrain_env() {
+  if [ ! -f "$GBRAIN_ENV_FILE" ]; then
+    return
+  fi
+  log "Loading GBrain env from $GBRAIN_ENV_FILE"
+  set -a
+  # shellcheck source=/dev/null
+  . "$GBRAIN_ENV_FILE"
+  set +a
 }
 
 need_cmd() {
@@ -259,6 +271,34 @@ provider_test() {
   run "$HOME/.bun/bin/gbrain" providers test --model voyage:voyage-4-large
 }
 
+configured_embedding_model() {
+  if [ ! -f "$GBRAIN_DIR/config.json" ]; then
+    printf 'voyage:voyage-4-large\n'
+    return
+  fi
+  node -e '
+const fs = require("fs");
+const path = process.argv[1];
+try {
+  const config = JSON.parse(fs.readFileSync(path, "utf8"));
+  process.stdout.write(String(config.embedding_model || "voyage:voyage-4-large"));
+} catch {
+  process.stdout.write("voyage:voyage-4-large");
+}
+' "$GBRAIN_DIR/config.json"
+  printf '\n'
+}
+
+embed_support_kb_if_provider_auth_available() {
+  local model
+  model="$(configured_embedding_model)"
+  if [ "${model#voyage:}" != "$model" ] && [ -z "${VOYAGE_API_KEY:-}" ]; then
+    log "Skipping Support KB embedding because $model requires VOYAGE_API_KEY and no key is configured. Source-scoped text search will still be validated."
+    return
+  fi
+  run "$HOME/.bun/bin/gbrain" embed --stale --source openclaw-support-kb
+}
+
 install_openclaw_plugin() {
   if [ "$WITH_OPENCLAW" = "auto" ] && ! command -v openclaw >/dev/null 2>&1; then
     log "OpenClaw not found; skipping OpenClaw plugin install"
@@ -325,7 +365,7 @@ install_support_kb() {
   run node "$kb_dir/scripts/update-client.mjs"
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
-  run "$HOME/.bun/bin/gbrain" embed --stale --source openclaw-support-kb
+  embed_support_kb_if_provider_auth_available
   disable_support_kb_cycle_freshness_if_supported
 }
 
@@ -355,6 +395,7 @@ disable_support_kb_cycle_freshness_if_supported() {
 
 main() {
   parse_args "$@"
+  load_gbrain_env
   resolve_ref
   checkout_repo
   if [ -d "$INSTALL_DIR" ]; then
