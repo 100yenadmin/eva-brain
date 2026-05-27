@@ -129,6 +129,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/switch\s+--detach\s+FETCH_HEAD/);
     expect(script).toMatch(/GBRAIN_ROOT="\$\{GBRAIN_HOME:-\$HOME\}"/);
     expect(script).toMatch(/GBRAIN_DIR="\$GBRAIN_ROOT\/\.gbrain"/);
+    expect(script).toMatch(/GBRAIN_ENV_FILE="\$\{GBRAIN_ENV_FILE:-\$GBRAIN_DIR\/gbrain\.env\}"/);
+    expect(script).toContain('load_gbrain_env');
+    expect(script).toContain('Skipping Support KB embedding because');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/init\s+--pglite\s+--embedding-model\s+voyage:voyage-4-large\s+--embedding-dimensions\s+2048/);
@@ -350,7 +353,7 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.3');
+    expect(result.stderr.toString()).toContain('expected: 0.41.18.4');
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
@@ -571,6 +574,75 @@ describe('public local updater and Codex plugin packaging', () => {
     const stderr = new TextDecoder().decode(result.stderr);
     expect(result.exitCode).toBe(0);
     expect(stderr).toContain("Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'.");
+  });
+
+  test('local updater skips Support KB embedding on no-key Voyage installs', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeSupportKbRepo(tempHome());
+    const binDir = join(home, '.bun/bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'bun'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then
+  mkdir -p "$HOME/.gbrain"
+  printf '{"embedding_model":"voyage:voyage-4-large"}\\n' > "$HOME/.gbrain/config.json"
+  exit 0
+fi
+if [ "\${1:-}" = "sync" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "embed" ]; then
+  echo "embed should have been skipped when VOYAGE_API_KEY is missing" >&2
+  exit 9
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
+  echo "cycle disabled"
+  exit 0
+fi
+exit 0
+`,
+    );
+    chmodSync(join(binDir, 'bun'), 0o755);
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+        VOYAGE_API_KEY: '',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stderr).toContain('Skipping Support KB embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
+    expect(stderr).not.toContain('embed should have been skipped');
   });
 
   test('local updater still fails non-compatibility cycle-freshness errors', () => {
