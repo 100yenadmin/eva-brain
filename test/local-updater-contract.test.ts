@@ -121,6 +121,16 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(workflow).toContain('Release tag must match package.json version');
   });
 
+  test('test workflow uses OSS gitleaks CLI without an organization license secret', () => {
+    const workflow = readFileSync(join(root, '.github/workflows/test.yml'), 'utf8');
+
+    expect(workflow).toContain('Install gitleaks OSS CLI');
+    expect(workflow).toContain('gitleaks dir . --redact --no-banner');
+    expect(workflow).toContain('gitleaks git . --redact --no-banner --log-opts="${BASE_SHA}..${HEAD_SHA}"');
+    expect(workflow).not.toContain('gitleaks/gitleaks-action');
+    expect(workflow).not.toContain('GITLEAKS_LICENSE');
+  });
+
   test('Codex plugin metadata stays repo-owned and version-aligned', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const skillManifest = JSON.parse(readFileSync(join(root, 'skills/manifest.json'), 'utf8'));

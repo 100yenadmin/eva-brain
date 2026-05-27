@@ -2156,7 +2156,8 @@ Source: https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGE
 
 # GBrain Installation Guide for AI Agents
 
-Read this entire file, then follow the steps. Ask the user for API keys when needed.
+Read this entire file, then follow the steps. Ask the user for `VOYAGE_API_KEY`
+only if the local environment does not already provide it.
 Target: ~30 minutes to a fully working brain.
 
 ## Step 0: If you are not Claude Code
@@ -2166,69 +2167,110 @@ protocol (install, read order, trust boundary, common tasks). Claude Code reads
 `CLAUDE.md` automatically and can skip ahead.
 
 If you fetched this file by URL without cloning yet, the companion files live at:
-- `https://raw.githubusercontent.com/garrytan/gbrain/master/AGENTS.md` — start here
-- `https://raw.githubusercontent.com/garrytan/gbrain/master/llms.txt` — full doc map
-- `https://raw.githubusercontent.com/garrytan/gbrain/master/llms-full.txt` — same map, inlined
+- `https://raw.githubusercontent.com/electricsheephq/eva-brain/master/AGENTS.md` — start here
+- `https://raw.githubusercontent.com/electricsheephq/eva-brain/master/llms.txt` — full doc map
+- `https://raw.githubusercontent.com/electricsheephq/eva-brain/master/llms-full.txt` — same map, inlined
 
 ## Step 1: Install GBrain
 
-Default path (Bun is required — gbrain is a Bun + TypeScript runtime):
+Recommended public updater path:
 
 ```bash
+git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain
+cd ~/eva-brain
+scripts/update-local-install.sh
+```
+
+That script is idempotent: it installs the latest `eva-v*` GitHub release tag,
+runs `bun install`, links the `gbrain` CLI, applies safe PGLite migrations, and
+refreshes optional host plugins when those hosts are present.
+
+To require host plugin setup instead of auto-detecting it, pass
+`--with-openclaw` and/or `--with-codex-plugin`.
+
+Full Eva/OpenClaw/Codex/support-KB install:
+
+```bash
+git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain
+cd ~/eva-brain
+scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --stop-stale-serve
+```
+
+Development installs must opt into the moving branch explicitly:
+
+```bash
+scripts/update-local-install.sh --ref master
+```
+
+What that command does:
+
+- installs or updates the local `gbrain` CLI from this checkout
+- initializes PGLite if no brain exists yet
+- keeps existing local brain data under `~/.gbrain`
+- installs the OpenClaw native plugin from `plugins/openclaw-gbrain`
+- installs the Codex Desktop plugin from `plugins/gbrain-codex`
+- installs or updates the OpenClaw support KB as source `openclaw-support-kb`
+- embeds only stale chunks for that KB source
+- runs provider probe and `gbrain doctor` when possible
+
+Manual path:
+
+```bash
+git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain && cd ~/eva-brain
 curl -fsSL https://bun.sh/install | bash
 export PATH="$HOME/.bun/bin:$PATH"
-bun install -g github:garrytan/gbrain
+bun install && bun link
 ```
 
 Verify: `gbrain --version` should print a version number. If `gbrain` is not found,
 restart the shell or add the PATH export to the shell profile.
 
-> **If `bun install -g` aborts or `gbrain doctor` reports `schema_version: 0`** (Bun
-> occasionally blocks the top-level postinstall hook on global installs, so schema
-> migrations don't run automatically), the CLI prints a recovery hint pointing at
-> [#218](https://github.com/garrytan/gbrain/issues/218). Run `gbrain apply-migrations --yes`
-> to recover. If that doesn't work, fall back to the deterministic install path:
->
-> ```bash
-> git clone https://github.com/garrytan/gbrain.git ~/gbrain && cd ~/gbrain
-> bun install && bun link
-> ```
+> **Do NOT use `bun install -g github:electricsheephq/eva-brain`.** Bun blocks the top-level
+> postinstall hook on global installs, so schema migrations never run and the CLI
+> aborts with `Aborted()` when it opens PGLite. Use the `git clone + bun link` path
+> above. Tracking issue: [#218](https://github.com/garrytan/gbrain/issues/218).
 
-## Step 2: API Keys
+## Step 2: AI Provider Setup
 
-Ask the user for these. gbrain defaults to the ZeroEntropy embedding + reranker stack
-(as of v0.36.2.0); OpenAI/Voyage are still supported as fallbacks via `gbrain config
-set embedding_model <provider:model>`.
+Default Eva/OpenClaw path:
 
 ```bash
-export ZEROENTROPY_API_KEY=ze-...     # default embedding + reranker (v0.36.2.0+)
-export OPENAI_API_KEY=sk-...          # fallback for vector search; also used for chat models
-export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality via query expansion
+export VOYAGE_API_KEY=...
 ```
 
-Save to shell profile or `.env`. Keys are picked up by `gbrain config set` automatically
-or can be stored in `~/.gbrain/config.json` (file plane). Without any embedding provider,
-keyword search still works. Without Anthropic, search works but skips query expansion.
+Save it to the shell profile or to `~/.gbrain/gbrain.env`. Voyage is for
+embeddings. OpenClaw/Codex OAuth is used by the OpenClaw plugin for extraction;
+do not ask users for an OpenAI API key just to run Eva Brain extraction.
+
+Before initializing the brain, verify the provider you plan to use:
+
+```bash
+gbrain providers list
+gbrain providers explain
+gbrain providers test --model voyage:voyage-4-large
+```
+
+Without an embedding provider, keyword search still works but semantic/hybrid retrieval will not.
+
+If you want Google, Ollama, LiteLLM, or another provider instead of Voyage, read:
+
+- `docs/guides/provider-install-matrix.md` — provider matrix, exact init commands, dimension contract, rollback notes
+- `docs/GBRAIN_VERIFY.md` — post-install verification checklist
+
+**OpenClaw Codex OAuth note:** the OpenClaw plugin exposes `/plugins/gbrain/extract`
+and routes extraction through OpenClaw's logged-in Codex runtime. The GBrain CLI
+still needs a gateway URL/token when calling that route from outside OpenClaw,
+but the extraction model auth is owned by OpenClaw, not by a user-supplied
+OpenAI API key.
 
 ## Step 3: Create the Brain
 
 ```bash
-gbrain init                           # PGLite, no server needed
+gbrain init --pglite --embedding-model voyage:voyage-4-large --embedding-dimensions 2048
 gbrain doctor --json                  # verify all checks pass
 ```
 
-The user's markdown files (notes, docs, brain repo) are SEPARATE from this tool repo.
-Ask the user where their files are, or create a new brain repo:
-
-```bash
-mkdir -p ~/brain && cd ~/brain && git init
-```
-
-Read `~/gbrain/docs/GBRAIN_RECOMMENDED_SCHEMA.md` and set up the MECE directory
-structure (people/, companies/, concepts/, etc.) inside the user's brain repo,
-NOT inside ~/gbrain.
-
-## Step 3.5: Confirm search mode with the user (DO NOT SKIP)
+## Step 3.1: Confirm search mode with the user (DO NOT SKIP)
 
 `gbrain init` auto-applied a default search mode (`tokenmax` unless your subagent
 tier is Haiku-class or no OpenAI key is configured). The init output included the
@@ -2285,11 +2327,131 @@ An agent that silently accepts the default and starts running queries against
 a user who didn't expect tokenmax-class context loads can rack up surprise
 spend. Confirm before continuing.
 
+## Step 3.5: Install The OpenClaw Plugin
+
+If OpenClaw is installed on this machine, install the native plugin from the
+same Eva Brain checkout:
+
+```bash
+cd ~/eva-brain
+openclaw plugins install --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
+openclaw plugins enable gbrain
+# Restart with exactly one host-appropriate command:
+# Customer/systemd hosts:
+sudo systemctl restart openclaw-gateway
+# Local developer hosts:
+openclaw gateway restart
+openclaw plugins inspect gbrain --runtime --json
+openclaw gbrain status
+```
+
+The plugin provides:
+
+- `gbrain_status`
+- `gbrain_search`
+- `gbrain_query`
+- `/plugins/gbrain/extract` for OAuth-backed extraction through OpenClaw/Codex
+
+What is different from normal GBrain: normal GBrain exposes CLI and MCP tools.
+The OpenClaw plugin lets OpenClaw agents call those tools natively and adds a
+host-owned extraction route. That route uses OpenClaw's logged-in Codex runtime;
+users do not need an OpenAI API key for extraction.
+
+Media boundary: upstream GBrain owns native image indexing through image pages,
+file records, multimodal embeddings, OCR, and `query --image`. Eva's OpenClaw
+plugin owns OAuth-backed enrichment/extraction and returns
+`gbrain.media-extraction.v1` as an adapter payload. The `import-media` and
+`ingest-media --extract openclaw` commands are transitional compatibility paths
+for turning that payload into searchable pages while the plugin boundary
+continues to shrink toward upstream-native writes.
+
+If OpenClaw is not installed, skip this step and keep the CLI/MCP path.
+
+## Step 3.6: Install The Codex Desktop Plugin
+
+If Codex Desktop is installed on this machine, install the local Codex plugin
+from the same Eva Brain checkout:
+
+```bash
+cd ~/eva-brain
+node scripts/install-codex-plugin.mjs
+```
+
+Then restart Codex Desktop. The installer creates `~/plugins/gbrain-codex`,
+links the repo-owned plugin package plus the current repo `skills/` tree,
+updates the local Codex marketplace/config, and clears stale cached
+`gbrain-codex` plugin entries.
+
+The plugin is a thin MCP adapter over the local `gbrain` CLI. It does not embed
+a second brain runtime. If Codex cannot see `gbrain` on the GUI PATH, set
+`GBRAIN_CODEX_BIN` to the desired executable path before launching Codex.
+
+What is different from normal GBrain: normal GBrain can already be configured as
+an MCP server manually. The Codex plugin packages that MCP launch path in a
+repo-owned plugin directory so agents can install it repeatably with one script.
+
+To verify the installed Codex path and catch stale plugin cache/serve-process
+drift:
+
+```bash
+node scripts/codex-gbrain-smoke.mjs
+```
+
+## Step 3.7: Install The OpenClaw Support KB
+
+For OpenClaw customer/support work, install the KB source and support skills
+after GBrain is healthy:
+
+```bash
+export OPENCLAW_SUPPORT_KB_REPO="https://github.com/electricsheephq/openclaw-support-kb.git"
+export GBRAIN_ROOT="${GBRAIN_HOME:-$HOME}"
+if [ "${GBRAIN_ROOT%/.gbrain}" != "$GBRAIN_ROOT" ]; then
+  export GBRAIN_ROOT="$(dirname "$GBRAIN_ROOT")"
+fi
+export OPENCLAW_SUPPORT_KB_DIR="$GBRAIN_ROOT/.gbrain/sources/openclaw-support-kb"
+
+if [ -d "$OPENCLAW_SUPPORT_KB_DIR/.git" ]; then
+  git -C "$OPENCLAW_SUPPORT_KB_DIR" pull --ff-only
+else
+  git clone "$OPENCLAW_SUPPORT_KB_REPO" "$OPENCLAW_SUPPORT_KB_DIR"
+fi
+
+cd "$OPENCLAW_SUPPORT_KB_DIR"
+node scripts/update-client.mjs
+node scripts/status.mjs
+```
+
+This installs the four OpenClaw support skills and registers the
+`openclaw-support-kb` GBrain source.
+
+Verify the source registry before claiming the brain is empty or healthy:
+
+```bash
+gbrain sources list --json
+gbrain search "OpenClaw" --limit 3 --source openclaw-support-kb
+node ~/eva-brain/scripts/eva-brain-health.mjs
+```
+
+Do not use `default` page count as the whole-brain health signal. A valid
+OpenClaw customer install may have `default: 0` while `openclaw-support-kb`
+contains the searchable support corpus.
+
+The user's markdown files (notes, docs, brain repo) are SEPARATE from this tool repo.
+Ask the user where their files are, or create a new brain repo:
+
+```bash
+mkdir -p ~/brain && cd ~/brain && git init
+```
+
+Read `~/eva-brain/docs/GBRAIN_RECOMMENDED_SCHEMA.md` and set up the MECE directory
+structure (people/, companies/, concepts/, etc.) inside the user's brain repo,
+NOT inside `~/eva-brain`.
+
 ## Step 4: Import and Index
 
 ```bash
 gbrain import ~/brain/ --no-embed     # import markdown files
-gbrain embed --stale                  # generate vector embeddings
+gbrain embed --stale --source default # generate vector embeddings for this brain source
 gbrain query "key themes across these documents?"
 ```
 
@@ -2319,24 +2481,8 @@ and supports `--since YYYY-MM-DD` for incremental runs.
 
 ## Step 5: Load Skills
 
-If you're running an agent platform (OpenClaw, Hermes, or any repo with a workspace),
-scaffold the bundled skills into it:
-
-```bash
-cd /path/to/agent/workspace
-gbrain skillpack scaffold --all       # copy 43 curated skills + RESOLVER.md
-```
-
-Scaffolded skills are first-class files in your repo. Edit freely; re-running scaffold
-refuses to overwrite anything that exists. Use `gbrain skillpack reference <name>` to
-diff against gbrain's bundle when you want upstream improvements. (The legacy
-`gbrain skillpack install` managed-block model was retired in v0.36.0.0 — run
-`gbrain skillpack migrate-fence` once if upgrading from an older release.)
-
-Whether you scaffolded or not, read `skills/RESOLVER.md` (in your workspace, or the
-bundled copy at `~/gbrain/skills/RESOLVER.md` when running from the cloned repo). It's
-the skill dispatcher — tells you which skill to read for any task. Save this to your
-memory permanently.
+Read `~/eva-brain/skills/RESOLVER.md`. This is the skill dispatcher. It tells you which
+skill to read for any task. Save this to your memory permanently.
 
 The three most important skills to adopt immediately:
 
@@ -2364,22 +2510,28 @@ If skipped, minimal defaults are installed automatically.
 
 ## Step 7: Recurring Jobs
 
-Set up using your platform's scheduler (OpenClaw cron, Railway cron, crontab), or skip the
-platform glue entirely with `gbrain autopilot --install` (built-in self-maintaining daemon):
+Set up using OpenClaw's scheduler/Minions job path when available. Plain
+`crontab` is a local fallback only, because background agents cannot answer
+interactive shell-approval prompts.
 
-- **Live sync** (every 15 min): `gbrain sync --repo ~/brain && gbrain embed --stale`
-  — or `gbrain sync --watch` for a continuous loop.
-- **Auto-update** (daily): `gbrain check-update --json` (tell user, never auto-install).
-- **Dream cycle** (nightly): `gbrain dream` runs the 8-phase overnight maintenance cycle.
+- **Local-only brain refresh** (every 15 min): `gbrain import ~/brain --no-embed && gbrain embed --stale --source default`
+- **Git-tracked brain sync** (every 15 min): use `gbrain sync --repo ~/brain && gbrain embed --stale --source default`
+  only when `~/brain` has a configured git remote and upstream tracking branch.
+  If `git -C ~/brain remote -v` is empty, use the local-only import command above.
+- **Support KB refresh** (after `openclaw-support-kb` updates): run
+  `node scripts/update-client.mjs && gbrain sync --repo "$OPENCLAW_SUPPORT_KB_DIR" --source openclaw-support-kb --no-embed && gbrain embed --stale --source openclaw-support-kb`
+  from `$OPENCLAW_SUPPORT_KB_DIR`, so KB changes do not trigger a full-brain
+  stale embed sweep.
+- **Auto-update** (daily): `gbrain check-update --json` (tell user, never auto-install)
+- **Dream cycle** (nightly): read `docs/guides/cron-schedule.md` for the full protocol.
   Entity sweep, citation fixes, memory consolidation, plus (v0.23+) overnight conversation
-  synthesis and cross-session pattern detection. One cron-friendly command. This is what
-  makes the brain compound. Do not skip it. See `docs/guides/cron-schedule.md` for the
-  full protocol.
-- **Weekly**: `gbrain doctor --json && gbrain embed --stale`
+  synthesis and cross-session pattern detection. 8 phases, one cron-friendly command. This
+  is what makes the brain compound. Do not skip it.
+- **Weekly**: `gbrain doctor --json && gbrain embed --stale --source default`
 
 ## Step 8: Integrations
 
-Run `gbrain integrations list`. Each recipe in `~/gbrain/recipes/` is a self-contained
+Run `gbrain integrations list`. Each recipe in `~/eva-brain/recipes/` is a self-contained
 installer. It tells you what credentials to ask for, how to validate, and what cron
 to register. Ask the user which integrations they want (email, calendar, voice, Twitter).
 
@@ -2392,22 +2544,27 @@ actually works) is the most important.
 
 ## Upgrade
 
-If you installed via `bun install -g`:
+Stable release upgrade:
 
 ```bash
-gbrain upgrade                        # self-updates the binary, runs schema migrations,
-                                      # and prints post-upgrade notes for the version range
-```
-
-If you installed via `git clone + bun link`:
-
-```bash
-cd ~/gbrain && git pull origin master && bun install
-gbrain apply-migrations --yes         # apply schema migrations (idempotent)
+cd ~/eva-brain
+scripts/update-local-install.sh
 gbrain post-upgrade                   # show migration notes for the version range
 ```
 
-Then read `~/gbrain/skills/migrations/v<NEW_VERSION>.md` (and any intermediate
+Install or roll back to an exact release:
+
+```bash
+scripts/update-local-install.sh --ref eva-v0.40.2.0
+```
+
+Development branch upgrade:
+
+```bash
+scripts/update-local-install.sh --ref master
+```
+
+Then read `~/eva-brain/skills/migrations/v<NEW_VERSION>.md` (and any intermediate
 versions you skipped) and run any backfill or verification steps it lists. Skipping
 this is how features ship in the binary but stay dormant in the user's brain.
 
@@ -2417,7 +2574,7 @@ created before v0.32.3, `gbrain post-upgrade` prints a banner including the
 **Do NOT silently move past the banner.** Present the matrix to the operator
 verbatim, ask which mode they want (recommended default: `tokenmax` to preserve
 v0.31.x retrieval shape), then run `gbrain config set search.mode <mode>`. See
-Step 3.5 above for the full ask-the-user protocol — the upgrade path uses the
+Step 3.1 above for the full ask-the-user protocol — the upgrade path uses the
 same matrix and same default.
 
 For v0.12.0+ specifically: if your brain was created before v0.12.0, run
@@ -2430,61 +2587,6 @@ automatically during `gbrain post-upgrade` to fix the double-encoded JSONB
 columns. PGLite brains no-op. If wiki-style imports were truncated by the old
 `splitBody` bug, run `gbrain sync --full` after upgrading to rebuild
 `compiled_truth` from source markdown.
-
-## v0.42.0+ onboard surface (NEW)
-
-`gbrain onboard` is the activation surface gbrain did not have before.
-Once your brain has any content, run `gbrain onboard --check --json` to
-see structured recommendations across 5 brain-health axes (orphans,
-stale embeddings, entity link coverage, timeline coverage, takes count).
-
-**On first connect (after `gbrain init`):**
-```bash
-gbrain onboard --check --json
-```
-The JSON envelope (`schema_version: 1`) carries `recommendations[]` with
-`apply_policy` per item: `auto_apply` (safe to run unattended),
-`prompt_required` (needs explicit user consent), or `manual_only`
-(LLM-bearing, user must run themselves).
-
-**After every `gbrain upgrade`:**
-```bash
-gbrain onboard --check --json
-```
-New versions may surface new opportunities. The post-upgrade banner
-nudges the user when it runs, but agents should re-probe as a hygiene
-step regardless.
-
-**Unattended remediation (cron / autopilot):**
-```bash
-gbrain onboard --auto --max-usd 5
-```
-Refuses without `--max-usd N`. Runs auto-eligible items only. The
-autopilot daemon also consults onboard recommendations on its tick — no
-explicit agent action needed for the autonomous path.
-
-**Remote / federated brain installs (MCP):**
-The `run_onboard` MCP op (admin scope) lets thin-client agents probe
-brain health + drive remediation over OAuth-authenticated MCP. Protected
-LLM-bearing handlers (synthesize, patterns, consolidate, takes-bootstrap,
-contextual_reindex_per_chunk) require the additional `run_protected_onboard`
-scope — admin alone is insufficient. The MCP op returns
-`skipped_missing_scope[]` listing what would have run with the right
-grants.
-
-**Privacy + consent gates:**
-- `gbrain takes extract --from-pages` sends concept/atom/lore/briefing/
-  writing/originals page content to your configured chat model (default
-  Anthropic Haiku). Refuses to run unless `takes.bootstrap_enabled=true`
-  is set in config AND `--yes` is passed. Two-gate opt-in by design.
-- Autopilot's auto-apply tier for takes-bootstrap stays `manual_only`
-  until v0.42.1's eval gate (do not bypass).
-
-**Suppress nudges in CI / scripted environments:**
-```bash
-export GBRAIN_NO_ONBOARD_NUDGE=1
-```
-Init + upgrade banners auto-skip in non-TTY too.
 
 ---
 
