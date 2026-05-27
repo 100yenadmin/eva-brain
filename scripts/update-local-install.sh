@@ -326,7 +326,17 @@ install_support_kb() {
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
   run "$HOME/.bun/bin/gbrain" embed --stale --source openclaw-support-kb
-  run "$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off
+  disable_support_kb_cycle_freshness_if_supported
+}
+
+disable_support_kb_cycle_freshness_if_supported() {
+  local sources_help
+  sources_help="$("$HOME/.bun/bin/gbrain" sources 2>&1 || true)"
+  if printf '%s\n' "$sources_help" | grep -q 'cycle-freshness'; then
+    run "$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off
+  else
+    log "Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'."
+  fi
 }
 
 main() {
