@@ -80,9 +80,10 @@ EOF
 
 # Tell current source-aware sync to use this brain dir. Older versions read
 # sync.repo_path, but current sync resolves the default source local_path.
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v brain_path="$BRAIN_DIR" -c \
+escaped_brain_dir=${BRAIN_DIR//\'/\'\'}
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
   "INSERT INTO sources (id, name, local_path, config)
-   VALUES ('default', 'default', :'brain_path', '{}'::jsonb)
+   VALUES ('default', 'default', '$escaped_brain_dir', '{}'::jsonb)
    ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" \
   >/dev/null 2>>"$LOG"
 
