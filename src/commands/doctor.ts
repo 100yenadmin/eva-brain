@@ -24,6 +24,7 @@ import { categorizeCheck, type CheckCategory } from '../core/doctor-categories.t
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import type { DbUrlSource } from '../core/config.ts';
 import { gbrainPath } from '../core/config.ts';
+import type { ContentSanityAuditEvent } from '../core/audit/content-sanity-audit.ts';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
@@ -61,6 +62,40 @@ export interface Check {
    * Source of truth: `src/core/doctor-categories.ts`.
    */
   category?: CheckCategory;
+}
+
+export async function filterCurrentContentSanityEvents(
+  engine: Pick<BrainEngine, 'executeRaw'>,
+  events: ReadonlyArray<ContentSanityAuditEvent>,
+): Promise<ContentSanityAuditEvent[]> {
+  const filtered: ContentSanityAuditEvent[] = [];
+
+  for (const ev of events) {
+    if (ev.event_type !== 'soft_block') {
+      filtered.push(ev);
+      continue;
+    }
+
+    try {
+      const rows = await engine.executeRaw<{ embed_skip_present: boolean | string | number | null }>(
+        `SELECT COALESCE(frontmatter, '{}'::jsonb) ? 'embed_skip' AS embed_skip_present
+         FROM pages
+         WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL
+         LIMIT 1`,
+        [ev.source_id, ev.slug],
+      );
+
+      if (rows.length === 0) continue;
+      const value = rows[0]?.embed_skip_present;
+      const embedSkipPresent =
+        value === true || value === 1 || value === 't' || value === 'true';
+      if (embedSkipPresent) filtered.push(ev);
+    } catch {
+      filtered.push(ev);
+    }
+  }
+
+  return filtered;
 }
 
 /**
@@ -4968,7 +5003,10 @@ export async function buildChecks(
   try {
     const { readRecentContentSanityEvents, summarizeContentSanityEvents } =
       await import('../core/audit/content-sanity-audit.ts');
-    const events = readRecentContentSanityEvents(7);
+    const events = await filterCurrentContentSanityEvents(
+      engine,
+      readRecentContentSanityEvents(7),
+    );
     if (events.length === 0) {
       checks.push({
         name: 'content_sanity_audit_recent',

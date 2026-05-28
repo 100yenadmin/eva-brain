@@ -83,6 +83,55 @@ describe('doctor command', () => {
     expect(source).toContain('GBRAIN_DATABASE_URL');
   });
 
+  test('content-sanity doctor filters stale soft-block audit rows', async () => {
+    const { filterCurrentContentSanityEvents } = await import('../src/commands/doctor.ts');
+    const events = [
+      {
+        ts: '2026-05-28T00:00:00.000Z',
+        event_type: 'soft_block' as const,
+        source_id: 'workspace-docs',
+        slug: 'removed/huge-export',
+        bytes: 900000,
+        junk_pattern_matches: [],
+        literal_substring_matches: [],
+        reason_messages: ['PAGE_OVERSIZED'],
+      },
+      {
+        ts: '2026-05-28T00:00:01.000Z',
+        event_type: 'soft_block' as const,
+        source_id: 'workspace-docs',
+        slug: 'current/huge-export',
+        bytes: 900000,
+        junk_pattern_matches: [],
+        literal_substring_matches: [],
+        reason_messages: ['PAGE_OVERSIZED'],
+      },
+      {
+        ts: '2026-05-28T00:00:02.000Z',
+        event_type: 'warn' as const,
+        source_id: 'workspace-docs',
+        slug: 'current/large-doc',
+        bytes: 90000,
+        junk_pattern_matches: [],
+        literal_substring_matches: [],
+        reason_messages: ['PAGE_OVERSIZE_WARN'],
+      },
+    ];
+    const engine = {
+      async executeRaw<T>(_sql: string, params: unknown[]): Promise<T[]> {
+        const slug = params[1];
+        if (slug === 'current/huge-export') return [{ embed_skip_present: true } as T];
+        return [];
+      },
+    };
+
+    const filtered = await filterCurrentContentSanityEvents(engine, events);
+    expect(filtered.map(e => e.slug)).toEqual([
+      'current/huge-export',
+      'current/large-doc',
+    ]);
+  });
+
   // v0.12.2 reliability wave — doctor detects JSONB double-encode + truncated
   // bodies and points users at the standalone `gbrain repair-jsonb` command.
   // Detection only; repair lives in src/commands/repair-jsonb.ts.
