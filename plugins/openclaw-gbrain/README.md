@@ -4,7 +4,9 @@ This package installs the Eva Brain/GBrain OpenClaw native plugin.
 
 It provides:
 
-- `gbrain_status`, `gbrain_search`, and `gbrain_query` agent tools
+- `gbrain_status`, `gbrain_search`, `gbrain_query`, `gbrain_doctor`,
+  `gbrain_extract_status`, `gbrain_extract_explain`, and
+  `gbrain_schema_active` agent tools
 - `openclaw gbrain status`
 - authenticated `/plugins/gbrain/extract`
 
@@ -50,12 +52,20 @@ or you can link it:
 openclaw plugins install --link --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
 ```
 
-For a full local support setup that also installs the Codex Desktop plugin and
-OpenClaw support KB:
+For a full local support setup that also installs the Codex Desktop plugin,
+OpenClaw support KB, and canonical workspace docs source:
 
 ```bash
-scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --stop-stale-serve
+scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --with-workspace-docs --stop-stale-serve
 ```
+
+Use `sourceId: "workspace-docs"` when an agent needs the local customer/company
+docs under `$HOME/.openclaw/workspace/docs`, and `sourceId:
+"openclaw-support-kb"` when it needs the reusable OpenClaw support corpus.
+`gbrain_status` now shells out to `gbrain status --json`,
+`gbrain doctor --scope=brain --json`, and `gbrain sources list --json`, so
+agents can distinguish an empty `default` source from a healthy source-scoped
+brain.
 
 ## Configure
 
@@ -107,7 +117,8 @@ default; the hard plugin cap is 20 MiB.
 
 ```bash
 gbrain --version
-gbrain health
+gbrain status --json
+gbrain doctor --scope=brain --json
 openclaw infer model run --gateway --model openai-codex/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
 openclaw gbrain status
 ```

@@ -20,6 +20,16 @@ hosts see.
   `scripts/install-codex-plugin.mjs`
 - the same remote/untrusted MCP behavior GBrain already applies to stdio calls
 
+Useful current commands for Codex agents to prefer before deeper retrieval:
+
+- `gbrain status --json` for runtime/source/cycle/worker posture
+- `gbrain doctor --scope=brain --json` for brain health without skill noise
+- `gbrain sources list --json` before declaring a brain empty
+- `gbrain search <query> --source workspace-docs` for local workspace/runbook docs
+- `gbrain search <query> --source openclaw-support-kb` for support protocol docs
+- `gbrain extract status --json` and `gbrain extract --explain <kind> --json`
+  when debugging extraction receipts or schema-pack extractor routing
+
 ## Resolution Order
 
 The launcher resolves `gbrain` in this order:

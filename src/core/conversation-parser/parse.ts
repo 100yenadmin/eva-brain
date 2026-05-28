@@ -49,6 +49,33 @@ export type { ParseConversationOpts, ParseResult, MatchedMessage } from './types
 const SCORING_HEAD_LINES = 10;
 
 /**
+ * Head-pass score below which `parseConversation` falls back to a
+ * full-body re-score (v0.41.18+ fix for #1533 + Codex P1 #1).
+ *
+ * Why a threshold instead of `=== 0`: meeting pages start with
+ * `## Summary` + blockquotes + `## Transcript` headings. A
+ * blockquote like `> [12:00] Foo` can accidentally match an
+ * unrelated pattern's regex (irc-classic at score 0.1) which would
+ * suppress the fallback even when 175 of 226 lines further down are
+ * valid imessage-slack. 0.3 = "fewer than 3 of 10 head lines
+ * matched"; chat-only pages still score 1.0 and skip the fallback
+ * entirely, so the fast path is preserved.
+ */
+const SCORING_HEAD_TRIGGER_THRESHOLD = 0.3;
+
+/**
+ * Minimum final winner score required to accept `regex_match`
+ * (v0.41.18+ Codex P1 #2). A 500-line essay with one stray
+ * `**Name** (date time):` line scores ~1/500 = 0.002 for
+ * imessage-slack, which without this floor would flip to
+ * `regex_match` with `messages.length = 1` — a false positive that
+ * silently corrupts downstream fact extraction. 0.05 = "at least 5%
+ * of non-blank lines anchored a message"; real transcript pages
+ * typically score 0.5+ and sail through, accidental anchors do not.
+ */
+const SCORING_MIN_ACCEPTANCE = 0.05;
+
+/**
  * Tie-breaker priority: lower index wins on score tie. Mirrors
  * BUILTIN_PATTERNS declaration order. User-declared patterns get
  * priority Infinity (lose every tie).
@@ -335,6 +362,41 @@ export function applyPattern(
 }
 
 /**
+ * Split a body into non-blank trimmed lines. `headCap` (when set)
+ * limits the result to the first N lines — used by the head-pass
+ * scorer; omit for full-body scoring.
+ */
+function getNonBlankLines(body: string, headCap?: number): string[] {
+  if (!body) return [];
+  const all = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  return headCap !== undefined ? all.slice(0, headCap) : all;
+}
+
+/**
+ * Core scorer over a pre-split line array. Both `scorePattern` (head
+ * window) and `scorePatternFull` (whole body) delegate here so the
+ * quick_reject + regex loop lives in one place. Reused by
+ * `parseConversation`'s fallback path which pre-splits ONCE and
+ * passes the array to all 12 candidates (saves 11 redundant body
+ * splits per fallback pass).
+ */
+function scoreFromLines(
+  lines: readonly string[],
+  entry: PatternEntry,
+): number {
+  if (lines.length === 0) return 0;
+  let anchored = 0;
+  for (const line of lines) {
+    if (entry.quick_reject && !entry.quick_reject.test(line)) continue;
+    if (entry.regex.test(line)) anchored++;
+  }
+  return anchored / lines.length;
+}
+
+/**
  * Score how well a pattern matches the first N lines of a body (D18).
  * Returns 0..1 ratio of matched lines. Higher = more confident.
  *
@@ -344,19 +406,22 @@ export function applyPattern(
  * Exported for tests.
  */
 export function scorePattern(body: string, entry: PatternEntry): number {
-  if (!body) return 0;
-  const lines = body
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
-    .slice(0, SCORING_HEAD_LINES);
-  if (lines.length === 0) return 0;
-  let anchored = 0;
-  for (const line of lines) {
-    if (entry.quick_reject && !entry.quick_reject.test(line)) continue;
-    if (entry.regex.test(line)) anchored++;
-  }
-  return anchored / lines.length;
+  return scoreFromLines(getNonBlankLines(body, SCORING_HEAD_LINES), entry);
+}
+
+/**
+ * Score how well a pattern matches the FULL body, no head cap
+ * (v0.41.18+ Codex P1 #1 — full-body fallback when head pass falls
+ * below `SCORING_HEAD_TRIGGER_THRESHOLD`).
+ *
+ * Cost-aware: in `parseConversation`'s fallback path we pre-split
+ * ONCE and route through `scoreFromLines` directly, NOT through this
+ * wrapper, to avoid 12 redundant body splits per pass. This wrapper
+ * exists for direct unit testing and for any future caller that
+ * needs full-body scoring of a single pattern.
+ */
+export function scorePatternFull(body: string, entry: PatternEntry): number {
+  return scoreFromLines(getNonBlankLines(body), entry);
 }
 
 /**
@@ -392,23 +457,51 @@ export function parseConversation(
   // declared priority order (built-in declaration order; user patterns
   // lose every tie).
   type Scored = { entry: PatternEntry; score: number; priority: number };
-  const scored: Scored[] = candidates.map((entry) => ({
+  const sortScored = (arr: Scored[]) =>
+    arr.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.priority - b.priority;
+    });
+  let scored: Scored[] = candidates.map((entry) => ({
     entry,
     score: scorePattern(body, entry),
     priority: priorityOf(entry.id),
   }));
-  // Sort: score desc, then priority asc.
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return a.priority - b.priority;
-  });
+  sortScored(scored);
+
+  // REGRESSION (closes #1533 + Codex P1 #1): meeting pages have
+  // ## Summary + blockquote + ## Transcript ahead of the chat. The
+  // pre-fix "trigger fallback only when score === 0" shape left a
+  // real bug class open — a stray head match (e.g. a blockquote
+  // that accidentally matches an unrelated pattern at 0.1)
+  // suppressed the fallback even when 175 of 226 lines further down
+  // were valid imessage-slack. Threshold 0.3 means "fewer than 3 of
+  // 10 head lines matched"; chat-only pages still score 1.0 and skip
+  // the fallback. Re-score every candidate against the full body,
+  // pre-splitting ONCE to avoid 12 redundant body splits.
+  if (scored[0].score < SCORING_HEAD_TRIGGER_THRESHOLD) {
+    const allLines = getNonBlankLines(body);
+    scored = candidates.map((entry) => ({
+      entry,
+      score: scoreFromLines(allLines, entry),
+      priority: priorityOf(entry.id),
+    }));
+    sortScored(scored);
+    // NOTE: patterns_scored stays as scored.length (= candidate
+    // count, typically 12) even when the fallback runs — the
+    // diagnostic reports "candidates considered" not "scoring
+    // attempts" (Codex P2 #7).
+  }
 
   const top = scored[0];
   const patternsScored = scored.length;
 
-  // If even the top scorer matches zero lines, no regex won. Caller
-  // may invoke LLM fallback (T4); for now return no_match.
-  if (top.score === 0) {
+  // Minimum acceptance floor (closes Codex P1 #2): an essay with
+  // one stray `**Name** (date time):` line scores ~1/300 ≈ 0.003 —
+  // below the 5% floor we stay no_match instead of returning a
+  // 1-message false positive. Real transcript pages typically score
+  // 0.5+ and sail through.
+  if (top.score < SCORING_MIN_ACCEPTANCE) {
     return {
       messages: [],
       phase: 'no_match',

@@ -120,6 +120,65 @@ export const BUILTIN_PATTERNS: readonly PatternEntry[] = [
   },
 
   {
+    // v0.41.18+ (D-FOLLOWUP-1.B closes the user-facing half of #1533):
+    // matches the shape Circleback meeting exports use after an
+    // OpenClaw meeting-ingestion pipeline reformats them. Two
+    // sub-shapes in the wild (verified across a 367-file corpus):
+    //   **Participant 2** (00:00): Companies that we have...      ← (HH:MM)
+    //   **Participant 1** (00:00:00): We found the apostrophes...  ← (HH:MM:SS)
+    //
+    // The time group is elapsed time from meeting start, NOT
+    // wall-clock. Parser treats it as wall-clock 24h on the
+    // frontmatter date — speaker + text are captured correctly, but
+    // every message lands on the same day starting at 00:00 + offset
+    // minutes. The downstream fact extractor only cares about
+    // speaker + content, so this is honest-enough; precise per-line
+    // wall-clock timestamps would require a new `elapsed_time:
+    // true` flag on PatternEntry (v0.42+).
+    //
+    // Declaration position is AFTER imessage-slack + telegram-
+    // bracket so on the rare tie those more-specific patterns win.
+    // The regex deliberately requires `\)` immediately after the
+    // time so `(2024-03-15 9:00 AM)` and `(9:00 AM)` shapes fall
+    // through to imessage-slack instead of false-matching here.
+    // The seconds segment is a non-capturing optional group so
+    // capture indexes stay identical across both sub-shapes.
+    id: 'bold-paren-time',
+    origin: 'builtin',
+    regex: /^\*\*(.+?)\*\*\s+\((\d{1,2}):(\d{2})(?::\d{2})?\)\s*:\s*(.*)$/,
+    captures: {
+      speaker_group: 1,
+      hour_group: 2,
+      minute_group: 3,
+      text_group: 4,
+    },
+    date_source: 'frontmatter',
+    time_format: '24h',
+    timezone_policy: 'utc_assumed_with_warn',
+    multi_line: false,
+    quick_reject: /^\*\*/,
+    test_positive: [
+      '**Garry Tan** (00:00): hello world',
+      '**Participant 2** (02:22): response here',
+      '**Alex Graveley** (15:09): That’s exactly right.',
+      '**Participant 1** (00:00:00): hello world with seconds',
+      '**Participant 2** (01:23:45): mid-meeting line',
+    ],
+    test_negative: [
+      // imessage-slack shape (full date+time) MUST fall through to imessage-slack:
+      '**Alice Example** (2024-03-15 9:00 AM): iMessage shape',
+      // telegram-bracket shape MUST fall through to telegram-bracket:
+      '**[18:37] \u{1f464} G T:** telegram bracket',
+      // No bold markers:
+      'Alice (00:00): missing the bold',
+      // Bold but no parens:
+      '**Alice** hello world',
+    ],
+    source_doc:
+      'OpenClaw meeting-ingestion pipeline reformat of Circleback transcripts (see your OpenClaw skills/meeting-ingestion/SKILL.md)',
+  },
+
+  {
     id: 'telegram-text-export',
     origin: 'builtin',
     // Telegram Desktop's text-export shape: `Alice Doe, [Mar 15, 2024 at 6:37:00 PM]`

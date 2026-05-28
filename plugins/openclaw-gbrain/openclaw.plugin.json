@@ -9,7 +9,11 @@
     "tools": [
       "gbrain_status",
       "gbrain_search",
-      "gbrain_query"
+      "gbrain_query",
+      "gbrain_doctor",
+      "gbrain_extract_status",
+      "gbrain_extract_explain",
+      "gbrain_schema_active"
     ]
   },
   "configSchema": {

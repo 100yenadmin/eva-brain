@@ -32,12 +32,12 @@ refreshes optional host plugins when those hosts are present.
 To require host plugin setup instead of auto-detecting it, pass
 `--with-openclaw` and/or `--with-codex-plugin`.
 
-Full Eva/OpenClaw/Codex/support-KB install:
+Full Eva/OpenClaw/Codex/support-KB/customer-docs install:
 
 ```bash
 git clone https://github.com/electricsheephq/eva-brain.git ~/eva-brain
 cd ~/eva-brain
-scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --stop-stale-serve
+scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-support-kb --with-workspace-docs --stop-stale-serve
 ```
 
 Development installs must opt into the moving branch explicitly:
@@ -54,7 +54,9 @@ What that command does:
 - installs the OpenClaw native plugin from `plugins/openclaw-gbrain`
 - installs the Codex Desktop plugin from `plugins/gbrain-codex`
 - installs or updates the OpenClaw support KB as source `openclaw-support-kb`
-- embeds only stale chunks for that KB source
+- registers `/root/.openclaw/workspace/docs` or `$HOME/.openclaw/workspace/docs`
+  as source `workspace-docs` when present
+- embeds only stale chunks for those named sources
 - runs provider probe and `gbrain doctor` when possible
 
 Manual path:
@@ -192,8 +194,12 @@ openclaw gbrain status
 The plugin provides:
 
 - `gbrain_status`
-- `gbrain_search`
-- `gbrain_query`
+- `gbrain_search` with optional `sourceId`
+- `gbrain_query` with optional `sourceId`
+- `gbrain_doctor` for `doctor --scope=brain --json` or full doctor
+- `gbrain_extract_status` for extractor receipts/rollups
+- `gbrain_extract_explain` for active-pack extractor resolution
+- `gbrain_schema_active` for the active schema/type pack
 - `/plugins/gbrain/extract` for OAuth-backed extraction through OpenClaw/Codex
 
 What is different from normal GBrain: normal GBrain exposes CLI and MCP tools.
@@ -241,7 +247,7 @@ drift:
 node scripts/codex-gbrain-smoke.mjs
 ```
 
-## Step 3.7: Install The OpenClaw Support KB
+## Step 3.7: Install The OpenClaw Support KB And Customer Docs
 
 For OpenClaw customer/support work, install the KB source and support skills
 after GBrain is healthy:
@@ -280,11 +286,37 @@ Do not use `default` page count as the whole-brain health signal. A valid
 OpenClaw customer install may have `default: 0` while `openclaw-support-kb`
 contains the searchable support corpus.
 
-The user's markdown files (notes, docs, brain repo) are SEPARATE from this tool repo.
-Ask the user where their files are, or create a new brain repo:
+Customer/workspace docs are a separate first-class source. On evaOS/OpenClaw VMs
+the canonical location is:
+
+```bash
+/root/.openclaw/workspace/docs
+/root/.openclaw/workspace/docs/runbooks
+```
+
+On local developer machines the equivalent default is
+`$HOME/.openclaw/workspace/docs`. Register/import it with:
+
+```bash
+scripts/update-local-install.sh --with-workspace-docs --with-support-kb
+gbrain sources list --json
+gbrain search "runbooks" --limit 3 --source workspace-docs
+node ~/eva-brain/scripts/eva-brain-health.mjs --require-workspace-docs
+```
+
+Agents should query both sources intentionally:
+
+- `workspace-docs` for customer/company runbooks, customer-specific operating
+  docs, and local workspace notes.
+- `openclaw-support-kb` for product support protocols and reusable OpenClaw
+  support answers.
+
+If the user has a separate markdown brain repo, keep it as its own source
+instead of mixing it into the Eva Brain tool repo:
 
 ```bash
 mkdir -p ~/brain && cd ~/brain && git init
+gbrain sources add user-brain --path ~/brain --federated
 ```
 
 Read `~/eva-brain/docs/GBRAIN_RECOMMENDED_SCHEMA.md` and set up the MECE directory
@@ -362,6 +394,10 @@ interactive shell-approval prompts.
 - **Git-tracked brain sync** (every 15 min): use `gbrain sync --repo ~/brain && gbrain embed --stale --source default`
   only when `~/brain` has a configured git remote and upstream tracking branch.
   If `git -C ~/brain remote -v` is empty, use the local-only import command above.
+- **Workspace docs refresh** (every 15 min on OpenClaw VMs): run
+  `gbrain import /root/.openclaw/workspace/docs --source-id workspace-docs --no-embed && gbrain embed --stale --source workspace-docs`.
+  This keeps customer runbooks searchable without pretending the tool checkout
+  or Support KB is the whole brain.
 - **Support KB refresh** (after `openclaw-support-kb` updates): run
   `node scripts/update-client.mjs && gbrain sync --repo "$OPENCLAW_SUPPORT_KB_DIR" --source openclaw-support-kb --no-embed && gbrain embed --stale --source openclaw-support-kb`
   from `$OPENCLAW_SUPPORT_KB_DIR`, so KB changes do not trigger a full-brain

@@ -64,6 +64,9 @@ describe('Eva Brain thin distribution contract', () => {
     expect(guide).toContain('node scripts/status.mjs');
     expect(guide).toContain('gbrain sources list --json');
     expect(guide).toContain('openclaw-support-kb');
+    expect(guide).toContain('workspace-docs');
+    expect(guide).toContain('/root/.openclaw/workspace/docs');
+    expect(guide).toContain('gbrain search "runbooks" --limit 3 --source workspace-docs');
     expect(guide).toContain('do not ask users for an OpenAI API key just to run Eva Brain extraction');
     expect(guide).not.toContain('export OPENAI_API_KEY=');
   });
@@ -76,6 +79,8 @@ describe('Eva Brain thin distribution contract', () => {
     expect(guide).toContain('Git-tracked brain sync');
     expect(guide).toContain('only when `~/brain` has a configured git remote and upstream tracking branch');
     expect(guide).toContain("OpenClaw's scheduler/Minions job path");
+    expect(guide).toContain('Workspace docs refresh');
+    expect(guide).toContain('gbrain import /root/.openclaw/workspace/docs --source-id workspace-docs --no-embed');
     expect(guide).toContain('gbrain embed --stale --source openclaw-support-kb');
   });
 

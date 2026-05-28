@@ -15,6 +15,9 @@ GBRAIN_ENV_FILE="${GBRAIN_ENV_FILE:-$GBRAIN_DIR/gbrain.env}"
 WITH_OPENCLAW="auto"
 WITH_CODEX_PLUGIN="auto"
 WITH_SUPPORT_KB="false"
+WITH_WORKSPACE_DOCS="auto"
+WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"
+WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-$HOME/.openclaw/workspace/docs}"
 RUN_DOCTOR="true"
 RUN_PROVIDER_TEST="auto"
 RUN_HEALTH="auto"
@@ -39,6 +42,8 @@ Options:
   --with-codex-plugin          Install/update the Codex Desktop local plugin entry
   --without-codex-plugin       Skip Codex plugin install
   --with-support-kb            Install/update the OpenClaw Support KB source
+  --with-workspace-docs        Register/import ~/.openclaw/workspace/docs as source workspace-docs
+  --without-workspace-docs     Skip workspace docs source registration/import
   --stop-stale-serve           Stop stale local gbrain serve processes before init/doctor
   --skip-doctor                Skip gbrain doctor
   --skip-provider-test         Skip provider probe
@@ -59,6 +64,7 @@ Examples:
   scripts/update-local-install.sh --ref master
   scripts/update-local-install.sh --with-openclaw --with-codex-plugin
   scripts/update-local-install.sh --with-support-kb --stop-stale-serve
+  scripts/update-local-install.sh --with-support-kb --with-workspace-docs --with-openclaw
 USAGE
 }
 
@@ -127,6 +133,8 @@ parse_args() {
       --with-codex-plugin) WITH_CODEX_PLUGIN="true"; shift ;;
       --without-codex-plugin) WITH_CODEX_PLUGIN="false"; shift ;;
       --with-support-kb) WITH_SUPPORT_KB="true"; shift ;;
+      --with-workspace-docs) WITH_WORKSPACE_DOCS="true"; shift ;;
+      --without-workspace-docs) WITH_WORKSPACE_DOCS="false"; shift ;;
       --stop-stale-serve) STOP_STALE_SERVE="true"; shift ;;
       --skip-doctor) RUN_DOCTOR="false"; shift ;;
       --skip-provider-test) RUN_PROVIDER_TEST="false"; shift ;;
@@ -258,23 +266,31 @@ health_report() {
   if [ "$RUN_HEALTH" = "false" ]; then
     return
   fi
-  if [ "$RUN_HEALTH" = "auto" ] && [ "$WITH_SUPPORT_KB" != "true" ]; then
-    log "Skipping source-aware health report because --with-support-kb was not requested"
+  local require_workspace_docs="false"
+  if [ "$WITH_WORKSPACE_DOCS" = "true" ] || { [ "$WITH_WORKSPACE_DOCS" = "auto" ] && [ -d "$WORKSPACE_DOCS_DIR" ]; }; then
+    require_workspace_docs="true"
+  fi
+  if [ "$RUN_HEALTH" = "auto" ] && [ "$WITH_SUPPORT_KB" != "true" ] && [ "$require_workspace_docs" != "true" ]; then
+    log "Skipping source-aware health report because no source package was requested or detected"
     return
+  fi
+  local health_args=()
+  if [ "$WITH_OPENCLAW" = "true" ]; then
+    health_args+=(--require-openclaw)
+  fi
+  if [ "$WITH_SUPPORT_KB" = "true" ]; then
+    health_args+=(--require-support-kb)
+  else
+    health_args+=(--allow-missing-support-kb)
+  fi
+  if [ "$require_workspace_docs" = "true" ]; then
+    health_args+=(--require-workspace-docs)
   fi
   if [ "$DRY_RUN" = "true" ]; then
-    if [ "$WITH_OPENCLAW" = "true" ]; then
-      run node scripts/eva-brain-health.mjs --require-openclaw
-    else
-      run node scripts/eva-brain-health.mjs
-    fi
+    run node scripts/eva-brain-health.mjs "${health_args[@]}"
     return
   fi
-  if [ "$WITH_OPENCLAW" = "true" ]; then
-    run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs --require-openclaw
-  else
-    run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs
-  fi
+  run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs "${health_args[@]}"
 }
 
 provider_test() {
@@ -306,14 +322,42 @@ try {
   printf '\n'
 }
 
-embed_support_kb_if_provider_auth_available() {
+source_exists() {
+  local source_id="$1"
+  if [ "$DRY_RUN" = "true" ]; then
+    return 1
+  fi
+  "$HOME/.bun/bin/gbrain" sources list --json | node -e '
+const id = process.argv[1];
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    const sources = Array.isArray(parsed) ? parsed : Array.isArray(parsed.sources) ? parsed.sources : [];
+    process.exit(sources.some(source => String(source.id ?? source.source_id ?? source.sourceId) === id) ? 0 : 1);
+  } catch {
+    process.exit(1);
+  }
+});
+' "$source_id"
+}
+
+embed_source_if_provider_auth_available() {
+  local source_id="$1"
+  local label="$2"
   local model
   model="$(configured_embedding_model)"
   if [ "${model#voyage:}" != "$model" ] && [ -z "${VOYAGE_API_KEY:-}" ]; then
-    log "Skipping Support KB embedding because $model requires VOYAGE_API_KEY and no key is configured. Source-scoped text search will still be validated."
+    log "Skipping $label embedding because $model requires VOYAGE_API_KEY and no key is configured. Source-scoped text search will still be validated."
     return
   fi
-  run "$HOME/.bun/bin/gbrain" embed --stale --source openclaw-support-kb
+  run "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id"
+}
+
+embed_support_kb_if_provider_auth_available() {
+  embed_source_if_provider_auth_available "openclaw-support-kb" "Support KB"
 }
 
 install_openclaw_plugin() {
@@ -383,12 +427,13 @@ install_support_kb() {
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
   embed_support_kb_if_provider_auth_available
-  disable_support_kb_cycle_freshness_if_supported
+  disable_source_cycle_freshness_if_supported openclaw-support-kb
 }
 
-disable_support_kb_cycle_freshness_if_supported() {
+disable_source_cycle_freshness_if_supported() {
+  local source_id="$1"
   local output
-  local cmd=("$HOME/.bun/bin/gbrain" sources cycle-freshness openclaw-support-kb off)
+  local cmd=("$HOME/.bun/bin/gbrain" sources cycle-freshness "$source_id" off)
   printf '+'
   printf ' %q' "${cmd[@]}"
   printf '\n'
@@ -410,6 +455,34 @@ disable_support_kb_cycle_freshness_if_supported() {
   return 1
 }
 
+install_workspace_docs() {
+  if [ "$WITH_WORKSPACE_DOCS" = "false" ]; then
+    return
+  fi
+  if [ ! -d "$WORKSPACE_DOCS_DIR" ]; then
+    if [ "$WITH_WORKSPACE_DOCS" = "true" ]; then
+      die "Workspace docs directory not found: $WORKSPACE_DOCS_DIR"
+    fi
+    log "Workspace docs directory not found; skipping workspace-docs source: $WORKSPACE_DOCS_DIR"
+    return
+  fi
+  if [ -z "$(find "$WORKSPACE_DOCS_DIR" -type f \( -name '*.md' -o -name '*.mdx' \) -print -quit)" ]; then
+    if [ "$WITH_WORKSPACE_DOCS" = "true" ]; then
+      die "Workspace docs directory has no markdown files: $WORKSPACE_DOCS_DIR"
+    fi
+    log "Workspace docs directory has no markdown files; skipping workspace-docs source: $WORKSPACE_DOCS_DIR"
+    return
+  fi
+  if source_exists "$WORKSPACE_DOCS_SOURCE"; then
+    log "GBrain source $WORKSPACE_DOCS_SOURCE already registered; importing current docs from $WORKSPACE_DOCS_DIR"
+  else
+    run "$HOME/.bun/bin/gbrain" sources add "$WORKSPACE_DOCS_SOURCE" --path "$WORKSPACE_DOCS_DIR" --name "Workspace Docs" --federated
+  fi
+  run "$HOME/.bun/bin/gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed
+  embed_source_if_provider_auth_available "$WORKSPACE_DOCS_SOURCE" "Workspace docs"
+  disable_source_cycle_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"
+}
+
 main() {
   parse_args "$@"
   load_gbrain_env
@@ -427,6 +500,7 @@ main() {
   install_openclaw_plugin
   install_codex_plugin
   install_support_kb
+  install_workspace_docs
   provider_test
   doctor
   health_report

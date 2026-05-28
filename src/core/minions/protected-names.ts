@@ -43,6 +43,14 @@ export const PROTECTED_JOB_NAMES: ReadonlySet<string> = new Set([
   // no remote / MCP / autopilot path can bulk-extract takes without
   // explicit operator intent.
   'extract-takes-from-pages',
+  // v0.42 type-unification (T11, plan D17). Pack-upgrade migration that
+  // retypes 25K+ pages, creates 5K+ alias rows, converts edge-shaped
+  // pages to link rows, AND flips the active schema pack. One-time
+  // consenting user decision. PROTECTED + manual_only in
+  // src/core/onboard/render.ts:toOnboardRecommendation ensures autopilot
+  // can't auto-apply; user must run `gbrain onboard --auto-with-prompt`
+  // or submit explicitly via `gbrain jobs submit unify-types --allow-protected`.
+  'unify-types',
 ]);
 
 /** Check a job name against the protected set. Normalizes whitespace first. */

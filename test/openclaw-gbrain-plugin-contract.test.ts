@@ -34,6 +34,25 @@ describe('OpenClaw GBrain plugin boundary', () => {
     expect(pluginReadme).toContain('"maxExtractionFileBytes": 8000000');
   });
 
+  test('exposes source-aware and operator-safe read tools for agents', () => {
+    expect(manifest.contracts.tools).toContain('gbrain_status');
+    expect(manifest.contracts.tools).toContain('gbrain_search');
+    expect(manifest.contracts.tools).toContain('gbrain_query');
+    expect(manifest.contracts.tools).toContain('gbrain_doctor');
+    expect(manifest.contracts.tools).toContain('gbrain_extract_status');
+    expect(manifest.contracts.tools).toContain('gbrain_extract_explain');
+    expect(manifest.contracts.tools).toContain('gbrain_schema_active');
+
+    expect(pluginSource).toContain('"status", "--json"');
+    expect(pluginSource).toContain('"doctor", "--scope=brain", "--json"');
+    expect(pluginSource).toContain('"sources", "list", "--json"');
+    expect(pluginSource).toContain('appendSourceArg(["search", query, "--limit", String(limit)], source.sourceId)');
+    expect(pluginSource).toContain('appendSourceArg(["query", question], source.sourceId)');
+    expect(pluginSource).toContain('"extract", "status", "--json"');
+    expect(pluginSource).toContain('"extract", "--explain", kind, "--json"');
+    expect(pluginSource).toContain('"schema", "active"');
+  });
+
   test('rejects oversized or malformed file payloads before temp files or model calls', () => {
     expect(pluginSource).toContain('decodedBase64ByteLength');
     expect(pluginSource).toContain('normalizeBase64Payload');

@@ -118,10 +118,13 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/--with-openclaw\b/);
     expect(script).toMatch(/--with-codex-plugin\b/);
     expect(script).toMatch(/--with-support-kb\b/);
+    expect(script).toMatch(/--with-workspace-docs\b/);
     expect(script).toMatch(/--skip-health\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
     expect(script).toMatch(/node\s+scripts\/eva-brain-health\.mjs/);
-    expect(script).toMatch(/eva-brain-health\.mjs --require-openclaw/);
+    expect(script).toContain('health_args+=(--require-openclaw)');
+    expect(script).toContain('health_args+=(--require-support-kb)');
+    expect(script).toContain('health_args+=(--allow-missing-support-kb)');
     expect(script).toMatch(/pgrep\s+-f\s+'\[g\]brain serve'/);
     expect(script).toMatch(/pgrep\s+-f\s+'\[l\]aunch-gbrain-serve\\\.mjs'/);
     expect(script).toMatch(/kill\s+-KILL\s+\$pids/);
@@ -134,7 +137,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('ORIGINAL_ARGS=("$@")');
     expect(script).toContain('reexec_from_checked_out_updater');
     expect(script).toContain('EVA_BRAIN_UPDATER_REEXECED=1');
-    expect(script).toContain('Skipping Support KB embedding because');
+    expect(script).toContain('Skipping $label embedding because');
+    expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
+    expect(script).toContain('gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/init\s+--pglite\s+--embedding-model\s+voyage:voyage-4-large\s+--embedding-dimensions\s+2048/);
@@ -144,9 +149,14 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const health = readFileSync(join(root, 'scripts/eva-brain-health.mjs'), 'utf8');
     expect(health).toContain('supportKbPages');
+    expect(health).toContain('workspaceDocsPages');
     expect(health).toContain('bySource');
     expect(health).toContain('openclaw-support-kb');
+    expect(health).toContain('workspace-docs');
     expect(health).toContain("process.argv.includes('--require-openclaw')");
+    expect(health).toContain("process.argv.includes('--require-support-kb')");
+    expect(health).toContain("process.argv.includes('--allow-missing-support-kb')");
+    expect(health).toContain("process.argv.includes('--require-workspace-docs')");
     expect(health).toContain('!requireOpenClaw || pluginInspect.ok');
 
     const result = Bun.spawnSync({
@@ -356,7 +366,8 @@ describe('public local updater and Codex plugin packaging', () => {
 
     const stdout = JSON.parse(result.stdout.toString());
     expect(stdout.refreshedCaches).toContain(join(home, '.codex/plugins/cache/local-workspace/gbrain-codex'));
-    expect(result.stderr.toString()).toContain('expected: 0.41.18.6');
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    expect(result.stderr.toString()).toContain(`expected: ${pkg.version}`);
   });
 
   test('Codex installer replaces stale or broken local gbrain-codex symlinks', () => {
@@ -646,6 +657,86 @@ exit 0
     expect(result.exitCode).toBe(0);
     expect(stderr).toContain('Skipping Support KB embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('embed should have been skipped');
+  });
+
+  test('local updater can register and import canonical OpenClaw workspace docs', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const docsDir = join(home, '.openclaw/workspace/docs');
+    mkdirSync(join(docsDir, 'runbooks'), { recursive: true });
+    writeFileSync(join(docsDir, 'runbooks/customer-vm.md'), '# Customer VM Runbook\n');
+    const binDir = join(home, '.bun/bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'bun'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then
+  mkdir -p "$HOME/.gbrain"
+  printf '{"embedding_model":"voyage:voyage-4-large"}\\n' > "$HOME/.gbrain/config.json"
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  printf '{"sources":[]}\\n'
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "add" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
+  echo "cycle disabled"
+  exit 0
+fi
+if [ "\${1:-}" = "import" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "embed" ]; then
+  echo "workspace embed should have been skipped when VOYAGE_API_KEY is missing" >&2
+  exit 9
+fi
+exit 0
+`,
+    );
+    chmodSync(join(binDir, 'bun'), 0o755);
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-workspace-docs',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        VOYAGE_API_KEY: '',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stdout).toContain(`gbrain sources add workspace-docs --path ${docsDir}`);
+    expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
+    expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
+    expect(stderr).not.toContain('workspace embed should have been skipped');
   });
 
   test('local updater still fails non-compatibility cycle-freshness errors', () => {
