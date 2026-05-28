@@ -22,6 +22,7 @@ import {
   deriveDateContext,
   applyPattern,
   scorePattern,
+  scorePatternFull,
 } from '../../src/core/conversation-parser/parse.ts';
 import { BUILTIN_PATTERNS } from '../../src/core/conversation-parser/builtins.ts';
 import type { Page } from '../../src/core/types.ts';
@@ -336,13 +337,272 @@ describe('scorePattern — boundary', () => {
     const tg = BUILTIN_PATTERNS.find((p) => p.id === 'telegram-bracket')!;
     expect(scorePattern('\n\n   \n', tg)).toBe(0);
   });
-  test('caps at SCORING_HEAD_LINES (10) lines', () => {
-    // 100 telegram lines → still scores 1.0 because only first 10 sampled.
-    const body = Array.from(
+  // T5 reshape (Codex P2 #6): pins BEHAVIOR not the constant value.
+  // The prior test ("100 matching lines score 1.0") would pass with
+  // head=10 or head=1000 — it didn't prove anything about the cap.
+  test('head cap ignores lines past line 10 (10 match + 1 non-match scores 1.0)', () => {
+    const tg = BUILTIN_PATTERNS.find((p) => p.id === 'telegram-bracket')!;
+    const matching = Array.from(
+      { length: 10 },
+      (_, i) => `**[18:${String(i).padStart(2, '0')}] \u{1f464} Alice:** msg ${i}`,
+    );
+    const body = [...matching, 'plain text outside the head window'].join('\n');
+    // First 10 lines all match → 10/10. Line 11 was ignored.
+    expect(scorePattern(body, tg)).toBe(1);
+  });
+  test('head cap stops at line 10 (9 non-match + 1 match at line 10 + 100 match after scores 0.1)', () => {
+    const tg = BUILTIN_PATTERNS.find((p) => p.id === 'telegram-bracket')!;
+    const nonMatches = Array.from({ length: 9 }, (_, i) => `non-matching prose line ${i}`);
+    const matchingLate = Array.from(
       { length: 100 },
       (_, i) => `**[18:${String(i).padStart(2, '0')}] \u{1f464} Alice:** msg ${i}`,
+    );
+    // Line 10 (index 9 in the matching array) IS a match; lines 11-109 are too
+    // but are past the head cap and don't count.
+    const body = [...nonMatches, matchingLate[0], ...matchingLate.slice(1)].join('\n');
+    // Head sees 9 non-matches + 1 match = 1/10 = 0.1. Pre-fix: same result.
+    // Post-fix: same result (this test pins head-cap behavior, not the new
+    // fallback path — that's tested separately below).
+    expect(scorePattern(body, tg)).toBe(0.1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scorePatternFull — direct unit tests (v0.41.18+ T3 #5)
+// ---------------------------------------------------------------------------
+
+describe('scorePatternFull — full-body scoring (v0.41.18+ Codex P1 #1)', () => {
+  test('empty body scores 0', () => {
+    const im = BUILTIN_PATTERNS.find((p) => p.id === 'imessage-slack')!;
+    expect(scorePatternFull('', im)).toBe(0);
+  });
+  test('preamble + 20 matching lines scores 20/(preamble + 20)', () => {
+    const im = BUILTIN_PATTERNS.find((p) => p.id === 'imessage-slack')!;
+    const preamble = ['## Summary', 'Three sentences.', '> Source: ref', '## Transcript'];
+    const matches = Array.from(
+      { length: 20 },
+      (_, i) => `**Garry Tan** (2026-01-29 12:00 PM): message ${i}`,
+    );
+    const body = [...preamble, ...matches].join('\n');
+    // 24 total non-blank, 20 match → 20/24 ≈ 0.833
+    expect(scorePatternFull(body, im)).toBeCloseTo(20 / 24, 5);
+  });
+  test('preamble-only-no-match scores 0', () => {
+    const im = BUILTIN_PATTERNS.find((p) => p.id === 'imessage-slack')!;
+    const body = '## Summary\nProse paragraph.\n> Blockquote\n## Heading';
+    expect(scorePatternFull(body, im)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bold-paren-time pattern (v0.41.18+ D-FOLLOWUP-1.B; closes user-facing
+// half of #1533 — the 112 Circleback meeting files at
+// ~/git/brain/meetings/*.md with `source: circleback` frontmatter)
+// ---------------------------------------------------------------------------
+
+describe('bold-paren-time pattern (Circleback meeting transcripts)', () => {
+  test('matches **Speaker** (HH:MM): text with frontmatter date', () => {
+    const body = [
+      '**Garry Tan** (00:00): Hey, can you hear me?',
+      '**Participant 2** (02:22): Yeah, just joined.',
+      '**Garry Tan** (15:09): That makes sense.',
+    ].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-03-19' });
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('bold-paren-time');
+    expect(r.messages).toHaveLength(3);
+    expect(r.messages[0]).toEqual({
+      speaker: 'Garry Tan',
+      timestamp: '2026-03-19T00:00:00Z',
+      text: 'Hey, can you hear me?',
+    });
+    expect(r.messages[2]).toEqual({
+      speaker: 'Garry Tan',
+      timestamp: '2026-03-19T15:09:00Z',
+      text: 'That makes sense.',
+    });
+  });
+
+  test('matches **Speaker** (HH:MM:SS): text shape (Circleback seconds variant)', () => {
+    const body = [
+      '**Participant 1** (00:00:00): opening line',
+      '**Participant 2** (00:00:19): quick reply',
+      '**Participant 1** (01:23:45): later in the meeting',
+    ].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-04-01' });
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('bold-paren-time');
+    expect(r.messages).toHaveLength(3);
+    // Seconds segment is non-capturing; minute_group still captures the
+    // minutes component. Time-format is wall-clock 24h on frontmatter date.
+    expect(r.messages[0].timestamp).toBe('2026-04-01T00:00:00Z');
+    expect(r.messages[1].timestamp).toBe('2026-04-01T00:00:00Z');
+    expect(r.messages[2].timestamp).toBe('2026-04-01T01:23:00Z');
+  });
+
+  test('imessage-slack shape still wins over bold-paren-time on overlap', () => {
+    // Both patterns start with `**` and have parens. The imessage-
+    // slack regex requires a full date+time inside; bold-paren-time
+    // requires just `(HH:MM)`. The dates-with-AM/PM shape MUST fall
+    // through to imessage-slack, not bold-paren-time.
+    const body = '**Alice Example** (2024-03-15 9:00 AM): hello world';
+    const r = parseConversation(body);
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(1);
+    expect(r.messages[0].text).toBe('hello world');
+  });
+
+  test('meeting page with preamble + bold-paren-time transcript hits fallback', () => {
+    // Real Circleback shape: ## Summary + blockquote + ## Transcript
+    // before the bold-paren-time chat. Same fallback gate that
+    // closes #1533 must work for this pattern too.
+    const preamble = [
+      '## Summary',
+      'Meeting covered Q1 roadmap discussion.',
+      '> Source: circleback meeting #7411053',
+      '## Topics Discussed',
+      '- Roadmap',
+      '- Hiring',
+      '## Transcript',
+    ];
+    const transcript = Array.from(
+      { length: 20 },
+      (_, i) => `**Participant 2** (${String(Math.floor(i / 6)).padStart(2, '0')}:${String((i * 11) % 60).padStart(2, '0')}): transcript line ${i}`,
+    );
+    const body = [...preamble, ...transcript].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-03-19' });
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('bold-paren-time');
+    expect(r.messages).toHaveLength(20);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseConversation — full-body fallback (v0.41.18+ #1533 + Codex P1 #1, #2, #8)
+// ---------------------------------------------------------------------------
+
+describe('parseConversation — full-body fallback', () => {
+  // T3 #1: IRON-RULE regression pin for #1533. Pre-fix this returns
+  // no_match because head 10 sees only preamble.
+  test('#1533: meeting page with ## Summary + blockquote + ## Transcript before chat hits fallback', () => {
+    const preamble = [
+      '## Summary',
+      'This meeting covered Q1 roadmap discussion.',
+      'Three engineers participated in the call.',
+      'Action items were captured during the conversation.',
+      '> Source: [meeting recording](https://example.com/rec/123)',
+      '## Topics Discussed',
+      '- Product roadmap for Q1',
+      '- Engineering team allocation',
+      '- Customer feedback synthesis',
+      '## Transcript',
+    ];
+    const transcript = Array.from(
+      { length: 20 },
+      (_, i) => `**Garry Tan** (2026-01-29 12:00 PM): line ${i}`,
+    );
+    const body = [...preamble, ...transcript].join('\n');
+    const r = parseConversation(body);
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(20);
+  });
+
+  // T3 #2: diagnostic now reports total_non_blank - matched, not total.
+  test('#1533: unmatched_line_count subtracts matched messages after fallback', () => {
+    const preamble = [
+      '## Summary',
+      'Prose A.',
+      'Prose B.',
+      '> Blockquote',
+      '## Transcript',
+    ];
+    const transcript = Array.from(
+      { length: 20 },
+      (_, i) => `**Garry Tan** (2026-01-29 12:00 PM): line ${i}`,
+    );
+    const body = [...preamble, ...transcript].join('\n');
+    const r = parseConversation(body, { diagnostic: true });
+    expect(r.phase).toBe('regex_match');
+    expect(r.unmatched_line_count).toBe(5); // 25 total non-blank - 20 messages = 5
+  });
+
+  // T3 #3: a 50-line essay with no chat shape stays no_match.
+  test('pure-prose 50-line essay stays no_match (fallback found nothing to anchor)', () => {
+    const body = Array.from(
+      { length: 50 },
+      (_, i) => `This is the ${i + 1}th paragraph of a pure-prose article.`,
     ).join('\n');
-    const tg = BUILTIN_PATTERNS.find((p) => p.id === 'telegram-bracket')!;
-    expect(scorePattern(body, tg)).toBe(1);
+    const r = parseConversation(body);
+    expect(r.phase).toBe('no_match');
+    expect(r.messages).toHaveLength(0);
+  });
+
+  // T3 #4: proves "full-body" not just "wider window" — 300-line preamble
+  // far exceeds any reasonable head-bump alternative.
+  test('300-line preamble + 50 chat lines hits fallback (any preamble length)', () => {
+    const preamble = Array.from(
+      { length: 300 },
+      (_, i) => `Preamble paragraph ${i + 1} with prose content here.`,
+    );
+    const transcript = Array.from(
+      { length: 50 },
+      (_, i) => `**Garry Tan** (2026-01-29 12:00 PM): chat line ${i}`,
+    );
+    const body = [...preamble, ...transcript].join('\n');
+    const r = parseConversation(body);
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(50);
+  });
+
+  // T3 #6 (Codex P1 #1 + #8): stray-head-match doesn't suppress fallback.
+  // Pre-fix: irc-classic 0.1 in head → no fallback → irc-classic wins with 1
+  // message. Post-fix: 0.1 < 0.3 trigger → fallback re-scores → imessage-slack
+  // wins (50/60 ≈ 0.83 vs irc-classic 1/60 ≈ 0.017).
+  test('Codex P1 #1: stray irc-classic match in head does not suppress fallback', () => {
+    const preamble = [
+      '## Meeting Notes',
+      '<presenter> Garry Tan opening remarks', // stray irc-classic match
+      '- agenda item 1',
+      '- agenda item 2',
+      '- agenda item 3',
+      '- agenda item 4',
+      '- agenda item 5',
+      '- agenda item 6',
+      '- agenda item 7',
+      '## Transcript',
+    ];
+    const transcript = Array.from(
+      { length: 50 },
+      (_, i) => `**Garry Tan** (2024-01-29 12:00 PM): real transcript line ${i}`,
+    );
+    const body = [...preamble, ...transcript].join('\n');
+    const r = parseConversation(body);
+    expect(r.phase).toBe('regex_match');
+    // The critical assertion: imessage-slack wins, NOT irc-classic.
+    expect(r.matched_pattern_id).toBe('imessage-slack');
+    expect(r.messages).toHaveLength(50);
+  });
+
+  // T3 #7 (Codex P1 #2): essay with one stray chat-shape line stays
+  // no_match. 1/301 ≈ 0.003, below SCORING_MIN_ACCEPTANCE (0.05).
+  test('Codex P1 #2: 300-line essay with one stray chat line stays no_match (acceptance floor)', () => {
+    const prose = Array.from(
+      { length: 150 },
+      (_, i) => `Essay paragraph ${i + 1} of pure prose with no chat shape.`,
+    );
+    const strayChatLine = '**Author Name** (2024-01-01 9:00 AM): stray quoted snippet';
+    const morePros = Array.from(
+      { length: 150 },
+      (_, i) => `Essay continuation paragraph ${i + 151}.`,
+    );
+    const body = [...prose, strayChatLine, ...morePros].join('\n');
+    const r = parseConversation(body);
+    // Pre-fix: regex_match with messages.length === 1.
+    // Post-fix: no_match because 1/301 < 0.05 acceptance floor.
+    expect(r.phase).toBe('no_match');
+    expect(r.messages).toHaveLength(0);
   });
 });

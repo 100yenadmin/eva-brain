@@ -41,8 +41,20 @@ import {
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { pathToSlug, pruneDir, isSyncable } from '../core/sync.ts';
-import { isRetryableConnError } from '../core/retry-matcher.ts';
+// v0.41.18.0: withRetry + isRetryableConnError + WithRetryOpts moved to
+// src/core/retry.ts as the canonical primitive. Engine methods
+// (addLinksBatch/addTimelineEntriesBatch/upsertChunks) now self-retry via
+// engine-level wrap; call sites here will be unwrapped in T4. Re-exported
+// from this module for now to preserve any out-of-tree callers' import paths;
+// the next major version may drop the re-export.
+import { withRetry, isRetryableConnError } from '../core/retry.ts';
+export { withRetry };
+export type { WithRetryOpts } from '../core/retry.ts';
 import { buildGazetteer, findMentionedEntities } from '../core/by-mention.ts';
+import {
+  loadOpCheckpoint, recordCompleted, clearOpCheckpoint, mentionsFingerprint,
+} from '../core/op-checkpoint.ts';
+import { createHash } from 'crypto';
 // v0.41.15.0 (T7, D9): --workers N for the fs-walk inner loops via the
 // shared sliding-pool helper + PGLite-clamp wrapper.
 import { runSlidingPool } from '../core/worker-pool.ts';
@@ -55,33 +67,9 @@ import { parseWorkers, resolveWorkersWithClamp } from '../core/sync-concurrency.
 // small (a malformed row aborts at most 100, not thousands).
 const BATCH_SIZE = 100;
 
-// v0.41.2.1 — batch-flush retry primitive (closes PR #1416's ~30% batch-loss
-// bug). PgBouncer transaction-mode poolers recycle backend connections between
-// queries; the next query through a stale handle throws a retryable connection
-// error. Single 500ms-delay retry catches the recycle without amplifying real
-// outages (second failure propagates). Non-retryable errors (constraint
-// violations, etc.) propagate immediately so log-and-continue semantics are
-// preserved.
-//
-// Pure primitive: callers compose `onRetry` for stderr UI; retry classification
-// uses the canonical `isRetryableConnError` from src/core/retry-matcher.ts so
-// PgBouncer/auth-race/tcp-reset shapes don't drift across the codebase.
-
-export interface WithRetryOpts {
-  onRetry?: (attempt: number, err: unknown) => void;
-  delayMs?: number; // default 500
-}
-
-export async function withRetry<T>(fn: () => Promise<T>, opts: WithRetryOpts = {}): Promise<T> {
-  try {
-    return await fn();
-  } catch (firstErr) {
-    if (!isRetryableConnError(firstErr)) throw firstErr;
-    opts.onRetry?.(1, firstErr);
-    await new Promise((r) => setTimeout(r, opts.delayMs ?? 500));
-    return await fn(); // single retry — second failure propagates
-  }
-}
+// isRetryableConnError reference retained for any inline classification at
+// call sites. Engine-level retry uses the same predicate via core/retry.ts.
+void isRetryableConnError;
 
 export function logBatchRetry(
   label: string,
@@ -449,6 +437,27 @@ export async function runExtractCore(engine: BrainEngine, opts: ExtractOpts): Pr
 
 export async function runExtract(engine: BrainEngine, args: string[]) {
   const subcommand = args[0];
+
+  // v0.42 Wave C+D dispatch — new operator surfaces. These intercept
+  // BEFORE the existing links/timeline/all subcommand validation so they
+  // can use their own arg parsing.
+  //
+  //   gbrain extract status [--source-id ID] [--kind X] [--run-id Y] [--json]
+  //   gbrain extract benchmark --pack X --kind Y [--json]
+  //   gbrain extract --explain <kind>
+  if (subcommand === 'status') {
+    const { runExtractStatus } = await import('./extract-status.ts');
+    return runExtractStatus(engine, args.slice(1));
+  }
+  if (subcommand === 'benchmark') {
+    const { runExtractBenchmark } = await import('./extract-benchmark.ts');
+    return runExtractBenchmark(engine, args.slice(1));
+  }
+  if (args.includes('--explain')) {
+    const { runExtractExplain } = await import('./extract-explain.ts');
+    return runExtractExplain(engine, args);
+  }
+
   const dirIdx = args.indexOf('--dir');
   const explicitDir = dirIdx >= 0 && dirIdx + 1 < args.length;
   // When --dir is not passed, resolve from the configured brain source
@@ -521,7 +530,26 @@ export async function runExtract(engine: BrainEngine, args: string[]) {
   }
 
   if (!subcommand || !['links', 'timeline', 'all'].includes(subcommand)) {
-    console.error('Usage: gbrain extract <links|timeline|all> [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE]');
+    console.error(`Usage: gbrain extract <subcommand> [flags]
+
+Extraction (existing):
+  gbrain extract links    [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE] [--workers N]
+  gbrain extract timeline [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE] [--workers N]
+  gbrain extract all      [--source fs|db] [--source-id <id>] [--dir <brain-dir>] [--dry-run] [--json] [--type T] [--since DATE] [--workers N]
+  gbrain extract <links|timeline> --by-mention --source db
+  gbrain extract <links|timeline|all> --ner --source db
+  gbrain extract <timeline|all> --from-meetings
+
+Inspection (v0.42):
+  gbrain extract --explain <kind> [--json]
+      Print resolution chain for one pack-declared extractable kind.
+  gbrain extract benchmark --pack <name> --kind <type> [--json]
+      Run a pack's fixture corpus through the extractor (v0.42 reports
+      fixture shape; LLM dispatch comes in v0.43+).
+
+Status (v0.42):
+  gbrain extract status [--source-id ID] [--kind X] [--verbose] [--json]
+      Per-kind 7-day rollup: cost, halt rate, eval pass/fail counts.`);
     process.exit(1);
   }
 
@@ -743,10 +771,10 @@ async function extractForSlugs(
     const snapshot = linkBatch.slice();
     linkBatch.length = 0;
     try {
-      linksCreated += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
-        { onRetry: (_a, err) => logBatchRetry('extract.links_inc', snapshot.length, err, jsonMode) },
-      );
+      // v0.41.18.0: engine self-retries on Supavisor blip. auditSite routes
+      // the audit JSONL emission. Per-snapshot try/catch preserves the
+      // log-and-continue contract for exhausted retries.
+      linksCreated += await engine.addLinksBatch(snapshot, { auditSite: 'extract.links_inc' }); // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!jsonMode) console.error(`  link batch error (${snapshot.length} rows lost): ${msg}`);
@@ -758,10 +786,7 @@ async function extractForSlugs(
     const snapshot = timelineBatch.slice();
     timelineBatch.length = 0;
     try {
-      timelineCreated += await withRetry(
-        () => engine.addTimelineEntriesBatch(snapshot),
-        { onRetry: (_a, err) => logBatchRetry('extract.timeline_inc', snapshot.length, err, jsonMode) },
-      );
+      timelineCreated += await engine.addTimelineEntriesBatch(snapshot, { auditSite: 'extract.timeline_inc' });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!jsonMode) console.error(`  timeline batch error (${snapshot.length} rows lost): ${msg}`);
@@ -855,10 +880,7 @@ async function extractLinksFromDir(
     const snapshot = batch.slice();
     batch.length = 0;
     try {
-      created += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
-        { onRetry: (_a, err) => logBatchRetry('extract.links_fs', snapshot.length, err, jsonMode) },
-      );
+      created += await engine.addLinksBatch(snapshot, { auditSite: 'extract.links_fs' }); // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {
@@ -923,10 +945,7 @@ async function extractTimelineFromDir(
     const snapshot = batch.slice();
     batch.length = 0;
     try {
-      created += await withRetry(
-        () => engine.addTimelineEntriesBatch(snapshot),
-        { onRetry: (_a, err) => logBatchRetry('extract.timeline_fs', snapshot.length, err, jsonMode) },
-      );
+      created += await engine.addTimelineEntriesBatch(snapshot, { auditSite: 'extract.timeline_fs' });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {
@@ -1099,10 +1118,7 @@ async function extractLinksFromDB(
     const snapshot = batch.slice();
     batch.length = 0;
     try {
-      created += await withRetry(
-        () => engine.addLinksBatch(snapshot), // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
-        { onRetry: (_a, err) => logBatchRetry('extract.links_db', snapshot.length, err, jsonMode) },
-      );
+      created += await engine.addLinksBatch(snapshot, { auditSite: 'extract.links_db' }); // gbrain-allow-direct-insert: gbrain extract command — canonical link reconciliation from markdown body
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {
@@ -1256,10 +1272,7 @@ async function extractTimelineFromDB(
     const snapshot = batch.slice();
     batch.length = 0;
     try {
-      created += await withRetry(
-        () => engine.addTimelineEntriesBatch(snapshot),
-        { onRetry: (_a, err) => logBatchRetry('extract.timeline_db', snapshot.length, err, jsonMode) },
-      );
+      created += await engine.addTimelineEntriesBatch(snapshot, { auditSite: 'extract.timeline_db' });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {
@@ -1355,21 +1368,54 @@ async function extractMentionsFromDb(
     return { created: 0, pages: 0 };
   }
 
+  // v0.41.19.0 (T5): gazetteer hash is part of the checkpoint
+  // fingerprint so adding new entity pages mid-pause invalidates the
+  // checkpoint cleanly. Without it, resumed pages would skip new
+  // entities silently (codex flag).
+  const gazetteerHash = createHash('sha256')
+    .update([...gazetteer.keys()].sort().join('|'))
+    .digest('hex')
+    .slice(0, 8);
+
   const allRefs = sourceIdFilter
     ? (await engine.listAllPageRefs()).filter(r => r.source_id === sourceIdFilter)
     : await engine.listAllPageRefs();
+
+  // v0.41.19.0 (T5): load checkpoint and skip already-completed
+  // (source_id, slug) pairs. Dry-run does NOT load OR persist the
+  // checkpoint — dry-run is an inspection mode and shouldn't pollute
+  // resume state for the next non-dry-run.
+  const ckptKey = {
+    op: 'extract-by-mention',
+    fingerprint: mentionsFingerprint({
+      source: sourceIdFilter,
+      type: typeFilter,
+      since,
+      gazetteerHash,
+    }),
+  };
+  const completed = dryRun
+    ? new Set<string>()
+    : new Set(await loadOpCheckpoint(engine, ckptKey));
+  const remaining = completed.size > 0
+    ? allRefs.filter(r => !completed.has(`${r.source_id}::${r.slug}`))
+    : allRefs;
+
+  if (completed.size > 0 && !jsonMode) {
+    console.log(`[by-mention] resuming: ${completed.size}/${allRefs.length} pages already scanned, ${remaining.length} remaining`);
+  }
 
   let processed = 0;
   let created = 0;
   const batch: LinkBatchInput[] = [];
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
-  progress.start('extract.by_mention.scan', allRefs.length);
+  progress.start('extract.by_mention.scan', remaining.length);
 
-  async function flush() {
+  async function flushBatch() {
     if (batch.length === 0) return;
     try {
-      created += await engine.addLinksBatch(batch); // gbrain-allow-direct-insert: gbrain extract --by-mention — canonical auto-link write from body-text mention scan
+      created += await engine.addLinksBatch(batch, { auditSite: 'extract.by_mention' }); // gbrain-allow-direct-insert: gbrain extract --by-mention — canonical auto-link write from body-text mention scan
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (jsonMode) {
@@ -1382,15 +1428,54 @@ async function extractMentionsFromDb(
     }
   }
 
+  // v0.41.19.0 (T5 — codex fix #1): flush links FIRST, commit pending
+  // page keys to checkpoint SECOND, persist THIRD. A crash between
+  // batch.push() and flushBatch() leaves pendingForFlush uncommitted —
+  // resume re-scans those pages instead of silently losing their links.
+  //
+  // Persist cadence: every 1000 items OR every 30s, whichever first
+  // (~322 persists on a 322K-page brain, ~24s total overhead). Crash
+  // window is at most 1000 pages (<0.3% loss on the driver brain).
+  const PERSIST_EVERY_N = 1000;
+  const PERSIST_EVERY_MS = 30_000;
+  const pendingForFlush: string[] = [];
+  let sinceLastPersistMs = Date.now();
+  let unpersistedCount = 0;
+
+  async function flushAndCheckpoint(force = false): Promise<void> {
+    await flushBatch();
+    for (const key of pendingForFlush) completed.add(key);
+    pendingForFlush.length = 0;
+    if (dryRun) return;
+    const now = Date.now();
+    if (force || unpersistedCount >= PERSIST_EVERY_N || (now - sinceLastPersistMs) >= PERSIST_EVERY_MS) {
+      await recordCompleted(engine, ckptKey, [...completed]);
+      unpersistedCount = 0;
+      sinceLastPersistMs = now;
+    }
+  }
+
   const sinceMs = since ? new Date(since).getTime() : null;
 
-  for (const { slug, source_id } of allRefs) {
+  for (const { slug, source_id } of remaining) {
     const page = await engine.getPage(slug, { sourceId: source_id });
-    if (!page) continue;
-    if (typeFilter && page.type !== typeFilter) continue;
+    // v0.41.19.0 (T5 — codex fix #4): even when we skip a page (filter
+    // miss, missing row, empty body, no mentions), MARK IT COMPLETED so
+    // resume doesn't re-fetch it. The decision NOT to create links is
+    // itself a completed decision.
+    const key = `${source_id}::${slug}`;
+    if (!page || (typeFilter && page.type !== typeFilter)) {
+      pendingForFlush.push(key);
+      unpersistedCount++;
+      continue;
+    }
     if (sinceMs !== null) {
       const updatedMs = new Date(page.updated_at).getTime();
-      if (Number.isFinite(updatedMs) && updatedMs <= sinceMs) continue;
+      if (Number.isFinite(updatedMs) && updatedMs <= sinceMs) {
+        pendingForFlush.push(key);
+        unpersistedCount++;
+        continue;
+      }
     }
     processed++;
     progress.tick();
@@ -1399,14 +1484,22 @@ async function extractMentionsFromDb(
     // end-of-compiled token doesn't accidentally merge with a
     // start-of-timeline token into a false phrase match.
     const body = page.compiled_truth + '\n\n' + (page.timeline ?? '');
-    if (!body.trim()) continue;
+    if (!body.trim()) {
+      pendingForFlush.push(key);
+      unpersistedCount++;
+      continue;
+    }
 
     const mentions = findMentionedEntities(body, gazetteer, {
       fromSlug: slug,
       fromSourceId: source_id,
     });
 
-    if (mentions.length === 0) continue;
+    if (mentions.length === 0) {
+      pendingForFlush.push(key);
+      unpersistedCount++;
+      continue;
+    }
 
     for (const m of mentions) {
       if (dryRun) {
@@ -1430,13 +1523,31 @@ async function extractMentionsFromDb(
           from_source_id: source_id,
           to_source_id: m.source_id,
         });
-        if (batch.length >= BATCH_SIZE) await flush();
+        if (batch.length >= BATCH_SIZE) {
+          // The page that produced these batch entries stays UN-committed
+          // until flushBatch succeeds. The push below happens AFTER the
+          // flushAndCheckpoint call so a crash inside flushBatch leaves
+          // the page un-checkpointed and resume re-scans it.
+          await flushAndCheckpoint();
+        }
       }
+    }
+    // Page completed (whether dry-run or non-dry-run). Stage for the
+    // next flushAndCheckpoint().
+    pendingForFlush.push(key);
+    unpersistedCount++;
+    // Time-based cadence floor.
+    if (!dryRun && (Date.now() - sinceLastPersistMs) >= PERSIST_EVERY_MS) {
+      await flushAndCheckpoint();
     }
   }
 
-  if (!dryRun) await flush();
+  if (!dryRun) {
+    await flushAndCheckpoint(true); // final flush + force-persist
+  }
   progress.finish();
+
+  if (!dryRun) await clearOpCheckpoint(engine, ckptKey); // clean exit
 
   if (!jsonMode) {
     const label = dryRun ? '(dry run) would create' : 'created';

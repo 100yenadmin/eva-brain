@@ -40,6 +40,10 @@ export async function runOnboard(engine: BrainEngine, args: string[]): Promise<v
   const yes = args.includes('--yes');
   const history = args.includes('--history');
   const jsonOutput = args.includes('--json');
+  // v0.42 (T16): --explain extends --check with per-cluster narrative
+  // for the pack_upgrade_available recommendation (D5 trust UX delta).
+  // No-op without a pack_upgrade_available finding.
+  const explain = args.includes('--explain');
   const targetScore = parseInt10(args, '--target-score') ?? 90;
   const maxUsdRaw = parseFloat10(args, '--max-usd');
   const maxUsd = maxUsdRaw === null ? undefined : maxUsdRaw;
@@ -109,6 +113,13 @@ export async function runOnboard(engine: BrainEngine, args: string[]): Promise<v
       return;
     }
     process.stdout.write(renderHuman(report) + '\n');
+    // v0.42 (T16): --explain extension. Per-cluster narrative for the
+    // pack_upgrade_available recommendation. Runs unify-types in dry-run
+    // mode and renders the per-rule diff. No-op when no pack upgrade
+    // is available.
+    if (explain) {
+      await renderPackUpgradeExplain(engine, extraRemediations);
+    }
     return;
   }
 
@@ -174,4 +185,58 @@ export async function runOnboard(engine: BrainEngine, args: string[]): Promise<v
     (s) => s.status !== 'completed' && s.status !== 'submitted' && s.status !== 'dry_run',
   );
   if (result.budget_exhausted || anyFailed) process.exit(1);
+}
+
+/**
+ * v0.42 (T16): per-cluster narrative renderer for `gbrain onboard --check --explain`.
+ *
+ * Finds the pack_upgrade_available recommendation in the extras, runs
+ * the unify-types handler in dry-run mode, and renders a human-readable
+ * breakdown:
+ *   - Cluster name (heuristic: group rules by to_type)
+ *   - Source page counts per from_type that would be retyped
+ *   - Total alias rows that would be created
+ *   - Total page-to-link conversions
+ *   - Sample slugs per cluster (capped at 3)
+ *
+ * No-op when no pack_upgrade_available recommendation is in the plan
+ * (the brain is already on the latest pack).
+ */
+async function renderPackUpgradeExplain(
+  engine: BrainEngine,
+  extras: Array<{ id: string; job: string; params: Record<string, unknown> }>,
+): Promise<void> {
+  const packUpgrade = extras.find((e) => e.id.startsWith('onboard.pack_upgrade_'));
+  if (!packUpgrade) {
+    process.stdout.write(
+      '\n(--explain: no pack_upgrade_available recommendation; brain is on the latest pack)\n',
+    );
+    return;
+  }
+  const targetPack = packUpgrade.params.target_pack;
+  if (typeof targetPack !== 'string') return;
+  process.stdout.write(`\n--- Pack upgrade plan: → ${targetPack} ---\n`);
+  try {
+    const { runUnifyTypes } = await import('../core/schema-pack/unify-types-handler.ts');
+    const result = await runUnifyTypes(
+      { engine, cfg: null, remote: false } as unknown as import('../core/operations.ts').OperationContext,
+      { target_pack: targetPack, apply: false },
+    );
+    process.stdout.write(
+      `Pre-state: ${result.stats_before.total_pages} pages, ${result.stats_before.distinct_types} distinct types\n` +
+      `\nWould apply (dry-run):\n` +
+      `  Explicit retypes:    ${result.per_phase.retype_explicit.would_apply} pages across ${result.per_phase.retype_explicit.rules} rules\n` +
+      `  Catch-all retypes:   ${result.per_phase.retype_catch_all.would_apply} pages across ${result.per_phase.retype_catch_all.synthesized_rules} synthesized rules\n` +
+      `  Page-to-link:        ${result.per_phase.page_to_link.would_convert} edges across ${result.per_phase.page_to_link.rules} rules\n` +
+      `  Page-to-alias:       ${result.per_phase.page_to_alias.would_alias} aliases across ${result.per_phase.page_to_alias.rules} rules\n` +
+      `\nRun the migration with:\n` +
+      `  gbrain jobs submit unify-types --allow-protected --params '${JSON.stringify({ target_pack: targetPack })}'\n`,
+    );
+    if (result.warnings.length > 0) {
+      process.stdout.write(`\nWarnings:\n`);
+      for (const w of result.warnings) process.stdout.write(`  - ${w}\n`);
+    }
+  } catch (e) {
+    process.stdout.write(`(--explain: dry-run failed: ${(e as Error).message})\n`);
+  }
 }

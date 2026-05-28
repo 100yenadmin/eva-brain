@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join, relative } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
+import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
 import { importFile } from '../core/import-file.ts';
 import { collectSyncableFiles } from './import.ts';
 import { createInterface } from 'readline';
@@ -269,14 +270,25 @@ export async function resolveSlugByPathOrSourcePath(
   path: string,
   sourceId?: string,
 ): Promise<string> {
+  // v0.41.19.0 (D8): when sourceId is set, delegate to the new batch
+  // resolveSlugsByPaths so single-call and batched paths share one SQL
+  // owner + one fallback semantic. One Map allocation per single-call;
+  // negligible cost. When sourceId is undefined (legacy unscoped callers),
+  // fall back to the original executeRaw shape — the batch method
+  // requires sourceId to prevent the multi-source-bug-class on its new
+  // surface (D5). The unscoped fallback preserves back-compat.
   try {
-    const rows = await engine.executeRaw<{ slug: string }>(
-      sourceId
-        ? `SELECT slug FROM pages WHERE source_path = $1 AND source_id = $2 LIMIT 1`
-        : `SELECT slug FROM pages WHERE source_path = $1 LIMIT 1`,
-      sourceId ? [path, sourceId] : [path],
-    );
-    if (rows.length > 0 && rows[0].slug) return rows[0].slug;
+    if (sourceId) {
+      const m = await engine.resolveSlugsByPaths([path], { sourceId });
+      const slug = m.get(path);
+      if (slug) return slug;
+    } else {
+      const rows = await engine.executeRaw<{ slug: string }>(
+        `SELECT slug FROM pages WHERE source_path = $1 LIMIT 1`,
+        [path],
+      );
+      if (rows.length > 0 && rows[0].slug) return rows[0].slug;
+    }
   } catch {
     // Fall through — best-effort. Pre-migration brains or query errors
     // shouldn't break delete/rename for path-derived pages.
@@ -1233,25 +1245,135 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // Phases: sync.deletes, sync.renames, sync.imports.
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
 
-  // Process deletes first (prevents slug conflicts). SP-5: resolveSlugForPath
-  // dispatches to the right slug shape so code file deletes hit the real page.
+  // v0.41.19.0: hoisted out of the import block so the delete decompose
+  // path (per-batch try-catch fallback) can append unrecoverable delete
+  // failures here too. Same canonical surface that gates `sync.last_commit`
+  // advancement at the bottom of this function.
+  const failedFiles: Array<{ path: string; error: string; line?: number }> = [];
+
   // v0.18.0+ multi-source: scope deletePage so we only delete the source-A
   // row, not every same-slug row across all sources.
   const deleteOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+
+  // v0.41.19.0 (T2/D6/D7/D16/D18 via /plan-eng-review + codex outside-voice):
+  // batched delete loop. Replaces the per-file N+1 that PR #1538 originally
+  // batched on Postgres only. See plan file:
+  //   ~/.claude/plans/system-instruction-you-are-working-ethereal-narwhal.md
+  //
+  // SHAPE (interleaved per-batch resolve + delete; caller owns chunking):
+  //
+  //   filtered.deleted (e.g. 73K paths)
+  //       │
+  //       ▼
+  //   slice into batches of DELETE_BATCH_SIZE (500)
+  //       │
+  //       ▼  for each batch:
+  //   abort-check ──► partial('timeout')
+  //       │
+  //       ▼
+  //   engine.resolveSlugsByPaths(batch, {sourceId})  ◀── 1 SQL round-trip
+  //       │
+  //       ▼
+  //   slugs = batch.map(path => map.get(path)
+  //                  ?? resolveSlugForPath(path))    ◀── pure-JS fallback for
+  //       │                                              frontmatter-fallback
+  //       ▼                                              + missing-source-path
+  //   try {
+  //     deleted = engine.deletePages(slugs, opts)    ◀── 1 SQL round-trip
+  //     pagesAffected.push(...deleted)               ◀── D6: only confirmed
+  //   } catch {                                          deletes, not phantoms
+  //     // D7 decompose: per-slug deletePage,
+  //     // unrecoverable failures → failedFiles
+  //   }
+  //
+  // ROUND-TRIP COUNTS (73K deletes):
+  //   pre-fix:   73,000 SELECTs + 73,000 DELETEs = 146,000 (~5 hours)
+  //   post-fix:     146 SELECTs +     146 DELETEs =     292 (~2 minutes)
+  //
+  // ATOMICITY (D3): each batch is one transaction. A mid-batch abort or
+  // transient connection failure rolls back up to DELETE_BATCH_SIZE - 1
+  // successful deletes. Sync is idempotent — the next run picks them up
+  // via git diff regenerating the deletion list.
+  //
+  // NO-SOURCEID FALLBACK: when opts.sourceId is undefined (legacy unscoped
+  // callers, rare post-v0.34.1 source-resolution wiring), fall back to the
+  // OLD per-path loop. The batch engine surface requires sourceId per D5
+  // (multi-source-bug-class defense at the type level). Production callers
+  // that thread sourceId via resolveSourceWithTier get the new fast path.
   if (filtered.deleted.length > 0) {
     progress.start('sync.deletes', filtered.deleted.length);
-    for (const path of filtered.deleted) {
-      // v0.41.13.0 (T2 / D-V4-2): per-iteration abort check. Codex pass-3
-      // F8 caught that v3 only covered pull + add/modify. Refactor commits
-      // with hundreds of deletes can overshoot --timeout without this check.
-      if (opts.signal?.aborted) {
-        progress.finish();
-        return partial('timeout');
+    if (opts.sourceId) {
+      const sid = opts.sourceId;
+      const deleteScopedOpts = { sourceId: sid };
+      for (let i = 0; i < filtered.deleted.length; i += DELETE_BATCH_SIZE) {
+        if (opts.signal?.aborted) {
+          progress.finish();
+          return partial('timeout');
+        }
+        const batch = filtered.deleted.slice(i, i + DELETE_BATCH_SIZE);
+
+        // Phase A: batch slug resolution (1 round-trip per batch).
+        let pathSlugMap: Map<string, string>;
+        try {
+          pathSlugMap = await engine.resolveSlugsByPaths(batch, deleteScopedOpts);
+        } catch {
+          // Resolve failure: fall back to empty map; per-path fallback
+          // below will use resolveSlugForPath. Best-effort, matches the
+          // existing resolveSlugByPathOrSourcePath swallow-and-fallback
+          // semantics.
+          pathSlugMap = new Map();
+        }
+        const slugs = batch.map(p => pathSlugMap.get(p) ?? resolveSlugForPath(p));
+
+        // Phase B: batch delete (1 round-trip per batch).
+        try {
+          const deleted = await engine.deletePages(slugs, deleteScopedOpts);
+          // D6: only push slugs that were actually deleted. Filters phantom
+          // slugs (paths in filtered.deleted but with no DB row) so
+          // downstream extract/embed don't waste lookups.
+          pagesAffected.push(...deleted);
+        } catch (err) {
+          // D7 decompose: a transient blip on this batch shouldn't lose all
+          // 500 deletes. Fall back to per-slug deletePage for THIS batch
+          // only; unrecoverable per-slug failures land in failedFiles
+          // (matching the existing import-loop pattern at sync.ts:~1350).
+          for (let j = 0; j < slugs.length; j++) {
+            try {
+              await engine.deletePage(slugs[j], deleteScopedOpts);
+              pagesAffected.push(slugs[j]);
+            } catch (perSlugErr) {
+              failedFiles.push({
+                path: batch[j],
+                error: `delete failed: ${perSlugErr instanceof Error ? perSlugErr.message : String(perSlugErr)} (batch error: ${err instanceof Error ? err.message : String(err)})`,
+              });
+            }
+          }
+        }
+        progress.tick(batch.length, `deletes ${Math.min(i + DELETE_BATCH_SIZE, filtered.deleted.length)}/${filtered.deleted.length}`);
       }
-      const slug = await resolveSlugByPathOrSourcePath(engine, path, opts.sourceId);
-      await engine.deletePage(slug, deleteOpts);
-      pagesAffected.push(slug);
-      progress.tick(1, slug);
+    } else {
+      // Legacy no-sourceId path. The engine batch methods require sourceId
+      // per D5 (kills the multi-source-bug-class on the new surface); when
+      // sourceId is unset, fall back to the original per-path loop. Slow
+      // but correct; production callers all thread sourceId so this branch
+      // is functionally dead post-v0.34.1.
+      for (const path of filtered.deleted) {
+        if (opts.signal?.aborted) {
+          progress.finish();
+          return partial('timeout');
+        }
+        const slug = await resolveSlugByPathOrSourcePath(engine, path, undefined);
+        try {
+          await engine.deletePage(slug, deleteOpts);
+          pagesAffected.push(slug);
+        } catch (err) {
+          failedFiles.push({
+            path,
+            error: `delete failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        progress.tick(1, slug);
+      }
     }
     progress.finish();
   }
@@ -1260,12 +1382,46 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // SP-5: both old and new slugs use resolveSlugForPath so a .ts → .ts
   // rename (code→code), .md → .md (markdown→markdown), or cross-kind rename
   // all resolve to the right slug shape for each side.
+  //
+  // v0.41.19.0 (T4): pre-batched slug resolution per Phase 3 of the plan.
+  // Renames' per-file cost is dominated by importFile() (file IO + chunking
+  // + embedding), so the per-iteration updateSlug + importFile loop stays;
+  // only the upfront slug-resolve N+1 gets batched. The try/catch around
+  // updateSlug for slug-doesn't-exist preserves verbatim.
   if (filtered.renamed.length > 0) {
     progress.start('sync.renames', filtered.renamed.length);
     // v0.18.0+ multi-source: scope updateSlug so the rename only touches the
     // source-A row, not every same-slug row across sources (which would
     // either sweep them all OR violate (source_id, slug) UNIQUE).
     const renameOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+
+    // T4: pre-resolve ALL `from` slugs in batches before iterating. Falls
+    // back to per-path resolveSlugByPathOrSourcePath when sourceId is
+    // unset (matches the delete loop's legacy posture). For large rename
+    // commits (rare but possible: prefix sweep, reorganization), this drops
+    // the slug-resolve round-trips from O(renames) to O(renames/500).
+    const fromSlugByPath = new Map<string, string>();
+    if (opts.sourceId) {
+      const sid = opts.sourceId;
+      const fromPaths = filtered.renamed.map(r => r.from);
+      for (let i = 0; i < fromPaths.length; i += DELETE_BATCH_SIZE) {
+        if (opts.signal?.aborted) {
+          progress.finish();
+          return partial('timeout');
+        }
+        const batch = fromPaths.slice(i, i + DELETE_BATCH_SIZE);
+        let m: Map<string, string>;
+        try {
+          m = await engine.resolveSlugsByPaths(batch, { sourceId: sid });
+        } catch {
+          m = new Map();
+        }
+        for (const p of batch) {
+          fromSlugByPath.set(p, m.get(p) ?? resolveSlugForPath(p));
+        }
+      }
+    }
+
     for (const { from, to } of filtered.renamed) {
       // v0.41.13.0 (T2 / D-V4-2): per-iteration abort check. Renames call
       // importFile() at line 1173-style sites which can be slow on big files;
@@ -1274,7 +1430,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         progress.finish();
         return partial('timeout');
       }
-      const oldSlug = await resolveSlugByPathOrSourcePath(engine, from, opts.sourceId);
+      const oldSlug = opts.sourceId
+        ? (fromSlugByPath.get(from) ?? resolveSlugForPath(from))
+        : await resolveSlugByPathOrSourcePath(engine, from, undefined);
       // The new path doesn't yet have a row, so resolve from path only.
       const newSlug = resolveSlugForPath(to);
       try {
@@ -1308,7 +1466,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   // v0.15.2: per-file progress on stderr via the shared reporter.
   // Bug 9: per-file failures captured in `failedFiles` so the caller can
   // gate `sync.last_commit` advancement and record recoverable errors.
-  const failedFiles: Array<{ path: string; error: string; line?: number }> = [];
+  // v0.41.19.0: `failedFiles` is now hoisted above the delete loop (the
+  // delete decompose path appends here too); kept as a comment-pin so
+  // future maintainers know to thread additional failure surfaces through
+  // the same array.
   const addsAndMods = [...filtered.added, ...filtered.modified];
 
   // Sort newest-first so date-prefixed brain paths get embedded before older

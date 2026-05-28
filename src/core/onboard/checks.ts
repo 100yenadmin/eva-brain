@@ -357,5 +357,195 @@ export async function runAllOnboardChecks(
     checkEntityLinkCoverage(engine),
     checkTimelineCoverage(engine),
     checkTakesCount(engine),
+    // v0.42 type-unification (T13-T15): 3 new checks added to onboard.
+    checkPackUpgradeAvailable(engine),
+    checkTypeProliferation(engine),
+    checkDanglingAliases(engine),
   ]);
+}
+
+// ===========================================================================
+// v0.42 Type Unification (T13-T15) — 3 onboard checks
+// ===========================================================================
+
+/**
+ * pack_upgrade_available: fires when the active schema pack has a successor
+ * pack declared via `migration_from`. v0.42 ships gbrain-base-v2 as the
+ * declared successor of gbrain-base@1.x. Emits a manual_only RemediationStep
+ * (D17) targeting the unify-types Minion handler.
+ */
+export async function checkPackUpgradeAvailable(
+  engine: BrainEngine,
+): Promise<OnboardCheckResult> {
+  try {
+    const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
+    // Read the engine's DB-side schema_pack so a post-unify flip is visible
+    // here even before the file-plane config catches up. Falls through to
+    // file-plane/env/default resolution when unset.
+    let dbConfig: string | undefined;
+    try {
+      dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
+    } catch { /* engine.config may not exist on very old brains */ }
+    const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
+      .catch(() => null);
+    if (!active) {
+      return {
+        check: { name: 'pack_upgrade_available', status: 'ok', message: 'No active pack' },
+        remediations: [],
+      };
+    }
+    const successors = await findPackSuccessors(active.manifest.name, active.manifest.version);
+    if (successors.length === 0) {
+      return {
+        check: {
+          name: 'pack_upgrade_available',
+          status: 'ok',
+          message: `Active pack ${active.identity} is current (no successor declared)`,
+        },
+        remediations: [],
+      };
+    }
+    const successor = successors[0];
+    return {
+      check: {
+        name: 'pack_upgrade_available',
+        status: 'warn',
+        message:
+          `Active pack: ${active.identity}. Successor available: ${successor.identity}. ` +
+          `Preview: \`gbrain onboard --check --explain\``,
+      },
+      remediations: [
+        makeRemediationStep({
+          id: 'onboard.pack_upgrade_' + successor.manifest.name,
+          job: 'unify-types',
+          params: { target_pack: successor.manifest.name },
+          severity: 'medium',
+          est_seconds: 600,  // ~10min on 186K-page brain (production proxy)
+          est_usd_cost: 0,   // pure SQL; no LLM spend
+          protected: true,   // PROTECTED handler + manual_only via render allowlist
+          rationale:
+            `Pack upgrade ${active.manifest.name} → ${successor.manifest.name}; ` +
+            `collapses redundant page types into the new canonical taxonomy. ` +
+            `Reversible via 72h soft-delete TTL on alias/link pages + ` +
+            `frontmatter.legacy_type preservation on retyped pages.`,
+          status: 'remediable',
+        }),
+      ],
+    };
+  } catch (e) {
+    return {
+      check: {
+        name: 'pack_upgrade_available',
+        status: 'ok',
+        message: `Check skipped: ${(e as Error).message}`,
+      },
+      remediations: [],
+    };
+  }
+}
+
+/**
+ * type_proliferation (D16): pack-aware ratio. Warns when distinct typed
+ * pages exceed pack-declared types + 5; fails at declared × 2. No false
+ * positives on custom packs (compares to actual pack declaration count,
+ * not a hardcoded threshold).
+ */
+export async function checkTypeProliferation(
+  engine: BrainEngine,
+): Promise<OnboardCheckResult> {
+  let declared = 15;  // fallback to gbrain-base-v2 default if pack unavailable
+  try {
+    const { loadActivePack } = await import('../schema-pack/load-active.ts');
+    let dbConfig: string | undefined;
+    try {
+      dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
+    } catch { /* tolerate pre-config brains */ }
+    const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
+      .catch(() => null);
+    if (active) declared = active.manifest.page_types.length;
+  } catch {
+    // Use fallback.
+  }
+  const n = await safeCount(
+    engine,
+    `SELECT COUNT(DISTINCT type) AS count FROM pages WHERE deleted_at IS NULL AND type IS NOT NULL`,
+  );
+  const warn = declared + 5;
+  const fail = declared * 2;
+  if (n > fail) {
+    return {
+      check: {
+        name: 'type_proliferation',
+        status: 'fail',
+        message:
+          `${n} distinct page types (pack declares ${declared}). ` +
+          `Run \`gbrain onboard --check --explain\` to preview a pack upgrade ` +
+          `or define a custom pack with mapping_rules.`,
+      },
+      remediations: [],  // pack_upgrade_available check emits the actionable step
+    };
+  }
+  if (n > warn) {
+    return {
+      check: {
+        name: 'type_proliferation',
+        status: 'warn',
+        message: `${n} distinct page types vs ${declared} declared in pack — consider unification.`,
+      },
+      remediations: [],
+    };
+  }
+  return {
+    check: {
+      name: 'type_proliferation',
+      status: 'ok',
+      message: `${n} distinct typed values (pack declares ${declared})`,
+    },
+    remediations: [],
+  };
+}
+
+/**
+ * dangling_aliases (F12): surfaces slug_aliases rows whose canonical page
+ * no longer exists in the pages table. Source-scoped JOIN prevents
+ * cross-source false-positive deletion.
+ *
+ * v0.42 ships surface-only (no auto-GC RemediationStep). v0.43+ may add
+ * `cleanup-dangling-aliases` as an auto_apply handler once detection is
+ * confirmed clean in production.
+ *
+ * Defensive: pre-v105 brains don't have slug_aliases yet — returns ok
+ * via the `isUndefinedTableError` fallthrough inherent in safeCount's
+ * catch-all (returns 0 on any SQL error).
+ */
+export async function checkDanglingAliases(
+  engine: BrainEngine,
+): Promise<OnboardCheckResult> {
+  const n = await safeCount(
+    engine,
+    `SELECT COUNT(*) AS count FROM slug_aliases sa
+     LEFT JOIN pages p
+       ON p.slug = sa.canonical_slug
+      AND p.source_id = sa.source_id
+      AND p.deleted_at IS NULL
+     WHERE p.id IS NULL`,
+  );
+  if (n > 0) {
+    return {
+      check: {
+        name: 'dangling_aliases',
+        status: 'warn',
+        message:
+          `${n} alias rows point at deleted canonicals. Safe GC (source-scoped): ` +
+          `\`DELETE FROM slug_aliases sa WHERE NOT EXISTS (SELECT 1 FROM pages p ` +
+          `WHERE p.slug = sa.canonical_slug AND p.source_id = sa.source_id ` +
+          `AND p.deleted_at IS NULL);\``,
+      },
+      remediations: [],  // v0.42: surface-only; auto-GC v0.43+
+    };
+  }
+  return {
+    check: { name: 'dangling_aliases', status: 'ok', message: 'No dangling aliases' },
+    remediations: [],
+  };
 }

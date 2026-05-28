@@ -807,7 +807,10 @@ const put_page: Operation = {
               summary: e.summary,
               detail: e.detail || '',
             }));
-            const created = await ctx.engine.addTimelineEntriesBatch(batch);
+            // v0.41.18.0: engine self-retries on Supavisor circuit-breaker
+            // recovery. auditSite label routes the audit JSONL emission so
+            // operators can attribute losses to the agent-write path.
+            const created = await ctx.engine.addTimelineEntriesBatch(batch, { auditSite: 'mcp.put_page.autolink' });
             autoTimeline = { created };
           } else {
             autoTimeline = { created: 0 };
@@ -1924,6 +1927,74 @@ const get_brain_identity: Operation = {
   },
   scope: 'read',
   // intentionally no cliHints — banner-only op
+};
+
+/**
+ * v0.41.19.0 — `gbrain status` thin-client surface.
+ *
+ * Returns a snapshot of sync freshness + last cycle state for thin-client
+ * `gbrain status` callers. Per D2/D10 in the plan:
+ *
+ *   - Scope: admin (NOT localOnly). The op exposes operational state
+ *     including sync timestamps and cycle metadata. Locking it to admin
+ *     matches the `run_doctor` posture and prevents future feature creep
+ *     (adding locks/workers/queue counters) from quietly leaking ops state
+ *     to read-scoped clients.
+ *
+ *   - Payload: `{schema_version: 1, sync, cycle}` ONLY. Locks, Workers,
+ *     Queue, and Autopilot sections are deliberately omitted from the
+ *     remote payload — they are local-host concerns that thin-client
+ *     callers shouldn't see at all (and the local `gbrain status` renders
+ *     them as "N/A on remote brain" instead of pretending they exist).
+ *
+ *   - The local CLI composes the same data plus the local-only sections
+ *     directly (no MCP round-trip when running against ~/.gbrain).
+ */
+const get_status_snapshot: Operation = {
+  name: 'get_status_snapshot',
+  description: 'Snapshot for `gbrain status` thin-client mode: sync freshness + last cycle. Admin-scope.',
+  params: {},
+  handler: async (ctx) => {
+    const { buildSyncStatusReport } = await import('../commands/sync.ts');
+    const { buildCycleSnapshot } = await import('../commands/status.ts');
+    // Pull sources first (handles brains with zero declared sources too).
+    let sources: Array<{ id: string; name: string; local_path: string | null; config: Record<string, unknown> }> = [];
+    try {
+      const rows = await ctx.engine.executeRaw<{
+        id: string;
+        name: string;
+        local_path: string | null;
+        config: Record<string, unknown> | null;
+      }>(
+        `SELECT id, name, local_path, config FROM sources WHERE COALESCE(archived, FALSE) = FALSE ORDER BY id`,
+      );
+      sources = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        local_path: r.local_path,
+        config: r.config ?? {},
+      }));
+    } catch {
+      // Pre-v0.26.5 brains may lack the `archived` column; degrade to all rows.
+      const rows = await ctx.engine.executeRaw<{
+        id: string;
+        name: string;
+        local_path: string | null;
+        config: Record<string, unknown> | null;
+      }>(`SELECT id, name, local_path, config FROM sources ORDER BY id`);
+      sources = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        local_path: r.local_path,
+        config: r.config ?? {},
+      }));
+    }
+    const sync = await buildSyncStatusReport(ctx.engine, sources);
+    const cycle = await buildCycleSnapshot(ctx.engine);
+    return { schema_version: 1 as const, sync, cycle };
+  },
+  scope: 'admin',
+  localOnly: false,
 };
 
 /**
@@ -4293,6 +4364,8 @@ export const operations: Operation[] = [
   get_stats, get_health, run_doctor, get_versions, revert_version,
   // v0.31.1 (Issue #734): thin-client banner identity packet (read-scope, banner-only)
   get_brain_identity,
+  // v0.41.19.0: thin-client `gbrain status` payload (admin-scope, sync + cycle only)
+  get_status_snapshot,
   // Sync
   sync_brain,
   // Raw data

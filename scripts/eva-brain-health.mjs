@@ -6,9 +6,14 @@ import { join } from 'node:path';
 
 const SUPPORT_KB_SOURCE = 'openclaw-support-kb';
 const SUPPORT_KB_QUERY = 'OpenClaw';
+const WORKSPACE_DOCS_SOURCE = process.env.EVA_BRAIN_WORKSPACE_DOCS_SOURCE || 'workspace-docs';
+const WORKSPACE_DOCS_QUERY = process.env.EVA_BRAIN_WORKSPACE_DOCS_QUERY || 'runbooks';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 const requireOpenClaw = process.argv.includes('--require-openclaw') || process.env.EVA_BRAIN_REQUIRE_OPENCLAW === 'true';
+const allowMissingSupportKb = process.argv.includes('--allow-missing-support-kb') || process.env.EVA_BRAIN_ALLOW_MISSING_SUPPORT_KB === 'true';
+const requireSupportKb = process.argv.includes('--require-support-kb') || !allowMissingSupportKb;
+const requireWorkspaceDocs = process.argv.includes('--require-workspace-docs') || process.env.EVA_BRAIN_REQUIRE_WORKSPACE_DOCS === 'true';
 
 function resolveBin(envName, fallback) {
   const configured = process.env[envName];
@@ -81,6 +86,7 @@ function main() {
   const sources = normalizeSources(parseJson(sourcesResult.stdout, []));
   const totalPages = sources.reduce((sum, source) => sum + source.pages, 0);
   const supportKb = sources.find(source => source.id === SUPPORT_KB_SOURCE) ?? null;
+  const workspaceDocs = sources.find(source => source.id === WORKSPACE_DOCS_SOURCE) ?? null;
   const supportKbSearch = run(gbrain, [
     'search',
     SUPPORT_KB_QUERY,
@@ -91,6 +97,26 @@ function main() {
     '--json',
   ]);
   const supportKbSearchSummary = summarizeSearch(supportKbSearch);
+  const workspaceDocsSearch = workspaceDocs
+    ? run(gbrain, [
+        'search',
+        WORKSPACE_DOCS_QUERY,
+        '--limit',
+        '3',
+        '--source',
+        WORKSPACE_DOCS_SOURCE,
+        '--json',
+      ])
+    : {
+        command: `${gbrain} search ${WORKSPACE_DOCS_QUERY} --limit 3 --source ${WORKSPACE_DOCS_SOURCE} --json`,
+        ok: false,
+        status: null,
+        signal: null,
+        stdout: '',
+        stderr: `Source ${WORKSPACE_DOCS_SOURCE} not present`,
+        timedOut: false,
+      };
+  const workspaceDocsSearchSummary = summarizeSearch(workspaceDocsSearch);
   const pluginInspect = run(openclaw, ['plugins', 'inspect', 'gbrain', '--runtime', '--json'], {
     timeoutMs: 15_000,
   });
@@ -100,10 +126,16 @@ function main() {
       version.ok &&
       doctor.ok &&
       sourcesResult.ok &&
-      supportKb &&
-      supportKb.pages > 0 &&
-      supportKbSearchSummary.ok &&
-      supportKbSearchSummary.resultCount > 0 &&
+      (!requireSupportKb ||
+        (supportKb &&
+          supportKb.pages > 0 &&
+          supportKbSearchSummary.ok &&
+          supportKbSearchSummary.resultCount > 0)) &&
+      (!requireWorkspaceDocs ||
+        (workspaceDocs &&
+          workspaceDocs.pages > 0 &&
+          workspaceDocsSearchSummary.ok &&
+          workspaceDocsSearchSummary.resultCount > 0)) &&
       (!requireOpenClaw || pluginInspect.ok),
     ),
     gbrain: {
@@ -117,8 +149,18 @@ function main() {
       bySource: sources,
       supportKbPresent: Boolean(supportKb),
       supportKbPages: supportKb?.pages ?? 0,
+      workspaceDocsPresent: Boolean(workspaceDocs),
+      workspaceDocsSource: WORKSPACE_DOCS_SOURCE,
+      workspaceDocsPages: workspaceDocs?.pages ?? 0,
     },
-    supportKbSearch: supportKbSearchSummary,
+    supportKbSearch: {
+      required: requireSupportKb,
+      ...supportKbSearchSummary,
+    },
+    workspaceDocsSearch: {
+      required: requireWorkspaceDocs,
+      ...workspaceDocsSearchSummary,
+    },
     openclawPlugin: {
       required: requireOpenClaw,
       ok: pluginInspect.ok,

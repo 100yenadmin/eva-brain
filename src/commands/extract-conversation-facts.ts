@@ -90,6 +90,8 @@ import { runSlidingPool } from '../core/worker-pool.ts';
 import { parseWorkers, resolveWorkersWithClamp } from '../core/sync-concurrency.ts';
 import { withRefreshingLock, LockUnavailableError } from '../core/db-lock.ts';
 import { assertFactsEmbeddingDimMatchesConfig } from '../core/embedding-dim-check.ts';
+import { writeReceipt, shortRunId } from '../core/extract/receipt-writer.ts';
+import { upsertExtractRollup } from '../core/extract/rollup-writer.ts';
 
 // ---------------------------------------------------------------------------
 // Tunables (exported for tests).
@@ -1073,6 +1075,9 @@ export async function runExtractConversationFactsCore(
       if (opts.budgetTracker) {
         result.spent_usd = opts.budgetTracker.totalSpent;
       }
+      // Fall through to receipt+rollup write so the partial run is
+      // still observable in extract_health doctor + extracts/ pages.
+      await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       // Return partial result — caller (CLI / Minion) decides how to
       // surface. NOT a thrown failure.
       return result;
@@ -1080,7 +1085,69 @@ export async function runExtractConversationFactsCore(
     throw err;
   }
 
+  // v0.42 — Wave B1: extract-conversation-facts writes a receipt page
+  // (queryable + citable per D-EXTRACT-17/19) AND UPSERTs the per-day
+  // rollup row (best-effort cache per F-OUT-19). Both are best-effort —
+  // failures stderr-warn but never fail the parent operation.
+  await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ false);
+
   return result;
+}
+
+/**
+ * v0.42 — Wave B1: best-effort receipt + rollup writes at the end of an
+ * extract-conversation-facts run. Skips the receipt page when the run
+ * extracted ZERO facts (no-op runs don't need brain memory) but always
+ * UPSERTs the rollup row so doctor sees the cycle ran.
+ *
+ * `halted` true means the run hit a budget cap mid-flight; receipt
+ * carries that state in its frontmatter (round='full' regardless; the
+ * halt is recorded as a halt_delta=1 in the rollup table).
+ */
+async function writeRunReceiptAndRollup(
+  engine: BrainEngine,
+  sourceId: string,
+  result: ExtractConversationFactsResult,
+  halted: boolean,
+): Promise<void> {
+  const now = new Date().toISOString();
+  // run_id: stable-ish identifier for this run. Includes day so multiple
+  // runs of the same source on different days don't collide on the
+  // receipt slug. shortRunId() truncates to 8 chars.
+  const runId = `ecf-${Date.now().toString(36)}-${sourceId.slice(0, 4)}`;
+
+  // Receipt write: only when the run actually inserted facts.
+  if (result.facts_inserted > 0) {
+    try {
+      await writeReceipt(engine, {
+        kind: 'facts.conversation',
+        source_id: sourceId,
+        run_id: runId,
+        round: 'full',
+        extracted_at: now,
+        total_rows: result.facts_inserted,
+        cost_usd: result.spent_usd ?? 0,
+        summary: `Extracted ${result.facts_inserted} facts from ${result.pages_processed}/${result.pages_considered} eligible pages.`,
+      });
+    } catch (err) {
+      // Best-effort: receipt write failure shouldn't kill the run.
+      // The audit trail lives in the facts table (terminal rows) +
+      // optionally the new audit JSONL once wired.
+      const msg = (err as Error).message || String(err);
+      console.error(`[extract-conversation-facts] receipt write failed: ${msg}`);
+    }
+  }
+
+  // Rollup UPSERT: ALWAYS fire so doctor's extract_health sees the
+  // cycle ran (even no-op runs are signal — they prove the extractor
+  // was alive). Best-effort per F-OUT-19.
+  await upsertExtractRollup(engine, {
+    kind: 'facts.conversation',
+    source_id: sourceId,
+    cost_delta: result.spent_usd ?? 0,
+    round_completed_delta: halted ? 0 : 1,
+    halt_delta: halted ? 1 : 0,
+  });
 }
 
 /**

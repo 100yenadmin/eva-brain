@@ -93,6 +93,39 @@ function textResult(text, details = {}) {
   return { content: [{ type: "text", text }], details };
 }
 
+function commandText(result) {
+  const text = result.ok ? result.stdout : result.stderr || result.stdout;
+  return String(text || "").trim();
+}
+
+function commandBlock(label, result) {
+  const status = result.ok ? "ok" : "failed";
+  const text = commandText(result) || "(no output)";
+  return `## ${label} (${status})\n${text}`;
+}
+
+function optionalStringParam(params, name) {
+  const value = params && typeof params[name] === "string" ? params[name].trim() : "";
+  return value || undefined;
+}
+
+function optionalSourceId(params) {
+  const sourceId = optionalStringParam(params, "sourceId");
+  if (!sourceId) return { ok: true, sourceId: undefined };
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/u.test(sourceId)) {
+    return {
+      ok: false,
+      error: `Invalid sourceId "${sourceId}". Use a registered GBrain source id such as "workspace-docs" or "openclaw-support-kb".`,
+    };
+  }
+  return { ok: true, sourceId };
+}
+
+function appendSourceArg(args, sourceId, flag = "--source") {
+  if (sourceId) args.push(flag, sourceId);
+  return args;
+}
+
 function readEnvFile(envFile) {
   if (!envFile || !existsSync(envFile)) return {};
   try {
@@ -681,18 +714,21 @@ export default definePluginEntry({
     api.registerTool(
       {
         name: "gbrain_status",
-        description: "Check the local Eva Brain/GBrain installation status.",
+        description: "Check local Eva Brain/GBrain runtime, brain health, and source inventory.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
         execute: async () => {
           const version = await runGbrain(config, ["--version"]);
-          const sources = await runGbrain(config, ["sources", "list"], { maxBytes: 24_000 });
+          const status = await runGbrain(config, ["status", "--json"], { maxBytes: 80_000 });
+          const doctor = await runGbrain(config, ["doctor", "--scope=brain", "--json"], { maxBytes: 120_000 });
+          const sources = await runGbrain(config, ["sources", "list", "--json"], { maxBytes: 48_000 });
           return textResult(
             [
-              version.ok ? version.stdout.trim() : `gbrain version failed: ${version.stderr.trim()}`,
-              "",
-              sources.ok ? sources.stdout.trim() : `gbrain sources failed: ${sources.stderr.trim()}`,
+              commandBlock("version", version),
+              commandBlock("status", status),
+              commandBlock("brain doctor", doctor),
+              commandBlock("sources", sources),
             ].join("\n"),
-            { version, sources },
+            { version, status, doctor, sources },
           );
         },
       },
@@ -710,6 +746,10 @@ export default definePluginEntry({
           properties: {
             query: { type: "string" },
             limit: { type: "number" },
+            sourceId: {
+              type: "string",
+              description: "Optional source id to search, for example workspace-docs or openclaw-support-kb.",
+            },
           },
         },
         execute: async (_toolCallId, params) => {
@@ -718,7 +758,10 @@ export default definePluginEntry({
             ? Math.max(1, Math.min(20, Math.floor(params.limit)))
             : 5;
           if (!query) return textResult("Missing required query.", { ok: false });
-          const result = await runGbrain(config, ["search", query, "--limit", String(limit)]);
+          const source = optionalSourceId(params);
+          if (!source.ok) return textResult(source.error, { ok: false });
+          const args = appendSourceArg(["search", query, "--limit", String(limit)], source.sourceId);
+          const result = await runGbrain(config, args);
           return textResult(result.ok ? result.stdout.trim() : result.stderr.trim(), result);
         },
       },
@@ -735,16 +778,117 @@ export default definePluginEntry({
           required: ["question"],
           properties: {
             question: { type: "string" },
+            sourceId: {
+              type: "string",
+              description: "Optional source id to query, for example workspace-docs or openclaw-support-kb.",
+            },
           },
         },
         execute: async (_toolCallId, params) => {
           const question = typeof params?.question === "string" ? params.question.trim() : "";
           if (!question) return textResult("Missing required question.", { ok: false });
-          const result = await runGbrain(config, ["query", question]);
+          const source = optionalSourceId(params);
+          if (!source.ok) return textResult(source.error, { ok: false });
+          const args = appendSourceArg(["query", question], source.sourceId);
+          const result = await runGbrain(config, args);
           return textResult(result.ok ? result.stdout.trim() : result.stderr.trim(), result);
         },
       },
       { name: "gbrain_query" },
+    );
+
+    api.registerTool(
+      {
+        name: "gbrain_doctor",
+        description: "Run GBrain doctor. Defaults to --scope=brain so skill/plugin warnings do not hide brain health.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            scope: {
+              type: "string",
+              enum: ["brain", "all"],
+              description: "brain for data/runtime health only, or all for full install/skill checks.",
+            },
+          },
+        },
+        execute: async (_toolCallId, params) => {
+          const scope = optionalStringParam(params, "scope") ?? "brain";
+          if (scope !== "brain" && scope !== "all") {
+            return textResult('Invalid scope. Use "brain" or "all".', { ok: false });
+          }
+          const args = scope === "brain" ? ["doctor", "--scope=brain", "--json"] : ["doctor", "--json"];
+          const result = await runGbrain(config, args, { maxBytes: 120_000 });
+          return textResult(commandText(result), result);
+        },
+      },
+      { name: "gbrain_doctor" },
+    );
+
+    api.registerTool(
+      {
+        name: "gbrain_extract_status",
+        description: "Read extractor receipts and rollups with optional source/kind filters.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            sourceId: {
+              type: "string",
+              description: "Optional source id filter, for example workspace-docs or openclaw-support-kb.",
+            },
+            kind: { type: "string", description: "Optional extractable kind filter." },
+            verbose: { type: "boolean", description: "Show all rows instead of the default top rows." },
+          },
+        },
+        execute: async (_toolCallId, params) => {
+          const source = optionalSourceId(params);
+          if (!source.ok) return textResult(source.error, { ok: false });
+          const kind = optionalStringParam(params, "kind");
+          const args = ["extract", "status", "--json"];
+          appendSourceArg(args, source.sourceId, "--source-id");
+          if (kind) args.push("--kind", kind);
+          if (params?.verbose === true) args.push("--verbose");
+          const result = await runGbrain(config, args, { maxBytes: 80_000 });
+          return textResult(commandText(result), result);
+        },
+      },
+      { name: "gbrain_extract_status" },
+    );
+
+    api.registerTool(
+      {
+        name: "gbrain_extract_explain",
+        description: "Explain how an extractor kind resolves through the active schema pack.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind"],
+          properties: {
+            kind: { type: "string", description: "Extractor kind, such as facts.conversation or takes.proposed." },
+          },
+        },
+        execute: async (_toolCallId, params) => {
+          const kind = optionalStringParam(params, "kind");
+          if (!kind) return textResult("Missing required kind.", { ok: false });
+          const result = await runGbrain(config, ["extract", "--explain", kind, "--json"], { maxBytes: 80_000 });
+          return textResult(commandText(result), result);
+        },
+      },
+      { name: "gbrain_extract_explain" },
+    );
+
+    api.registerTool(
+      {
+        name: "gbrain_schema_active",
+        description: "Show the active GBrain schema pack and type taxonomy.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        execute: async () => {
+          const result = await runGbrain(config, ["schema", "active"], { maxBytes: 48_000 });
+          return textResult(commandText(result), result);
+        },
+      },
+      { name: "gbrain_schema_active" },
     );
 
     api.registerCli(
@@ -752,9 +896,9 @@ export default definePluginEntry({
         const gbrain = program.command("gbrain").description("Eva Brain/GBrain commands");
         gbrain
           .command("status")
-          .description("Check the local GBrain installation")
+          .description("Check the local GBrain runtime and brain status")
           .action(async () => {
-            const result = await runGbrain(config, ["--version"]);
+            const result = await runGbrain(config, ["status", "--json"], { maxBytes: 80_000 });
             if (result.ok) {
               console.log(result.stdout.trim());
             } else {

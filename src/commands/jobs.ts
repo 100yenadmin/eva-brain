@@ -1614,7 +1614,44 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
     });
   });
 
-  process.stderr.write('[minion worker] brain-health-100 handlers registered (11 ops, 3 protected) + embed-backfill (v0.40) + embed-catch-up (v0.42)\n');
+  // v0.42 type-unification (T10): unify-types PROTECTED handler. Pack-upgrade
+  // migration that retypes 25K+ pages, creates alias rows, converts edge-
+  // shaped pages to link rows, AND flips the active pack at end of run.
+  // manual_only via src/core/onboard/render.ts:MANUAL_ONLY_PROTECTED_JOBS.
+  // Operator path: `gbrain jobs submit unify-types --allow-protected --params
+  // '{"target_pack":"gbrain-base-v2"}'`.
+  worker.register('unify-types', async (job) => {
+    const { runUnifyTypes } = await import('../core/schema-pack/unify-types-handler.ts');
+    const data = (job.data ?? {}) as {
+      target_pack?: string;
+      apply?: boolean;
+      sourceId?: string;
+    };
+    if (!data.target_pack) {
+      throw new Error(`unify-types: missing required 'target_pack' parameter`);
+    }
+    // Build a minimal OperationContext shim. Real context is constructed
+    // by the CLI/MCP dispatch layer; handlers don't have one, so we build
+    // one with engine + null cfg + remote=false (trusted local caller —
+    // PROTECTED handler enforced at submit_job).
+    const ctx = {
+      engine,
+      cfg: null,
+      remote: false,
+    } as unknown as import('../core/operations.ts').OperationContext;
+    return await runUnifyTypes(ctx, {
+      target_pack: data.target_pack,
+      apply: data.apply ?? true,            // worker invocation defaults to apply
+      sourceId: data.sourceId,
+      onProgress: (msg: string) => {
+        // Stream to job.updateProgress (DB-backed) AND stderr (operator visibility).
+        job.updateProgress({ phase: 'unify-types', message: msg }).catch(() => {});
+        process.stderr.write(msg + '\n');
+      },
+    });
+  });
+
+  process.stderr.write('[minion worker] brain-health-100 handlers registered (12 ops, 4 protected) + embed-backfill (v0.40) + embed-catch-up (v0.42) + unify-types (v0.42)\n');
 
   // Plugin discovery — one line per discovered plugin (mirrors the
   // openclaw-seam startup line convention from v0.11+). Loaded

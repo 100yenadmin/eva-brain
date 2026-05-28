@@ -144,6 +144,32 @@ CREATE TRIGGER bump_page_generation_trg
   FOR EACH ROW
   EXECUTE FUNCTION bump_page_generation_fn();
 
+-- v0.41.19.0 (D18/D19, mirror of src/schema.sql): global page-generation
+-- clock + statement-level trigger. See src/schema.sql for the full
+-- rationale comment. Layer 1 bookmark reads page_generation_clock.value;
+-- per-row pages.generation above stays as the Layer 2 (per-page snapshot)
+-- substrate.
+CREATE TABLE IF NOT EXISTS page_generation_clock (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  value BIGINT  NOT NULL DEFAULT 0
+);
+INSERT INTO page_generation_clock (id, value)
+  VALUES (1, COALESCE((SELECT MAX(generation) FROM pages), 0))
+  ON CONFLICT (id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION bump_page_generation_clock_fn() RETURNS trigger AS $func$
+BEGIN
+  UPDATE page_generation_clock SET value = value + 1 WHERE id = 1;
+  RETURN NULL;
+END;
+$func$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS bump_page_generation_clock_trg ON pages;
+CREATE TRIGGER bump_page_generation_clock_trg
+  AFTER INSERT OR UPDATE OR DELETE ON pages
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION bump_page_generation_clock_fn();
+
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
@@ -952,6 +978,24 @@ CREATE TRIGGER trg_pages_search_vector
 -- pages.timeline (markdown) still feeds search_vector via trg_pages_search_vector.
 DROP TRIGGER IF EXISTS trg_timeline_search_vector ON timeline_entries;
 DROP FUNCTION IF EXISTS update_page_search_vector_from_timeline();
+
+-- v0.42 type-unification (T1, plan D1+D11+D17): slug_aliases backs the
+-- concept-redirect → alias-table migration. Wikilinks like
+-- [[old-redirect-slug]] resolve to canonical via engine.resolveSlugWithAlias
+-- short-circuit. Source-scoped throughout (codex F12: dangling_aliases
+-- doctor check joins on (source_id, alias_slug)).
+CREATE TABLE IF NOT EXISTS slug_aliases (
+  id             BIGSERIAL PRIMARY KEY,
+  source_id      TEXT NOT NULL,
+  alias_slug     TEXT NOT NULL,
+  canonical_slug TEXT NOT NULL,
+  notes          TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT slug_aliases_no_self CHECK (alias_slug <> canonical_slug),
+  CONSTRAINT slug_aliases_uniq UNIQUE (source_id, alias_slug)
+);
+CREATE INDEX IF NOT EXISTS slug_aliases_canonical_idx
+  ON slug_aliases (source_id, canonical_slug);
 `;
 
 /**

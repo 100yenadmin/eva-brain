@@ -181,6 +181,48 @@ CREATE TRIGGER bump_page_generation_trg
 -- CREATE INDEX since the table is empty.
 CREATE INDEX IF NOT EXISTS pages_generation_idx ON pages (generation);
 
+-- v0.41.19.0 (D18/D19, codex outside-voice): global page-generation clock.
+-- The pre-v0.41.19.0 Layer 1 bookmark read `MAX(generation) FROM pages` to
+-- detect "writes happened since cache-store". Two bugs in that contract:
+--   1. The row-level trigger above sets `NEW.generation = OLD.generation + 1`
+--      on UPDATE. Updating a NON-MAX page didn't advance MAX(generation),
+--      silently serving stale cached results.
+--   2. The trigger is `BEFORE INSERT OR UPDATE` so DELETE doesn't fire it
+--      at all — and even if it did, DELETE doesn't touch surviving rows,
+--      so MAX(generation) wouldn't budge.
+--
+-- The fix: a single-row counter, bumped per-statement (FOR EACH STATEMENT
+-- — codex CDX-4: per-row would turn 73K-row batch DELETE into 73K UPDATEs
+-- on the same counter, recreating the bottleneck this PR is fixing). Layer
+-- 1 reads `page_generation_clock.value` directly. The per-row
+-- `pages.generation` column above stays as the Layer 2 (per-page snapshot)
+-- substrate.
+--
+-- Seeded with COALESCE(MAX(pages.generation), 0) so existing query_cache
+-- rows stored under the old MAX semantics aren't all instantly invalidated
+-- on upgrade (their max_generation_at_store stamp compares cleanly against
+-- the seeded clock; future writes bump the clock, bookmark fires correctly).
+CREATE TABLE IF NOT EXISTS page_generation_clock (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  value BIGINT  NOT NULL DEFAULT 0
+);
+INSERT INTO page_generation_clock (id, value)
+  VALUES (1, COALESCE((SELECT MAX(generation) FROM pages), 0))
+  ON CONFLICT (id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION bump_page_generation_clock_fn() RETURNS trigger AS $func$
+BEGIN
+  UPDATE page_generation_clock SET value = value + 1 WHERE id = 1;
+  RETURN NULL;
+END;
+$func$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS bump_page_generation_clock_trg ON pages;
+CREATE TRIGGER bump_page_generation_clock_trg
+  AFTER INSERT OR UPDATE OR DELETE ON pages
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION bump_page_generation_clock_fn();
+
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
@@ -600,38 +642,9 @@ CREATE TABLE IF NOT EXISTS op_checkpoints (
 CREATE INDEX IF NOT EXISTS op_checkpoints_updated_at_idx
   ON op_checkpoints (updated_at);
 
--- ============================================================
--- migration_impact_log: before/after metric stats per onboard remediation
--- ============================================================
--- v0.41.18.0 (gbrain onboard wave). Every completion captured by the
--- onboard remediation pipeline records before/after metric stats so
--- `gbrain onboard --history --json` can show "you reduced orphans 47%".
--- delta computed at read time (NOT a stored GENERATED column —
--- zero PGLite parity risk per eng-review D2).
---
--- Attribution columns (job_id, source_id, brain_id, started_at,
--- idempotency_key) per codex finding #10 so concurrent onboard /
--- autopilot / manual runs can't misattribute deltas to the wrong
--- migration when overlapping runs change the same metric.
-CREATE TABLE IF NOT EXISTS migration_impact_log (
-  id              BIGSERIAL PRIMARY KEY,
-  remediation_id  TEXT      NOT NULL,
-  metric_name     TEXT      NOT NULL,
-  metric_before   NUMERIC,
-  metric_after    NUMERIC,
-  job_id          BIGINT    REFERENCES minion_jobs(id) ON DELETE SET NULL,
-  source_id       TEXT,
-  brain_id        TEXT,
-  started_at      TIMESTAMPTZ,
-  idempotency_key TEXT,
-  applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  applied_by      TEXT,
-  details         JSONB     DEFAULT '{}'::jsonb
-);
-CREATE INDEX IF NOT EXISTS migration_impact_log_remediation_idx
-  ON migration_impact_log(remediation_id, applied_at DESC);
-CREATE INDEX IF NOT EXISTS migration_impact_log_attribution_idx
-  ON migration_impact_log(job_id, source_id) WHERE job_id IS NOT NULL;
+-- migration_impact_log moved BELOW minion_jobs (was here, lines 645-676)
+-- because its `job_id BIGINT REFERENCES minion_jobs(id)` FK requires
+-- minion_jobs to exist FIRST during SCHEMA_SQL replay. v0.41.25.0 fix.
 
 -- ============================================================
 -- files: binary attachments stored in Supabase Storage
@@ -820,6 +833,50 @@ CREATE TABLE IF NOT EXISTS minion_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_minion_attachments_job ON minion_attachments (job_id);
 ALTER TABLE minion_attachments ALTER COLUMN content SET STORAGE EXTERNAL;
+
+-- ============================================================
+-- migration_impact_log: before/after metric stats per onboard remediation
+-- ============================================================
+-- v0.41.18.0 (gbrain onboard wave). Every completion captured by the
+-- onboard remediation pipeline records before/after metric stats so
+-- `gbrain onboard --history --json` can show "you reduced orphans 47%".
+-- delta computed at read time (NOT a stored GENERATED column —
+-- zero PGLite parity risk per eng-review D2).
+--
+-- Attribution columns (job_id, source_id, brain_id, started_at,
+-- idempotency_key) per codex finding #10 so concurrent onboard /
+-- autopilot / manual runs can't misattribute deltas to the wrong
+-- migration when overlapping runs change the same metric.
+--
+-- v0.41.25.0 SCHEMA_SQL ordering fix: this block lives AFTER the
+-- minion_jobs CREATE TABLE so the `job_id REFERENCES minion_jobs(id)`
+-- FK can resolve on fresh-install schema replay. Originally placed above
+-- minion_jobs in v0.41.18.0; that fired ERROR: relation "minion_jobs"
+-- does not exist on every fresh-install initSchema() (silent on master
+-- because postgres-js's unsafe() continued past the error, but the
+-- table never got created so any later query on migration_impact_log
+-- threw 42P01 — which cascaded as "relation minion_jobs does not exist"
+-- whenever subsequent statements that referenced minion_jobs ran AFTER
+-- the failed CREATE TABLE statement, aborting the entire SCHEMA_SQL batch).
+CREATE TABLE IF NOT EXISTS migration_impact_log (
+  id              BIGSERIAL PRIMARY KEY,
+  remediation_id  TEXT      NOT NULL,
+  metric_name     TEXT      NOT NULL,
+  metric_before   NUMERIC,
+  metric_after    NUMERIC,
+  job_id          BIGINT    REFERENCES minion_jobs(id) ON DELETE SET NULL,
+  source_id       TEXT,
+  brain_id        TEXT,
+  started_at      TIMESTAMPTZ,
+  idempotency_key TEXT,
+  applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  applied_by      TEXT,
+  details         JSONB     DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS migration_impact_log_remediation_idx
+  ON migration_impact_log(remediation_id, applied_at DESC);
+CREATE INDEX IF NOT EXISTS migration_impact_log_attribution_idx
+  ON migration_impact_log(job_id, source_id) WHERE job_id IS NOT NULL;
 
 -- ============================================================
 -- Subagent runtime (v0.16.0) — durable LLM loops

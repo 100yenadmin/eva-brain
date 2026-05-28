@@ -35,7 +35,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser']);
+const CLI_ONLY = new Set(['init', 'reinit-pglite', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status']);
 // CLI-only commands whose handlers print their own --help text. These are
 // excluded from the generic short-circuit so detailed per-command and
 // per-subcommand usage stays reachable.
@@ -1175,6 +1175,20 @@ async function handleCliOnly(command: string, args: string[]) {
     }
   }
 
+  // v0.41.19.0: `gbrain status` on thin-client installs bypasses connectEngine
+  // entirely — Sync + Cycle route through the `get_status_snapshot` MCP op,
+  // and local-only sections render as "N/A on remote brain". Local mode falls
+  // through to the engine-connected dispatch path below. (`args` here is the
+  // subArgs slice already — no need to re-slice past the command.)
+  if (command === 'status') {
+    const cfgPre = loadConfig();
+    if (cfgPre && isThinClient(cfgPre)) {
+      const { runStatus } = await import('./commands/status.ts');
+      const result = await runStatus(null, args);
+      process.exit(result.exitCode);
+    }
+  }
+
   // v0.37 fix wave (Lane D.4 + CDX2-12): short-circuit `gbrain sync --help`
   // BEFORE the engine bind. runSync has its own --help branch but can't
   // reach it without an engine — which means a user running `--help` from
@@ -1420,6 +1434,17 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'anomalies': {
         const { runAnomalies } = await import('./commands/anomalies.ts');
         await runAnomalies(engine, args);
+        break;
+      }
+      // v0.41.19.0 — `gbrain status`: single-screen brain health dashboard.
+      // CLI-only with own thin-client branch INSIDE runStatus (per D2 + codex
+      // MAJOR-4 architecture). Composes existing exports: buildSyncStatusReport,
+      // readSupervisorEvents, gbrain_cycle_locks, minion_jobs.
+      case 'status': {
+        const { runStatus } = await import('./commands/status.ts');
+        const result = await runStatus(engine, args);
+        process.exit(result.exitCode);
+        // eslint-disable-next-line no-unreachable
         break;
       }
       // v0.38 — Capture: single human-facing entrypoint for ingestion.
