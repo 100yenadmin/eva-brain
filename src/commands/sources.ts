@@ -579,10 +579,24 @@ async function runFederate(engine: BrainEngine, args: string[], value: boolean):
 }
 
 async function runCycleFreshness(engine: BrainEngine, args: string[]): Promise<void> {
+  return runSourceFreshnessFlag(engine, args, 'cycle_freshness', 'cycle freshness');
+}
+
+async function runSyncFreshness(engine: BrainEngine, args: string[]): Promise<void> {
+  return runSourceFreshnessFlag(engine, args, 'sync_freshness', 'sync freshness');
+}
+
+async function runSourceFreshnessFlag(
+  engine: BrainEngine,
+  args: string[],
+  key: 'cycle_freshness' | 'sync_freshness',
+  label: string,
+): Promise<void> {
   const id = args[0];
   const mode = args[1];
   if (!id || !mode || !['on', 'off'].includes(mode)) {
-    console.error('Usage: gbrain sources cycle-freshness <id> <on|off>');
+    const command = key === 'cycle_freshness' ? 'cycle-freshness' : 'sync-freshness';
+    console.error(`Usage: gbrain sources ${command} <id> <on|off>`);
     process.exit(2);
   }
   const src = await fetchSource(engine, id);
@@ -593,16 +607,16 @@ async function runCycleFreshness(engine: BrainEngine, args: string[]): Promise<v
 
   const config = parseConfig(src.config);
   if (mode === 'off') {
-    config.cycle_freshness = false;
+    config[key] = false;
   } else {
-    delete config.cycle_freshness;
+    delete config[key];
   }
   await engine.executeRaw(
     `UPDATE sources SET config = $1::jsonb WHERE id = $2`,
     [JSON.stringify(config), id],
   );
 
-  console.log(`Source "${id}" cycle freshness check ${mode === 'off' ? 'disabled' : 'enabled'}.`);
+  console.log(`Source "${id}" ${label} check ${mode === 'off' ? 'disabled' : 'enabled'}.`);
 }
 
 // ── v0.40 sources status (D12) ──────────────────────────────
@@ -1138,6 +1152,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'federate':   return runFederate(engine, rest, true);
     case 'unfederate': return runFederate(engine, rest, false);
     case 'cycle-freshness': return runCycleFreshness(engine, rest);
+    case 'sync-freshness': return runSyncFreshness(engine, rest);
     case 'archive':    return runArchive(engine, rest);
     case 'restore':    return runRestore(engine, rest);
     case 'purge':      return runPurge(engine, rest);
@@ -1203,6 +1218,8 @@ Subcommands:
   unfederate <id>                   Isolate source from default search.
   cycle-freshness <id> <on|off>     Enable/disable doctor's full-cycle freshness
                                     check for updater-managed sources.
+  sync-freshness <id> <on|off>      Enable/disable doctor's git-sync freshness
+                                    check for updater-managed import sources.
   set-cr-mode <id> <none|title|per_chunk_synopsis>
                                     Per-source contextual retrieval mode
                                     override (v0.40.3.0). Pass "unset" or

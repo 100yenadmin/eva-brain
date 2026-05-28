@@ -431,14 +431,23 @@ install_support_kb() {
 }
 
 disable_source_cycle_freshness_if_supported() {
+  disable_source_freshness_if_supported "$1" cycle-freshness
+}
+
+disable_source_sync_freshness_if_supported() {
+  disable_source_freshness_if_supported "$1" sync-freshness
+}
+
+disable_source_freshness_if_supported() {
   local source_id="$1"
+  local freshness_command="$2"
   local output
-  local cmd=("$HOME/.bun/bin/gbrain" sources cycle-freshness "$source_id" off)
+  local cmd=("$HOME/.bun/bin/gbrain" sources "$freshness_command" "$source_id" off)
   printf '+'
   printf ' %q' "${cmd[@]}"
   printf '\n'
   if [ "$DRY_RUN" = "true" ]; then
-    log "Dry-run: skipping optional cycle-freshness disable execution"
+    log "Dry-run: skipping optional $freshness_command disable execution"
     return
   fi
   if output="$("${cmd[@]}" 2>&1)"; then
@@ -447,8 +456,8 @@ disable_source_cycle_freshness_if_supported() {
   fi
   local normalized_output
   normalized_output="$(printf '%s' "$output" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
-  if [ "$normalized_output" = 'Unknown sources subcommand: cycle-freshness' ]; then
-    log "Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'."
+  if [ "$normalized_output" = "Unknown sources subcommand: $freshness_command" ]; then
+    log "Skipping $freshness_command disable; installed gbrain does not expose 'sources $freshness_command'."
     return
   fi
   printf '%s\n' "$output" >&2
@@ -481,6 +490,7 @@ install_workspace_docs() {
   run "$HOME/.bun/bin/gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed
   embed_source_if_provider_auth_available "$WORKSPACE_DOCS_SOURCE" "Workspace docs"
   disable_source_cycle_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"
+  disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"
 }
 
 main() {

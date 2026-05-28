@@ -99,6 +99,14 @@ if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
   fi
   exit 2
 fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "sync-freshness" ]; then
+  if [ "${cycleExit}" = "unknown" ]; then
+    echo "Unknown sources subcommand: sync-freshness" >&2
+  else
+    echo "Unknown sources subcommand: sync-freshness; database locked while updating source freshness" >&2
+  fi
+  exit 2
+fi
 exit 0
 `,
   );
@@ -140,6 +148,8 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('Skipping $label embedding because');
     expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
     expect(script).toContain('gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed');
+    expect(script).toContain('sources "$freshness_command" "$source_id" off');
+    expect(script).toContain('disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/init\s+--pglite\s+--embedding-model\s+voyage:voyage-4-large\s+--embedding-dimensions\s+2048/);
@@ -617,6 +627,10 @@ if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
   echo "cycle disabled"
   exit 0
 fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "sync-freshness" ]; then
+  echo "sync disabled"
+  exit 0
+fi
 exit 0
 `,
     );
@@ -688,6 +702,10 @@ if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
   echo "cycle disabled"
   exit 0
 fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "sync-freshness" ]; then
+  echo "sync disabled"
+  exit 0
+fi
 if [ "\${1:-}" = "import" ]; then
   exit 0
 fi
@@ -735,6 +753,7 @@ exit 0
     expect(result.exitCode).toBe(0);
     expect(stdout).toContain(`gbrain sources add workspace-docs --path ${docsDir}`);
     expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
+    expect(stdout).toContain('gbrain sources sync-freshness workspace-docs off');
     expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('workspace embed should have been skipped');
   });
