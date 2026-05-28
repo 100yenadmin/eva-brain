@@ -466,6 +466,16 @@ describe('v0.32.4 — sync_freshness check', () => {
     expect(result.message).toContain('gbrain sync --source <id>');
   });
 
+  test('config.sync_freshness=false skips updater-managed import sources', async () => {
+    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
+    const result = await checkSyncFreshness(makeStubEngine([
+      { id: 'workspace-docs', name: 'Workspace Docs', local_path: '/tmp/docs', last_sync_at: null, config: '{"sync_freshness":false}' },
+      { id: 'kb', name: '', local_path: '/tmp/kb', last_sync_at: agoMs(60 * 60 * 1000), config: '{}' },
+    ]));
+    expect(result.status).toBe('ok');
+    expect(result.message).toContain('1 updater-managed skipped');
+  });
+
   test('last_sync_at > 72h ago → fail with day-rounded "Nd ago"', async () => {
     const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
     const result = await checkSyncFreshness(makeStubEngine([

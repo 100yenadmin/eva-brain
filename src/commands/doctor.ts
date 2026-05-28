@@ -2700,8 +2700,9 @@ export async function checkSyncFreshness(
       name: string;
       local_path: string | null;
       last_sync_at: Date | null;
+      config?: unknown;
     }>(
-      `SELECT id, name, local_path, last_sync_at FROM sources WHERE local_path IS NOT NULL`,
+      `SELECT id, name, local_path, last_sync_at, config FROM sources WHERE local_path IS NOT NULL`,
     );
 
     if (sources.length === 0) {
@@ -2727,6 +2728,7 @@ export async function checkSyncFreshness(
     const issues: string[] = [];
     let hasWarnings = false;
     let hasFailures = false;
+    let skipped = 0;
 
     for (const source of sources) {
       // Embed source.id in user-visible messages so `gbrain sync --source <id>`
@@ -2734,6 +2736,11 @@ export async function checkSyncFreshness(
       const display = source.name && source.name !== source.id
         ? `'${source.id}' (${source.name})`
         : `'${source.id}'`;
+      const config = parseDoctorSourceConfig(source.config);
+      if (config.sync_freshness === false) {
+        skipped++;
+        continue;
+      }
 
       if (!source.last_sync_at) {
         issues.push(`Source ${display} has never been synced`);
@@ -2781,7 +2788,9 @@ export async function checkSyncFreshness(
     return {
       name: 'sync_freshness',
       status: 'ok',
-      message: `All ${sources.length} federated source(s) synced recently`,
+      message: skipped > 0
+        ? `All ${sources.length - skipped} sync-managed source(s) synced recently (${skipped} updater-managed skipped)`
+        : `All ${sources.length} federated source(s) synced recently`,
     };
   } catch (e) {
     return {
@@ -2790,6 +2799,19 @@ export async function checkSyncFreshness(
       message: `Could not check sync freshness: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
+}
+
+function parseDoctorSourceConfig(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === 'object' ? raw as Record<string, unknown> : {};
 }
 
 /**
