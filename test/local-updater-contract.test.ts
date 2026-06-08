@@ -506,6 +506,70 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(existsSync(installDir)).toBe(false);
   });
 
+  test('local updater restores missing Bun-global gbrain shim from checked-out CLI', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(
+      join(repo, 'src/cli.ts'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "version" ]; then
+  echo "gbrain test"
+  exit 0
+fi
+echo "unexpected gbrain args: $*" >&2
+exit 3
+`,
+    );
+    chmodSync(join(repo, 'src/cli.ts'), 0o755);
+    runGit(repo, ['add', 'src/cli.ts']);
+    runGit(repo, ['commit', '-m', 'add fake cli']);
+
+    const binDir = join(home, '.bun/bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'bun'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(binDir, 'bun'), 0o755);
+
+    const installDir = join(home, 'eva-brain');
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        installDir,
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--without-workspace-docs',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stderr).toContain('Restoring missing gbrain CLI shim');
+    expect(lstatSync(join(binDir, 'gbrain')).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(binDir, 'gbrain'))).toBe(join(installDir, 'src/cli.ts'));
+  });
+
   test('local updater archives dirty Support KB checkouts before reinstalling', () => {
     const home = tempHome();
     const repo = makeRepoWithEvaTags(home, []);
