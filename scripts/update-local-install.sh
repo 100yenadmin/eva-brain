@@ -192,11 +192,35 @@ ensure_bun() {
   die "Bun is required. Install it from https://bun.sh, then rerun this script."
 }
 
+ensure_gbrain_cli() {
+  if [ "$DRY_RUN" = "true" ]; then
+    return
+  fi
+
+  local global_bin="$HOME/.bun/bin/gbrain"
+  local checkout_bin="$INSTALL_DIR/src/cli.ts"
+
+  if [ -x "$global_bin" ]; then
+    return
+  fi
+
+  if [ -x "$checkout_bin" ]; then
+    log "Restoring missing gbrain CLI shim: $global_bin -> $checkout_bin"
+    run mkdir -p "$(dirname "$global_bin")"
+    run ln -sfn "$checkout_bin" "$global_bin"
+  fi
+
+  if [ ! -x "$global_bin" ]; then
+    die "gbrain CLI was not linked at $global_bin. Run from a valid Eva Brain checkout or reinstall with Bun, then rerun this updater."
+  fi
+}
+
 install_gbrain() {
   ensure_bun
   export PATH="$HOME/.bun/bin:$PATH"
   run bun install
   run bun link
+  ensure_gbrain_cli
   stop_stale_serve_if_requested
   local config_path="$GBRAIN_DIR/config.json"
   if [ -f "$config_path" ]; then
