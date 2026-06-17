@@ -469,11 +469,18 @@ function captureConsole() {
   const err: string[] = [];
   const origLog = console.log;
   const origErr = console.error;
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
   console.log = (...a: unknown[]) => { out.push(a.join(' ')); };
   console.error = (...a: unknown[]) => { err.push(a.join(' ')); };
+  process.stdout.write = ((chunk: unknown, ...args: unknown[]) => {
+    out.push(String(chunk).replace(/\n$/, ''));
+    const cb = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
+    if (cb) cb();
+    return true;
+  }) as typeof process.stdout.write;
   return {
     out, err,
-    restore() { console.log = origLog; console.error = origErr; },
+    restore() { console.log = origLog; console.error = origErr; process.stdout.write = origStdoutWrite; },
   };
 }
 

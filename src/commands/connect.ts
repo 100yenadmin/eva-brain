@@ -673,6 +673,10 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
+function writeCliOutput(text: string): void {
+  process.stdout.write(`${text}\n`);
+}
+
 /** Resolve OAuth creds from explicit flags or by registering a client on the host. */
 function resolveOAuthCreds(f: ParsedFlags, url: string, deps: ConnectDeps): OAuthCreds {
   const issuer = issuerFromMcpUrl(url);
@@ -726,9 +730,9 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     resolveOAuthCreds(f, url, deps);
     const issuer = issuerFromMcpUrl(url);
     if (f.json) {
-      console.log(JSON.stringify(buildRedactedOAuthJson({ url, name: f.name, agent: f.agent, issuer, scopes: f.scopes }), null, 2));
+      writeCliOutput(JSON.stringify(buildRedactedOAuthJson({ url, name: f.name, agent: f.agent, issuer, scopes: f.scopes }), null, 2));
     } else {
-      console.log(redactedOAuthBlock({ agent: f.agent, issuer }));
+      writeCliOutput(redactedOAuthBlock({ agent: f.agent, issuer }));
     }
     return;
   }
@@ -737,9 +741,9 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     // Print mode is documentation-only: do not read or carry a bearer secret
     // through the render path. Users paste/create their token separately.
     if (f.json) {
-      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
+      writeCliOutput(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
     } else {
-      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
+      writeCliOutput(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
     }
     return;
   }
