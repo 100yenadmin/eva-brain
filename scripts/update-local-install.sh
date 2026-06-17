@@ -325,7 +325,7 @@ provider_test() {
     log "Skipping Voyage provider probe because VOYAGE_API_KEY is not set"
     return
   fi
-  run "$HOME/.bun/bin/gbrain" providers test --model voyage:voyage-4-large
+  run "$HOME/.bun/bin/gbrain" providers test
 }
 
 configured_embedding_model() {

@@ -142,6 +142,8 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/GBRAIN_DIR="\$GBRAIN_ROOT\/\.gbrain"/);
     expect(script).toMatch(/GBRAIN_ENV_FILE="\$\{GBRAIN_ENV_FILE:-\$GBRAIN_DIR\/gbrain\.env\}"/);
     expect(script).toContain('load_gbrain_env');
+    expect(script).toMatch(/run "\$HOME\/\.bun\/bin\/gbrain" providers test\b/);
+    expect(script).not.toContain('providers test --model voyage:voyage-4-large');
     expect(script).toContain('ORIGINAL_ARGS=("$@")');
     expect(script).toContain('reexec_from_checked_out_updater');
     expect(script).toContain('EVA_BRAIN_UPDATER_REEXECED=1');
