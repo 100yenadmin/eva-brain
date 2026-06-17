@@ -84,7 +84,10 @@ describe('doctor command', () => {
   });
 
   test('content-sanity doctor filters stale soft-block audit rows', async () => {
-    const { filterCurrentContentSanityEvents } = await import('../src/commands/doctor.ts');
+    const {
+      classifyContentSanityAuditStatus,
+      filterCurrentContentSanityEvents,
+    } = await import('../src/commands/doctor.ts');
     const events = [
       {
         ts: '2026-05-28T00:00:00.000Z',
@@ -130,6 +133,37 @@ describe('doctor command', () => {
       'current/huge-export',
       'current/large-doc',
     ]);
+
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 0,
+        reject: 0,
+        quarantine: 0,
+        soft_block: 0,
+        flag: 1,
+        warn: 57,
+      },
+    })).toBe('ok');
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 0,
+        reject: 0,
+        quarantine: 0,
+        soft_block: 1,
+        flag: 0,
+        warn: 0,
+      },
+    })).toBe('warn');
+    expect(classifyContentSanityAuditStatus({
+      by_type: {
+        hard_block: 0,
+        reject: 0,
+        quarantine: 1,
+        soft_block: 0,
+        flag: 0,
+        warn: 0,
+      },
+    })).toBe('fail');
   });
 
   // v0.12.2 reliability wave — doctor detects JSONB double-encode + truncated
@@ -1381,7 +1415,7 @@ describe('v0.42 (#1699) — quarantined_pages + flagged_pages checks', () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
     expect(source).toContain("progress.heartbeat('quarantined_pages')");
     expect(source).toContain("progress.heartbeat('flagged_pages')");
-    // quarantine HIDES (JSONB existence scan), content_flag WARNS.
+    // quarantine HIDES (JSONB existence scan), content_flag is advisory.
     expect(source).toContain("p.frontmatter ? 'quarantine'");
     expect(source).toContain("p.frontmatter ? 'content_flag'");
     // Each emits a named check.
