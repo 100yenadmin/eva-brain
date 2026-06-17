@@ -585,7 +585,7 @@ interface ParsedFlags {
   token?: string;
   name: string;
   agent: AgentId;
-  oauth: boolean;
+  useOAuth: boolean;
   register: boolean;
   clientId?: string;
   clientSecret?: string;
@@ -605,7 +605,7 @@ function parseArgs(args: string[]): ParsedFlags {
   const out: ParsedFlags = {
     name: DEFAULT_NAME,
     agent: 'claude-code',
-    oauth: false,
+    useOAuth: false,
     register: false,
     scopes: DEFAULT_SCOPES,
     install: false,
@@ -635,7 +635,7 @@ function parseArgs(args: string[]): ParsedFlags {
     switch (a) {
       case '--help': case '-h': out.help = true; break;
       case '--install': out.install = true; break;
-      case '--oauth': out.oauth = true; break;
+      case '--oauth': out.useOAuth = true; break;
       case '--register': out.register = true; break;
       case '--yes': case '-y': out.yes = true; break;
       case '--force': out.force = true; break;
@@ -716,7 +716,7 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   const spec = AGENT_SPECS[f.agent];
 
   // ---- OAuth path (connector-style agents only; no --install) ----
-  if (f.oauth) {
+  if (f.useOAuth) {
     if (!spec.supportsOAuth) {
       fail(`--oauth (client credentials) is for connector-style agents (${AGENT_IDS.filter((a) => AGENT_SPECS[a].supportsOAuth).join(', ')}). ${spec.label} uses the bearer path — drop --oauth.`);
     }
