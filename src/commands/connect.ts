@@ -738,11 +738,18 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   if (tok.kind === 'error') fail(tok.error);
 
   if (!f.install) {
-    const printableToken = tok.kind === 'literal' ? REDACTED : null;
     if (f.json) {
-      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: printableToken, showToken: f.showToken }), null, 2));
+      if (tok.kind === 'literal') {
+        console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: REDACTED, showToken: f.showToken }), null, 2));
+      } else {
+        console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
+      }
     } else {
-      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: printableToken }));
+      if (tok.kind === 'literal') {
+        console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: REDACTED }));
+      } else {
+        console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
+      }
     }
     return;
   }
