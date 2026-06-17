@@ -7,7 +7,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const DEFAULT_GBRAIN_BIN = "gbrain";
 const DEFAULT_OPENCLAW_BIN = "openclaw";
-const DEFAULT_EXTRACTION_MODEL = "openai-codex/gpt-5.4-mini";
+const DEFAULT_EXTRACTION_MODEL = "openai/gpt-5.4-mini";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_ENV_FILE = join(homedir(), ".gbrain", "gbrain.env");
 const DEFAULT_MAX_CONCURRENT_EXTRACTIONS = 1;
@@ -400,7 +400,7 @@ async function handleExtractionRoute(config, req, res) {
     writeJson(res, 200, {
       ok: true,
       protocol: "gbrain.media-extraction.v1",
-      provider: "openai-codex",
+      provider: "openai",
       model: resolveExtractionModel(request.model, config.extractionModel),
       extraction,
     });
@@ -430,12 +430,15 @@ async function handleExtractionRoute(config, req, res) {
 
 function resolveExtractionModel(requested, fallback) {
   const model = normalizeOptionalString(requested) ?? fallback;
-  const resolved = model.includes("/") ? model : `openai-codex/${model}`;
-  if (!resolved.startsWith("openai-codex/") || resolved.slice("openai-codex/".length).trim() === "") {
+  const namespaced = model.includes("/") ? model : `openai/${model}`;
+  const resolved = namespaced.startsWith("openai-codex/")
+    ? `openai/${namespaced.slice("openai-codex/".length)}`
+    : namespaced;
+  if (!resolved.startsWith("openai/") || resolved.slice("openai/".length).trim() === "") {
     throw new RequestError(
       400,
       "invalid_model",
-      "GBrain extraction only supports openai-codex/* models through the OpenClaw OAuth runtime.",
+      "GBrain extraction only supports openai/* models through the OpenClaw OAuth runtime.",
     );
   }
   return resolved;

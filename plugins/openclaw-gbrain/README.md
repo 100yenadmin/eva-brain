@@ -11,7 +11,7 @@ It provides:
 - authenticated `/plugins/gbrain/extract`
 
 The extraction route calls OpenClaw's gateway model runner with
-`openai-codex/gpt-5.4-mini` by default, so media/text extraction can use the
+`openai/gpt-5.4-mini` by default, so media/text extraction can use the
 logged-in OpenClaw/Codex runtime instead of asking users for a model API key.
 
 ## Install
@@ -84,7 +84,7 @@ needed:
           "gbrainBin": "/absolute/path/to/gbrain",
           "openclawBin": "/absolute/path/to/openclaw",
           "envFile": "/Users/lume/.gbrain/gbrain.env",
-          "extractionModel": "openai-codex/gpt-5.4-mini",
+          "extractionModel": "openai/gpt-5.4-mini",
           "timeoutMs": 120000,
           "maxConcurrentExtractions": 1,
           "extractionQueueLimit": 8,
@@ -121,7 +121,7 @@ default; the hard plugin cap is 20 MiB.
 gbrain --version
 gbrain status --json
 gbrain doctor --scope=brain --json
-openclaw infer model run --gateway --model openai-codex/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
+openclaw infer model run --gateway --model openai/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
 openclaw gbrain status
 ```
 

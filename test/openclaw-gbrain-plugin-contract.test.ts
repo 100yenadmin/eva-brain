@@ -17,7 +17,9 @@ describe('OpenClaw GBrain plugin boundary', () => {
     expect(pluginSource).toContain('"--gateway"');
     expect(pluginSource).not.toContain('"--local"');
     expect(pluginSource).toContain('protocol: "gbrain.media-extraction.v1"');
-    expect(pluginSource).toContain('provider: "openai-codex"');
+    expect(pluginSource).toContain('provider: "openai"');
+    expect(pluginSource).toContain('DEFAULT_EXTRACTION_MODEL = "openai/gpt-5.4-mini"');
+    expect(pluginSource).toContain('namespaced.startsWith("openai-codex/")');
   });
 
   test('keeps extraction pressure controls in the plugin config contract', () => {
