@@ -393,6 +393,37 @@ function genericOAuthBlock(p: { oauth: OAuthCreds }): string {
   ].join('\n');
 }
 
+function redactedOAuthBlock(p: { agent: AgentId; issuer: string }): string {
+  const lines = p.agent === 'generic'
+    ? [
+        '# Add an OAuth 2.1 (client-credentials) MCP server pointed at your gbrain:',
+        `#   URL:           ${p.issuer}/mcp`,
+        `#   Issuer URL:    ${p.issuer}`,
+      ]
+    : [
+        '# In Perplexity (Pro): Settings -> Connectors -> add a remote MCP server:',
+        `#   URL:           ${p.issuer}/mcp`,
+        '#   Auth:          OAuth 2.1 (client credentials)',
+        `#   Issuer URL:    ${p.issuer}`,
+      ];
+  lines.push(
+    `#   Client ID:     ${REDACTED}`,
+    `#   Client Secret: ${REDACTED}`,
+    '',
+  );
+  if (p.agent !== 'generic') {
+    lines.push(
+      'OAuth is the recommended path for Perplexity (a cloud service): the connector',
+      'mints short-lived, scoped access tokens instead of holding a long-lived secret.',
+      '',
+      PERPLEXITY_REMOTE_NOTE,
+      '',
+    );
+  }
+  lines.push(LEARN_INSTRUCTION, '', OAUTH_SECRET_NOTE);
+  return lines.join('\n');
+}
+
 export function buildConnectBlock(p: { agent: AgentId; name: string; url: string; token: string | null; oauth?: OAuthCreds }): string {
   if (p.oauth) {
     // OAuth is only emitted for connector-style agents (gated upstream).
@@ -404,6 +435,24 @@ export function buildConnectBlock(p: { agent: AgentId; name: string; url: string
     case 'perplexity': return perplexityBearerBlock(p);
     case 'generic': return genericBearerBlock(p);
   }
+}
+
+function buildRedactedOAuthJson(p: { url: string; name: string; agent: AgentId; issuer: string; scopes?: string }): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    agent: p.agent,
+    mcp_url: p.url,
+    name: p.name,
+    auth: 'oauth',
+    issuer_url: p.issuer,
+    client_id: REDACTED,
+    client_secret: REDACTED,
+    secret_redacted: true,
+    scopes: p.scopes ?? DEFAULT_SCOPES,
+    command: null,
+    command_argv: null,
+    learn_instruction: LEARN_INSTRUCTION,
+  };
 }
 
 export function buildJson(p: { url: string; name: string; agent: AgentId; token: string | null; showToken: boolean; oauth?: OAuthCreds; scopes?: string }): Record<string, unknown> {
@@ -674,17 +723,12 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     if (f.install) {
       fail(`--install is not supported with --oauth. ${spec.label} is configured through its UI; this prints the OAuth connector fields to paste.`);
     }
-    const oauth = resolveOAuthCreds(f, url, deps);
-    void oauth;
-    const printableOAuth: OAuthCreds = {
-      issuer: issuerFromMcpUrl(url),
-      clientId: REDACTED,
-      clientSecret: REDACTED,
-    };
+    resolveOAuthCreds(f, url, deps);
+    const issuer = issuerFromMcpUrl(url);
     if (f.json) {
-      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken, oauth: printableOAuth, scopes: f.scopes }), null, 2));
+      console.log(JSON.stringify(buildRedactedOAuthJson({ url, name: f.name, agent: f.agent, issuer, scopes: f.scopes }), null, 2));
     } else {
-      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null, oauth: printableOAuth }));
+      console.log(redactedOAuthBlock({ agent: f.agent, issuer }));
     }
     return;
   }
@@ -692,10 +736,9 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   const mode = f.install ? 'install' : 'print';
   const tok = resolveToken({ tokenFlag: f.token ?? null, env: deps.env(ENV_VAR) ?? null, mode });
   if (tok.kind === 'error') fail(tok.error);
-  const token: string | null = tok.kind === 'literal' ? tok.token : null;
 
   if (!f.install) {
-    const printableToken = token == null ? null : REDACTED;
+    const printableToken = tok.kind === 'literal' ? REDACTED : null;
     if (f.json) {
       console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: printableToken, showToken: f.showToken }), null, 2));
     } else {
@@ -705,7 +748,8 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   }
 
   // --install path. token is guaranteed literal here (install mode resolveToken).
-  const realToken = token as string;
+  if (tok.kind !== 'literal') fail('Install mode needs a token from --token or GBRAIN_REMOTE_TOKEN.');
+  const realToken = tok.token;
   if (!spec.installable) {
     fail(`--install supports claude-code and codex. ${spec.label} is set up through its own UI — drop --install to print the setup steps.`);
   }
