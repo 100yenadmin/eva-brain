@@ -1021,15 +1021,26 @@ Save it to the shell profile or to `~/.gbrain/gbrain.env`. Voyage is for
 embeddings. OpenClaw/Codex OAuth is used by the OpenClaw plugin for extraction;
 do not ask users for an OpenAI API key just to run Eva Brain extraction.
 
-Before initializing the brain, verify the provider you plan to use:
+Before initializing the brain, verify provider reachability:
 
 ```bash
 gbrain providers list
 gbrain providers explain
-gbrain providers test --model voyage:voyage-4-large
+gbrain providers test --model voyage:voyage-4-large  # pre-init key/model reachability check
 ```
 
-Without an embedding provider, keyword search still works but semantic/hybrid retrieval will not.
+After initializing or updating an existing Eva Brain install, verify the
+configured provider path instead of forcing a model on the command line:
+
+```bash
+gbrain providers test
+gbrain doctor --scope=brain --json
+```
+
+The configured-path check must report the dimensions stored in the brain config
+and schema, for example `2048 dims` for the Eva Voyage profile. Without an
+embedding provider, keyword search still works but semantic/hybrid retrieval
+will not.
 
 If you want Google, Ollama, LiteLLM, or another provider instead of Voyage, read:
 
