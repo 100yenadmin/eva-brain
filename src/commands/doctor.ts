@@ -122,6 +122,26 @@ export async function filterCurrentContentSanityEvents(
   return filtered;
 }
 
+export function classifyContentSanityAuditStatus(summary: {
+  by_type: {
+    hard_block: number;
+    reject: number;
+    quarantine: number;
+    soft_block: number;
+    flag: number;
+    warn: number;
+  };
+}): 'ok' | 'warn' | 'fail' {
+  const hardBlocked =
+    summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
+  if (hardBlocked > 0) return 'fail';
+  // soft_block means a page landed with embed_skip and may be missing vector
+  // coverage. `flag` and `warn` are advisory only: the page is searchable and
+  // agents see a retrieval warning, so they should not lower runtime health.
+  if (summary.by_type.soft_block > 0) return 'warn';
+  return 'ok';
+}
+
 /**
  * Structured doctor report. Stable shape consumed by:
  *   - gbrain doctor --json (CLI)
@@ -6330,29 +6350,17 @@ export async function buildChecks(
         .slice(0, 3)
         .map(([s, n]) => `${s}=${n}`)
         .join(', ');
-      // Audit events are evidence, not automatically breakage. A large code
-      // source can legitimately emit many WARN events (oversize/markup-heavy)
-      // while remaining searchable and intentionally flagged. Fail on hard
-      // dispositions (content actually blocked or hidden); warn on soft
-      // dispositions or volume. This keeps doctor from treating expected
-      // code-corpus telemetry as an unhealthy brain.
-      //
-      // v0.42 renamed the hard path: a rejected page emits `reject` and a
-      // quarantined (hidden) junk page emits `quarantine`; `hard_block` is now
-      // only the pre-v0.42 legacy alias. Counting `hard_block` alone let fresh
-      // junk-ingest evidence (`reject`/`quarantine`) clear as `ok` whenever
-      // fewer than 10 events landed. `flag` is a warn disposition (still
-      // searchable, agent warned on retrieval), so it joins `soft_block`.
+      // Audit events are evidence, not automatically breakage. Classification
+      // is centralized in classifyContentSanityAuditStatus(): hard dispositions
+      // fail, `soft_block` warns, and searchable `flag`/`warn` advisories stay ok.
       const hardBlocked =
         summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
-      const softBlocked = summary.by_type.soft_block + summary.by_type.flag;
-      const status: 'ok' | 'warn' | 'fail' =
-        hardBlocked > 0 ? 'fail' :
-          (softBlocked > 0 || events.length >= 10) ? 'warn' : 'ok';
+      const advisory = summary.by_type.flag + summary.by_type.warn;
+      const status = classifyContentSanityAuditStatus(summary);
       checks.push({
         name: 'content_sanity_audit_recent',
         status,
-        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
+        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft_block=${summary.by_type.soft_block} advisory=${advisory} [flag=${summary.by_type.flag} warn=${summary.by_type.warn}])${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
       });
     }
   } catch (err) {
@@ -6394,11 +6402,12 @@ export async function buildChecks(
       `SELECT COUNT(*)::int AS n FROM pages p WHERE p.deleted_at IS NULL AND p.frontmatter ? 'content_flag'`,
     );
     const n = Number(rows[0]?.n ?? 0);
-    // Flagged pages are "examine me", not "broken" — warn so they're visible
-    // but the message is non-alarming.
+    // Flagged pages are "examine me", not "broken": they remain searchable and
+    // agents receive a retrieval warning. Surface the count, but don't lower
+    // runtime health unless a page is actually quarantined/hidden above.
     checks.push({
       name: 'flagged_pages',
-      status: n > 0 ? 'warn' : 'ok',
+      status: 'ok',
       message: n > 0
         ? `${n} page(s) flagged (markup-heavy or oversize) — still searchable, agent warned on retrieval. Review with 'gbrain quarantine list --include-flagged'.`
         : 'No flagged pages',
