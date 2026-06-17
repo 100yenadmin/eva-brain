@@ -683,23 +683,25 @@ describe('runConnect --install', () => {
 });
 
 describe('runConnect print mode', () => {
-  test('prints the block to stdout with the token redacted', async () => {
+  test('prints a placeholder block without consuming the token', async () => {
     const r = await runWithExitCapture(
       ['https://brain.example.com/mcp', '--token', 'gbrain_tok'],
       installDeps(),
     );
     expect(r.exitCode).toBeUndefined();
-    expect(r.out.join('\n')).toContain(`claude mcp add gbrain -t http https://brain.example.com/mcp -H 'Authorization: Bearer ${REDACTED}'`);
+    expect(r.out.join('\n')).toContain(`claude mcp add gbrain -t http https://brain.example.com/mcp -H 'Authorization: Bearer ${PLACEHOLDER_TOKEN}'`);
     expect(r.out.join('\n')).not.toContain('gbrain_tok');
   });
 
-  test('--json redacts the token', async () => {
+  test('--json prints a placeholder template without consuming the token', async () => {
     const r = await runWithExitCapture(
       ['https://brain.example.com/mcp', '--token', 'gbrain_secret', '--json'],
       installDeps(),
     );
     const j = JSON.parse(r.out.join('\n'));
-    expect(j.token_redacted).toBe(true);
+    expect(j.token_present).toBe(false);
+    expect(j.token_redacted).toBe(false);
+    expect(j.header).toContain(PLACEHOLDER_TOKEN);
     expect(r.out.join('\n')).not.toContain('gbrain_secret');
   });
 
@@ -746,7 +748,7 @@ describe('runConnect print mode', () => {
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
     expect(out).toContain('codex mcp add gbrain --url https://brain.example.com/mcp --bearer-token-env-var GBRAIN_REMOTE_TOKEN');
-    expect(out).toContain(`export GBRAIN_REMOTE_TOKEN='${REDACTED}'`);
+    expect(out).toContain(`export GBRAIN_REMOTE_TOKEN='${PLACEHOLDER_TOKEN}'`);
     expect(out).not.toContain('gbrain_tok');
   });
 

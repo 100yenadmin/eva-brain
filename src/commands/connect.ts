@@ -733,26 +733,19 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
     return;
   }
 
-  const mode = f.install ? 'install' : 'print';
-  const tok = resolveToken({ tokenFlag: f.token ?? null, env: deps.env(ENV_VAR) ?? null, mode });
-  if (tok.kind === 'error') fail(tok.error);
-
   if (!f.install) {
+    // Print mode is documentation-only: do not read or carry a bearer secret
+    // through the render path. Users paste/create their token separately.
     if (f.json) {
-      if (tok.kind === 'literal') {
-        console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: REDACTED, showToken: f.showToken }), null, 2));
-      } else {
-        console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
-      }
+      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
     } else {
-      if (tok.kind === 'literal') {
-        console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: REDACTED }));
-      } else {
-        console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
-      }
+      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
     }
     return;
   }
+
+  const tok = resolveToken({ tokenFlag: f.token ?? null, env: deps.env(ENV_VAR) ?? null, mode: 'install' });
+  if (tok.kind === 'error') fail(tok.error);
 
   // --install path. token is guaranteed literal here (install mode resolveToken).
   if (tok.kind !== 'literal') fail('Install mode needs a token from --token or GBRAIN_REMOTE_TOKEN.');
