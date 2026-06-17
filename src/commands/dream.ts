@@ -66,9 +66,22 @@ interface DreamArgs {
    * until a follow-up CLI cleanup picks one. Supersedes PR #1559.
    */
   source: string | null;
+  /**
+   * issue #1678: bounded single-hold backlog drain. `--drain` (currently only
+   * for `--phase extract_atoms`) holds the cycle lock once and loops bounded
+   * batches, rediscovering eligibility each batch, until the backlog empties or
+   * `--window` seconds elapse. Reports {extracted, skipped, remaining}; exits
+   * non-zero when remaining > 0 so a cron/agent loop knows to run again.
+   */
+  drain: boolean;
+  /** Drain wallclock budget in seconds. Default 300 (5 min). */
+  windowSeconds: number;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DEFAULT_DRAIN_WINDOW_SECONDS = 300;
+/** Exit code for "drain ran but the backlog isn't empty — run again". */
+const EXIT_DRAIN_INCOMPLETE = 3;
 
 /**
  * Collect every occurrence of `--<flag> <value>` in argv. Used to
@@ -179,6 +192,28 @@ function parseArgs(args: string[]): DreamArgs {
   }
   const source = uniqSource[0] ?? uniqSourceId[0] ?? null;
 
+  // issue #1678: --drain [--window <seconds>]. Only extract_atoms is drainable
+  // this wave (it has a real eligibility predicate; synthesize_concepts does
+  // not — Codex #12). --drain with no --phase defaults to extract_atoms.
+  const drain = args.includes('--drain');
+  const windowIdx = args.indexOf('--window');
+  let windowSeconds = DEFAULT_DRAIN_WINDOW_SECONDS;
+  if (windowIdx !== -1) {
+    const raw = args[windowIdx + 1];
+    if (raw === undefined || !/^\d+$/.test(raw.trim()) || parseInt(raw, 10) <= 0) {
+      console.error(`--window must be a positive integer (seconds); got "${raw}"`);
+      process.exit(2);
+    }
+    windowSeconds = parseInt(raw, 10);
+  }
+  if (drain) {
+    if (!phase) phase = 'extract_atoms';
+    else if (phase !== 'extract_atoms') {
+      console.error(`--drain currently supports only --phase extract_atoms (got "${phase}")`);
+      process.exit(2);
+    }
+  }
+
   return {
     json: args.includes('--json'),
     dryRun: args.includes('--dry-run'),
@@ -192,24 +227,34 @@ function parseArgs(args: string[]): DreamArgs {
     to,
     bypassDreamGuard: args.includes('--unsafe-bypass-dream-guard'),
     source,
+    drain,
+    windowSeconds,
   };
 }
 
 /**
  * Resolve the brain directory without the `findRepoRoot` footgun.
  *
- * Prior dream.ts walked up 10 levels of cwd looking for `.git` and would
- * happily run lint + sync against an unrelated git repo the user happened
- * to be cd'd into. This resolver only trusts two sources:
- *   1. An explicit --dir argument.
- *   2. The `sync.repo_path` config key set by `gbrain init` (engine-backed).
+ * Resolution order (v0.41.30 — postgres support):
+ *   1. An explicit --dir argument (exits 1 if it doesn't exist — a real mistake).
+ *   2. T1: when --source resolved to a source that has an on-disk `local_path`,
+ *      use it (matches `gbrain sync`, lets that source's filesystem phases run).
+ *   3. The legacy `sync.repo_path` config key (pre-v0.18 default-source brains).
+ *   4. `null` — no local checkout. The cycle then SKIPS filesystem phases
+ *      (lint/backlinks/sync/synthesize/extract/patterns) with reason
+ *      `no_brain_dir` and runs the DB-only phases (resolve_symbol_edges, embed,
+ *      orphans, ...). This is what makes `gbrain dream` work on a postgres /
+ *      Supabase brain with no checkout. `runDream` owns the only hard error:
+ *      no checkout AND no engine = truly nothing to run.
  *
- * If neither is available, we error out instead of guessing.
+ * Still never walks cwd for a `.git` — only the explicit / source / config
+ * signals are trusted.
  */
 async function resolveBrainDir(
   engine: BrainEngine | null,
   explicit: string | null,
-): Promise<string> {
+  resolvedSourceId?: string,
+): Promise<string | null> {
   if (explicit) {
     if (!existsSync(explicit)) {
       console.error(`--dir path does not exist: ${explicit}`);
@@ -220,6 +265,22 @@ async function resolveBrainDir(
     return resolve(explicit);
   }
 
+  // T1: the user scoped to a specific source via --source/--source-id; if that
+  // source has a checkout on disk, use it so its filesystem phases can run.
+  if (engine && resolvedSourceId) {
+    const src = await fetchSource(engine, resolvedSourceId);
+    if (src?.local_path && existsSync(src.local_path)) {
+      return resolve(src.local_path);
+    }
+    // Explicit --source whose checkout isn't on disk → DB-only (skip FS phases).
+    // Do NOT fall through to the global sync.repo_path below: that path belongs
+    // to the default/unscoped brain, and running FS phases (sync/lint/extract)
+    // against it while the DB phases AND the last_full_cycle_at stamp target
+    // <resolvedSourceId> would mix scopes — syncing one source's checkout while
+    // marking a different source fresh. (codex P1 review finding.)
+    return null;
+  }
+
   if (engine) {
     const configured = await engine.getConfig('sync.repo_path');
     if (configured && existsSync(configured)) {
@@ -227,10 +288,9 @@ async function resolveBrainDir(
     }
   }
 
-  console.error(
-    'No brain directory found. Pass --dir <path> or configure one via `gbrain init`.',
-  );
-  process.exit(1);
+  // No checkout found. Return null (NOT exit) — DB-only phases can still run
+  // against the engine. The both-null hard error lives in runDream.
+  return null;
 }
 
 function printHelp() {
@@ -251,7 +311,11 @@ Options:
   --json              Emit the CycleReport as JSON (agent-readable)
   --phase <name>      Run a single phase: ${ALL_PHASES.join(' | ')}
   --pull              git pull the brain repo before syncing (default: no pull)
-  --dir <path>        Brain directory (default: configured brain)
+  --dir <path>        Brain directory (default: configured brain). On a
+                      postgres/remote brain with no local checkout, the
+                      filesystem phases (lint, backlinks, sync, synthesize,
+                      extract, patterns) are skipped (reason: no_brain_dir)
+                      and the DB-only phases still run.
 
   --source <id>       Scope the cycle to one source so doctor's
                       cycle_freshness check sees a fresh stamp on
@@ -266,6 +330,16 @@ Options:
   --date YYYY-MM-DD   Synthesize transcripts dated for one specific day.
   --from YYYY-MM-DD   Backfill range start (use with --to).
   --to   YYYY-MM-DD   Backfill range end.
+
+  --drain             Bounded backlog drain for --phase extract_atoms
+                      (the default phase when --drain is set). Holds the
+                      cycle lock once, processes batches until the backlog
+                      empties or --window elapses, reports {extracted,
+                      remaining}, and exits 3 when the backlog isn't empty
+                      so a cron/agent loop knows to run again. Use this to
+                      grind down an extract_atoms backlog on a brain whose
+                      pack doesn't run the phase in the routine cycle.
+  --window <seconds>  Drain wallclock budget. Default 300 (5 min).
 
   --unsafe-bypass-dream-guard
                       Disable the self-consumption guard. Use only when you
@@ -365,6 +439,72 @@ function isResolverUserError(e: unknown): boolean {
       || m.startsWith('Invalid GBRAIN_SOURCE value');
 }
 
+/**
+ * issue #1678 — bounded single-hold extract_atoms drain (see DreamArgs.drain).
+ * Holds the cycle lock once (same id the routine cycle uses for this source),
+ * loops bounded batches rediscovering eligibility, reports remaining, exits
+ * EXIT_DRAIN_INCOMPLETE when the backlog isn't empty so a loop knows to retry.
+ */
+async function runDrain(
+  engine: BrainEngine,
+  opts: DreamArgs,
+  resolvedSourceId: string | undefined,
+  brainDir: string | null,
+): Promise<void> {
+  const { LockUnavailableError } = await import('../core/db-lock.ts');
+  const { countExtractAtomsBacklog } = await import('../core/cycle/extract-atoms.ts');
+  const { runExtractAtomsDrainForSource } = await import('../core/cycle/extract-atoms-drain.ts');
+
+  const extractionSourceId = resolvedSourceId ?? 'default';
+
+  // Dry-run: preview the backlog without holding the lock or extracting.
+  if (opts.dryRun) {
+    const remaining = await countExtractAtomsBacklog(engine, extractionSourceId);
+    if (opts.json) {
+      console.log(JSON.stringify({ phase: 'extract_atoms', status: 'ok', dry_run: true, extracted: 0, skipped: 0, remaining, batches: 0, stopped: 'window' }, null, 2));
+    } else {
+      console.log(`[drain] dry-run: ${remaining ?? '?'} page(s) eligible for atom extraction (no work done)`);
+    }
+    // null = the backlog count query FAILED — treat as incomplete, never as
+    // "drained" (Codex: `remaining ?? 0` would exit 0 on a failed count and
+    // make automation believe the backlog cleared when it was never verified).
+    if (remaining === null || remaining > 0) process.exit(EXIT_DRAIN_INCOMPLETE);
+    return;
+  }
+
+  let result;
+  try {
+    // DECISION 5A: the lock/batch/count wiring lives in the shared helper so
+    // the CLI path, the Minion handler, and autopilot's auto-drain can't drift.
+    result = await runExtractAtomsDrainForSource(engine, {
+      sourceId: resolvedSourceId,
+      windowSeconds: opts.windowSeconds,
+      brainDir: brainDir ?? undefined,
+      onBatch: opts.json ? undefined : ({ batch, extracted, remaining }) => {
+        process.stderr.write(`[drain] batch ${batch}: +${extracted} atom(s), ~${remaining ?? '?'} remaining\n`);
+      },
+    });
+  } catch (e) {
+    if (e instanceof LockUnavailableError) {
+      if (opts.json) {
+        console.log(JSON.stringify({ phase: 'extract_atoms', status: 'skipped', reason: 'cycle_already_running' }, null, 2));
+      } else {
+        console.log('[drain] skipped: another cycle holds the lock (cycle_already_running) — run again shortly');
+      }
+      process.exit(EXIT_DRAIN_INCOMPLETE);
+    }
+    throw e;
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`[drain] extracted ${result.extracted} atom(s) across ${result.batches} batch(es); ${result.remaining ?? '?'} remaining (stopped: ${result.stopped})`);
+  }
+  // null remaining = the final count query failed; do not report success.
+  if (result.remaining === null || result.remaining > 0) process.exit(EXIT_DRAIN_INCOMPLETE);
+}
+
 export async function runDream(engine: BrainEngine | null, args: string[]): Promise<CycleReport | void> {
   const opts = parseArgs(args);
 
@@ -420,7 +560,27 @@ export async function runDream(engine: BrainEngine | null, args: string[]): Prom
     }
   }
 
-  const brainDir = await resolveBrainDir(engine, opts.dir);
+  const brainDir = await resolveBrainDir(engine, opts.dir, resolvedSourceId);
+  // Both-null is the only hard error: no local checkout AND no DB connection
+  // means neither filesystem phases nor DB phases can run. With an engine but
+  // no checkout, the cycle skips filesystem phases and runs DB-only phases
+  // (resolve_symbol_edges, embed, orphans, ...) — the postgres support path.
+  if (brainDir === null && engine === null) {
+    console.error(
+      'No brain directory found and no database connection. ' +
+      'Pass --dir <path> or configure a brain via `gbrain init`.',
+    );
+    process.exit(1);
+  }
+  // ─── issue #1678: bounded single-hold extract_atoms drain ──────────
+  if (opts.drain) {
+    if (engine === null) {
+      console.error('gbrain dream --drain requires a connected brain (no engine available)');
+      process.exit(1);
+    }
+    return runDrain(engine, opts, resolvedSourceId, brainDir);
+  }
+
   const phases: CyclePhase[] | undefined = opts.phase ? [opts.phase] : undefined;
 
   const report = await runCycle(engine, {

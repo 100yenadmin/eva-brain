@@ -48,9 +48,12 @@ echo "[sync_lock_regression] DATABASE_URL=$DATABASE_URL"
 echo "[sync_lock_regression] log=$LOG"
 echo "[sync_lock_regression] spawning $NUM_PARALLEL parallel sync processes..."
 
-# Step 1: ensure schema is up-to-date by running doctor once
+# Step 1: ensure schema is up-to-date by running doctor once. Doctor exits
+# non-zero when ANY check warns (e.g. missing embedding provider on a fresh
+# CI runner) so we ignore its exit status — the schema-migration side effect
+# is what we want here, and the migration runs regardless of check verdicts.
 echo "[sync_lock_regression] init schema via gbrain doctor..." | tee -a "$LOG"
-timeout 180s bun run src/cli.ts doctor --json > /dev/null 2>>"$LOG"
+timeout 180s bun run src/cli.ts doctor --json > /dev/null 2>>"$LOG" || true
 
 # Step 2: create a tiny brain dir + register it as sync.repo_path so each sync
 # call has something legitimate to do.
@@ -86,6 +89,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
    VALUES ('default', 'default', '$escaped_brain_dir', '{}'::jsonb)
    ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" \
   >/dev/null 2>>"$LOG"
+# Keep the legacy config key set too — some code paths still read it, and
+# setting both is the belt-and-suspenders shape downstream callers expect.
+bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
@@ -99,7 +105,14 @@ for ((i=1; i<=NUM_PARALLEL; i+=1)); do
   OUT_F=$(mktemp -t sync-lock-out-XXXXXX)
   EXIT_FILES+=("$EXIT_F")
   OUT_FILES+=("$OUT_F")
-  ( bun run src/cli.ts sync --dir "$BRAIN_DIR" --no-embed >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
+  # --no-embed: this test measures the writer-lock race, not embeddings.
+  # CI runners don't pipe ZEROENTROPY_API_KEY / OPENAI_API_KEY / VOYAGE_API_KEY,
+  # so without --no-embed every sync fails with "Embedding model X requires Y"
+  # and the test classifier reports unknown failures instead of lock outcomes.
+  # --repo: sync's canonical brain-dir flag (the older --dir is silently
+  # ignored; the script previously paired it with `config set sync.repo_path`
+  # which sync no longer reads in the source-registry world).
+  ( bun run src/cli.ts sync --repo "$BRAIN_DIR" --no-embed >"$OUT_F" 2>&1; echo $? > "$EXIT_F" ) &
   PIDS+=($!)
 done
 
