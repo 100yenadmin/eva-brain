@@ -789,7 +789,8 @@ describe('runConnect --oauth', () => {
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
     expect(out).toContain('Issuer URL:    https://brain.example.com');
-    expect(out).toContain('Client ID:     gbrain_cl_x');
+    expect(out).toContain(`Client ID:     ${REDACTED}`);
+    expect(out).not.toContain('gbrain_cl_x');
     expect(out).toContain(`Client Secret: ${REDACTED}`);
     expect(out).not.toContain('gbrain_cs_y');
   });
@@ -801,7 +802,8 @@ describe('runConnect --oauth', () => {
     );
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
-    expect(out).toContain('Client ID:     gbrain_cl_minted');
+    expect(out).toContain(`Client ID:     ${REDACTED}`);
+    expect(out).not.toContain('gbrain_cl_minted');
     expect(out).toContain(`Client Secret: ${REDACTED}`);
     expect(out).not.toContain('gbrain_cs_minted');
   });
@@ -813,7 +815,9 @@ describe('runConnect --oauth', () => {
     );
     const j = JSON.parse(r.out.join('\n'));
     expect(j.auth).toBe('oauth');
+    expect(j.client_id).toBe(REDACTED);
     expect(j.client_secret).toBe(REDACTED);
+    expect(r.out.join('\n')).not.toContain('gbrain_cl_x');
     expect(r.out.join('\n')).not.toContain('gbrain_cs_secret');
   });
 

@@ -2348,8 +2348,7 @@ if (import.meta.main) {
       if (shouldForceExitAfterMain()) flushThenExit(currentExitCode());
     },
     (e) => {
-      const name = e instanceof Error && e.name ? e.name : 'Error';
-      console.error(`${name}: command failed.`);
+      console.error('Command failed.');
       flushThenExit(1);
     },
   );

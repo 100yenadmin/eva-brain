@@ -675,10 +675,16 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
       fail(`--install is not supported with --oauth. ${spec.label} is configured through its UI; this prints the OAuth connector fields to paste.`);
     }
     const oauth = resolveOAuthCreds(f, url, deps);
+    void oauth;
+    const printableOAuth: OAuthCreds = {
+      issuer: issuerFromMcpUrl(url),
+      clientId: REDACTED,
+      clientSecret: REDACTED,
+    };
     if (f.json) {
-      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken, oauth, scopes: f.scopes }), null, 2));
+      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken, oauth: printableOAuth, scopes: f.scopes }), null, 2));
     } else {
-      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null, oauth }));
+      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null, oauth: printableOAuth }));
     }
     return;
   }
@@ -689,10 +695,11 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   const token: string | null = tok.kind === 'literal' ? tok.token : null;
 
   if (!f.install) {
+    const printableToken = token == null ? null : REDACTED;
     if (f.json) {
-      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token, showToken: f.showToken }), null, 2));
+      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: printableToken, showToken: f.showToken }), null, 2));
     } else {
-      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token }));
+      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: printableToken }));
     }
     return;
   }
