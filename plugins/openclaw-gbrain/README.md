@@ -11,7 +11,7 @@ It provides:
 - authenticated `/plugins/gbrain/extract`
 
 The extraction route calls OpenClaw's gateway model runner with
-`openai-codex/gpt-5.4-mini` by default, so media/text extraction can use the
+`openai/gpt-5.4-mini` by default, so media/text extraction can use the
 logged-in OpenClaw/Codex runtime instead of asking users for a model API key.
 
 ## Install
@@ -60,8 +60,10 @@ scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-suppo
 ```
 
 Use `sourceId: "workspace-docs"` when an agent needs the local customer/company
-docs under `$HOME/.openclaw/workspace/docs`, and `sourceId:
-"openclaw-support-kb"` when it needs the reusable OpenClaw support corpus.
+docs. The updater resolves that docs path from `EVA_BRAIN_WORKSPACE_DOCS_DIR`,
+then `agents.defaults.workspace/docs` in OpenClaw config, then
+`$HOME/.openclaw/workspace/docs`. Use `sourceId: "openclaw-support-kb"` when it
+needs the reusable OpenClaw support corpus.
 `gbrain_status` now shells out to `gbrain status --json`,
 `gbrain doctor --scope=brain --json`, and `gbrain sources list --json`, so
 agents can distinguish an empty `default` source from a healthy source-scoped
@@ -82,7 +84,7 @@ needed:
           "gbrainBin": "/absolute/path/to/gbrain",
           "openclawBin": "/absolute/path/to/openclaw",
           "envFile": "/Users/lume/.gbrain/gbrain.env",
-          "extractionModel": "openai-codex/gpt-5.4-mini",
+          "extractionModel": "openai/gpt-5.4-mini",
           "timeoutMs": 120000,
           "maxConcurrentExtractions": 1,
           "extractionQueueLimit": 8,
@@ -119,7 +121,7 @@ default; the hard plugin cap is 20 MiB.
 gbrain --version
 gbrain status --json
 gbrain doctor --scope=brain --json
-openclaw infer model run --gateway --model openai-codex/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
+openclaw infer model run --gateway --model openai/gpt-5.4-mini --prompt 'Return only JSON: {"ok":true}' --json
 openclaw gbrain status
 ```
 

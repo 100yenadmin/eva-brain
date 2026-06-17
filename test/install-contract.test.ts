@@ -80,7 +80,8 @@ describe('Eva Brain thin distribution contract', () => {
     expect(guide).toContain('only when `~/brain` has a configured git remote and upstream tracking branch');
     expect(guide).toContain("OpenClaw's scheduler/Minions job path");
     expect(guide).toContain('Workspace docs refresh');
-    expect(guide).toContain('gbrain import /root/.openclaw/workspace/docs --source-id workspace-docs --no-embed');
+    expect(guide).toContain('gbrain import "$OPENCLAW_WORKSPACE/docs" --source-id workspace-docs --no-embed');
+    expect(guide).toContain('configured `agents.defaults.workspace` value');
     expect(guide).toContain('gbrain embed --stale --source openclaw-support-kb');
   });
 
@@ -89,8 +90,10 @@ describe('Eva Brain thin distribution contract', () => {
 
     expect(plugin).toContain('GBRAIN_ROUTE_PATH = "/plugins/gbrain/extract"');
     expect(plugin).toContain('protocol: "gbrain.media-extraction.v1"');
-    expect(plugin).toContain('GBrain extraction only supports openai-codex/* models');
-    expect(plugin).toContain('!resolved.startsWith("openai-codex/")');
+    expect(plugin).toContain('DEFAULT_EXTRACTION_MODEL = "openai/gpt-5.4-mini"');
+    expect(plugin).toContain('namespaced.startsWith("openai-codex/")');
+    expect(plugin).toContain('GBrain extraction only supports openai/* models');
+    expect(plugin).toContain('!resolved.startsWith("openai/")');
     expect(plugin).toContain('invalid_model');
     expect(plugin).not.toContain('OPENAI_API_KEY');
     expect(plugin).not.toContain('refreshToken');
