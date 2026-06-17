@@ -25,6 +25,7 @@
 
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
 import type { BrainEngine } from '../core/engine.ts';
 import {
   assessDestructiveImpact,
@@ -159,6 +160,11 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
     cloneDir,
   });
 
+  // Topology A discovery: if the just-added source carries a brain-resident
+  // skillpack, surface it (print, never execute). Fully fail-open — a malformed
+  // or absent pack must never break `sources add`.
+  await maybeAnnounceBrainPack(engine, created);
+
   const fed = isFederated(created.config);
   const finalRemoteUrl = (created.config as Record<string, unknown>).remote_url as string | undefined;
   const tail = finalRemoteUrl
@@ -175,6 +181,100 @@ async function runAdd(engine: BrainEngine, args: string[]): Promise<void> {
   console.log(
     `  federated: ${fed}${fed ? ' — appears in cross-source default search' : ' — only searched when explicitly named via --source'}`,
   );
+}
+
+/**
+ * Topology A brain-resident pack discovery. Inspects the just-added source's
+ * local path for a `skillpack.json` with `brain_resident: true` and, if found,
+ * prints an agent-readable advisory (escalating-then-suppressed via nag-state).
+ * Fully wrapped in try/catch: a brain-pack discovery bug must never fail a
+ * `sources add`.
+ */
+async function maybeAnnounceBrainPack(engine: BrainEngine, created: OpsSourceRow): Promise<void> {
+  try {
+    const localPath = created.local_path;
+    if (!localPath || !existsSync(join(localPath, 'skillpack.json'))) return;
+
+    const { loadSkillpackManifest } = await import('../core/skillpack/manifest-v1.ts');
+    let manifest;
+    try {
+      manifest = loadSkillpackManifest(localPath);
+    } catch {
+      return; // malformed pack → treat as no pack
+    }
+    if (manifest.brain_resident !== true) return;
+
+    const { loadState, findEntry } = await import('../core/skillpack/state.ts');
+    const { loadNagState, saveNagState, findNag, decideNagAction, recordNagDisplay, upsertNag } = await import(
+      '../core/skillpack/nag-state.ts'
+    );
+    const { buildBrainPackAdvisory } = await import('../core/skillpack/brain-pack-advisory.ts');
+
+    // Installed = pack present in skillpack-state at this exact version (#12: state-based).
+    const stateEntry = findEntry(loadState(), manifest.name);
+    const installed = !!stateEntry && stateEntry.version === manifest.version;
+
+    let activeSchemaPack: string | null = null;
+    try {
+      activeSchemaPack = await engine.getConfig('schema_pack');
+    } catch {
+      activeSchemaPack = null;
+    }
+
+    const noNagFlag = process.env.GBRAIN_NO_SKILL_NAG === '1';
+    const brainId = deriveBrainId(created, localPath);
+    const key = { brain_id: brainId, source_id: created.id, pack_name: manifest.name };
+    const nagState = loadNagState();
+    const prior = findNag(nagState, key);
+
+    // Installed packs never nag; an uninstalled pack escalates then suppresses.
+    if (installed) {
+      // Still surface a schema mismatch once (build returns null when none).
+      const text = buildBrainPackAdvisory({
+        manifest,
+        packRoot: localPath,
+        scaffoldSource: localPath,
+        installed: true,
+        activeSchemaPack,
+      });
+      if (text) process.stderr.write(text);
+      return;
+    }
+
+    const decision = decideNagAction(prior, { pack_version: manifest.version, noNagFlag });
+    if (!decision.show) return;
+
+    const text = buildBrainPackAdvisory({
+      manifest,
+      packRoot: localPath,
+      scaffoldSource: localPath,
+      installed: false,
+      activeSchemaPack,
+      level: decision.level,
+    });
+    if (!text) return;
+    process.stderr.write(text);
+
+    // CLI-interactive display → count this decline (#11: never on cron/MCP/pipe).
+    const updated = recordNagDisplay(prior, key, {
+      pack_version: manifest.version,
+      nowIso: new Date().toISOString(),
+    });
+    saveNagState(upsertNag(nagState, updated));
+  } catch {
+    // fail-open: discovery is cosmetic, never blocks `sources add`
+  }
+}
+
+/**
+ * Derive a stable brain-id for nag keying from the source's canonical git
+ * remote (the repo carrying the pack) when available; else a deterministic
+ * hash of the canonical local path. NOT the brain DB identity.
+ */
+function deriveBrainId(created: OpsSourceRow, localPath: string): string {
+  const remote = (created.config as Record<string, unknown>).remote_url as string | undefined;
+  if (remote && remote.length > 0) return `git:${remote}`;
+  return `path:${createHash('sha256').update(localPath).digest('hex').slice(0, 16)}`;
 }
 
 // ── Subcommand: list ────────────────────────────────────────
@@ -394,7 +494,14 @@ async function runRestore(engine: BrainEngine, args: string[]): Promise<void> {
       console.log(`  re-cloned from remote_url (clone dir was missing).`);
     }
   } catch (e) {
-    if (e instanceof SourceOpError) {
+    if (e instanceof SourceOpError && e.code === 'unmanaged_path') {
+      // #1881: local_path is the user's own working tree, not a clone gbrain
+      // created. gbrain won't re-clone over it, and `gbrain sync` will refuse it
+      // too — so the generic "missing clone, try sync to recover" guidance below
+      // would be actively misleading. Surface the real situation instead.
+      console.error(`  WARN: ${e.message}`);
+      console.error(`  The DB row is restored; gbrain syncs this path read-only.`);
+    } else if (e instanceof SourceOpError) {
       console.error(`  WARN: could not re-clone: ${e.message}`);
       console.error(`  The DB row is restored but the on-disk clone is missing.`);
       console.error(`  Try \`gbrain sync --source ${id}\` to recover, or remove + re-add.`);
@@ -633,29 +740,38 @@ async function runStatus(engine: BrainEngine, args: string[]): Promise<void> {
     }
     return;
   }
-  const metrics = await computeAllSourceMetrics(engine, sources);
+  // Local CLI on the trusted host: probe the live commit hash so a quiet,
+  // caught-up source reports lag 0 instead of growing wall-clock (v0.41.32.0).
+  const metrics = await computeAllSourceMetrics(engine, sources, { probeContent: true });
 
   if (json) {
     console.log(JSON.stringify({ schema_version: 1, sources: metrics }, null, 2));
     return;
   }
 
-  // Human-readable table: SOURCE | LAG | EMBED | FAILS | QUEUE | PAGES | LAST SYNC
+  // Human-readable table: SOURCE | LAG | EMBED | BACKFILL | FAILS | QUEUE | PAGES | LAST SYNC
   console.log('SOURCES — health');
   console.log('────────────────');
   console.log(
-    `  ${'SOURCE'.padEnd(20)}  ${'LAG'.padEnd(8)}  ${'EMBED'.padEnd(7)}  ${'FAILS'.padEnd(6)}  ${'QUEUE'.padEnd(6)}  ${'PAGES'.padStart(8)}  LAST SYNC`,
+    `  ${'SOURCE'.padEnd(20)}  ${'LAG'.padEnd(8)}  ${'EMBED'.padEnd(7)}  ${'BACKFILL'.padEnd(9)}  ${'FAILS'.padEnd(6)}  ${'QUEUE'.padEnd(6)}  ${'PAGES'.padStart(8)}  LAST SYNC`,
   );
   for (const m of metrics) {
     const lag = m.lag_seconds === null
       ? 'never'
       : formatLag(m.lag_seconds);
     const embed = `${m.embed_coverage_pct.toFixed(0)}%`;
+    // v0.41.31: embed-backfill state (active beats queued beats idle) so a
+    // cron operator sees deferred embedding work after `sync --all`.
+    const backfill = m.backfill_active > 0
+      ? `active(${m.backfill_active})`
+      : m.backfill_queued > 0
+        ? `queued(${m.backfill_queued})`
+        : 'idle';
     const fails = String(m.failed_jobs_24h);
     const queue = String(m.queue_depth);
     const pages = m.total_pages.toLocaleString();
     const sync = m.last_sync_at ? new Date(m.last_sync_at).toISOString().slice(0, 19).replace('T', ' ') : 'never';
-    console.log(`  ${m.source_id.padEnd(20)}  ${lag.padEnd(8)}  ${embed.padEnd(7)}  ${fails.padEnd(6)}  ${queue.padEnd(6)}  ${pages.padStart(8)}  ${sync}`);
+    console.log(`  ${m.source_id.padEnd(20)}  ${lag.padEnd(8)}  ${embed.padEnd(7)}  ${backfill.padEnd(9)}  ${fails.padEnd(6)}  ${queue.padEnd(6)}  ${pages.padStart(8)}  ${sync}`);
   }
   console.log('');
   for (const m of metrics) {
@@ -1000,9 +1116,19 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
   walk(src.local_path);
 
   const literals = loadOperatorLiterals();
+  // Disposition-aware labelling (Codex #5): under the default `quarantine`
+  // disposition the junk bucket is "would-quarantine" (hidden, page lands),
+  // NOT "would-block". Read the configured disposition so the dry-run report
+  // tells the truth about what would happen.
+  const { loadConfig: _loadCfgAudit } = await import('../core/config.ts');
+  const _csAudit = _loadCfgAudit()?.content_sanity ?? {};
+  const junkDisposition: 'quarantine' | 'reject' =
+    _csAudit.junk_disposition === 'reject' ? 'reject' : 'quarantine';
+  const junkLabel = junkDisposition === 'reject' ? 'would-reject' : 'would-quarantine';
   const sizes: number[] = [];
   const wouldHardBlock: Array<{ file: string; matched: string[]; bytes: number }> = [];
   const wouldSoftBlock: Array<{ file: string; bytes: number }> = [];
+  const wouldFlag: Array<{ file: string; reason: string; bytes: number }> = [];
   const wouldWarn: Array<{ file: string; bytes: number }> = [];
   const patternHits: Record<string, number> = {};
   // v0.41.11.0 — facts-backfill estimator (E4). Walks the same files
@@ -1033,15 +1159,20 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
       compiled_truth: parsed.compiled_truth,
       timeline: parsed.timeline ?? '',
       title: parsed.title,
+      max_markup_ratio: _csAudit.max_markup_ratio,
+      prose_check_enabled: _csAudit.prose_check_enabled,
+      page_kind: parsed.type,
       extra_literals: literals,
     });
     sizes.push(sanity.bytes);
-    if (sanity.shouldHardBlock) {
+    if (sanity.shouldQuarantine) {
       const matched = [...sanity.junk_pattern_matches, ...sanity.literal_substring_matches];
       for (const name of matched) {
         patternHits[name] = (patternHits[name] ?? 0) + 1;
       }
       wouldHardBlock.push({ file, matched, bytes: sanity.bytes });
+    } else if (sanity.shouldFlag && sanity.flag_reason === 'markup_heavy') {
+      wouldFlag.push({ file, reason: 'markup_heavy', bytes: sanity.bytes });
     } else if (sanity.shouldSkipEmbed) {
       wouldSoftBlock.push({ file, bytes: sanity.bytes });
     } else if (sanity.reasons.includes('oversize_warn')) {
@@ -1079,12 +1210,18 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
       local_path: src.local_path,
       total_files: files.length,
       distribution: { p50: p(0.5), p99: p(0.99), max: sizes[sizes.length - 1] ?? 0 },
+      junk_disposition: junkDisposition,
+      // `hard_block_count` retained as the junk bucket name for JSON
+      // back-compat; `junk_disposition` tells consumers whether that's a
+      // hide (quarantine) or a throw (reject).
       hard_block_count: wouldHardBlock.length,
+      flag_count: wouldFlag.length,
       soft_block_count: wouldSoftBlock.length,
       warn_count: wouldWarn.length,
       pattern_hits: patternHits,
       facts_backfill_estimate: factsBackfillEstimate,
       hard_blocks: wouldHardBlock.slice(0, 20),
+      flags: wouldFlag.slice(0, 20),
       soft_blocks: wouldSoftBlock.slice(0, 20),
       ...(includeWarns ? { warns: wouldWarn.slice(0, 20) } : {}),
     }, null, 2));
@@ -1096,8 +1233,9 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
   if (sizes.length > 0) {
     console.log(`Size distribution: p50=${p(0.5)} bytes, p99=${p(0.99)} bytes, max=${sizes[sizes.length - 1]} bytes`);
   }
-  console.log(`Would-hard-block: ${wouldHardBlock.length}`);
-  console.log(`Would-soft-block: ${wouldSoftBlock.length}`);
+  console.log(`Junk (${junkLabel}): ${wouldHardBlock.length}`);
+  console.log(`Would-flag (markup-heavy, stays searchable): ${wouldFlag.length}`);
+  console.log(`Would-soft-block (oversize, skip embedding): ${wouldSoftBlock.length}`);
   if (includeWarns) {
     console.log(`Would-warn: ${wouldWarn.length}`);
   }
@@ -1113,7 +1251,7 @@ async function runAudit(engine: BrainEngine, args: string[]): Promise<void> {
     );
   }
   if (wouldHardBlock.length > 0) {
-    console.log('\nTop hard-blocks:');
+    console.log(`\nTop junk (${junkLabel}):`);
     for (const h of wouldHardBlock.slice(0, 10)) {
       console.log(`  ${h.file} [${h.matched.join(', ')}] (${h.bytes}b)`);
     }

@@ -89,7 +89,7 @@ describe('alias_resolved boost stage', () => {
 });
 
 describe('KNOBS_HASH_VERSION', () => {
-  it('bumped to 6 to invalidate caches across v0.42 boost stage addition', () => {
-    expect(KNOBS_HASH_VERSION).toBe(6);
+  it('is 11 (10→11 asymmetric input_type fix invalidates document-side query-vector rows, #1400)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(11);
   });
 });
