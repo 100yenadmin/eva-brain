@@ -103,6 +103,17 @@ export async function stampExtracted(
   } catch { /* best-effort: page stays stale, extract --stale re-sweeps it */ }
 }
 
+function normalizeIsoMicros(ts: string): string {
+  const match = ts.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$/);
+  if (!match) return ts;
+  return `${match[1]}.${(match[2] ?? '').padEnd(6, '0')}Z`;
+}
+
+function extractionFreshnessStamp(updatedAtIso: string, versionTs: string): string {
+  const normalizedVersion = normalizeIsoMicros(versionTs);
+  return normalizeIsoMicros(updatedAtIso) < normalizedVersion ? normalizedVersion : updatedAtIso;
+}
+
 /**
  * v0.42.7 (#1696): pure cross-source resolution for one extracted link
  * candidate. Validates both endpoints exist (else the batch JOIN drops the row),
@@ -1675,7 +1686,16 @@ async function extractStaleFromDB(
       // `page.updated_at.toISOString()` — the JS Date is ms-truncated, so the
       // µs-precision DB updated_at stayed strictly greater and the page never
       // cleared on Postgres. Stamping the exact value makes them equal.
-      processedRefs.push({ slug: page.slug, source_id: page.source_id, extractedAt: page.updated_at_iso });
+      //
+      // #159: pages older than LINK_EXTRACTOR_VERSION_TS also need the stamp to
+      // satisfy the version freshness arm. Use the exact read updated_at for
+      // newer pages, but lift older rows to the extractor version watermark so a
+      // completed sweep can actually clear doctor links_extraction_lag.
+      processedRefs.push({
+        slug: page.slug,
+        source_id: page.source_id,
+        extractedAt: extractionFreshnessStamp(page.updated_at_iso, versionTs),
+      });
     }
 
     // Flush NON-swallowing (CDX-4): a throw here propagates out of the sweep so
