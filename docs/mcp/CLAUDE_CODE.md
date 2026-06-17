@@ -43,7 +43,7 @@ gbrain connect https://YOUR-DOMAIN.ngrok.app --token gbrain_xxx --install
 agent's first request. The URL is normalized: a bare host without `/mcp` gets it
 appended; pass an explicit `https://` scheme.)
 
-Pipe-friendly machine output (token redacted unless `--show-token`):
+Pipe-friendly machine output (tokens and client secrets are always redacted):
 
 ```bash
 gbrain connect https://YOUR-DOMAIN.ngrok.app/mcp --token gbrain_xxx --json

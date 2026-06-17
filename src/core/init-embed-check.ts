@@ -151,7 +151,7 @@ function formatLiveProbeWarning(p: { reason: string; message: string }, model: s
  * regardless. Returns the result for the `--json` envelope.
  */
 export async function runInitEmbedCheck(opts: RunInitEmbedCheckOpts): Promise<InitEmbedCheckResult> {
-  const warn = opts.warn ?? ((m: string) => console.error(m));
+  const warn = opts.warn ?? (() => console.error('Embedding provider check failed; verify the configured model/key/endpoint, or re-run init with --skip-embed-check to bypass this probe.'));
 
   if (opts.noEmbedding) return { ok: true, skipped: 'no_embedding' };
   if (opts.skipFlag) return { ok: true, skipped: 'flag' };

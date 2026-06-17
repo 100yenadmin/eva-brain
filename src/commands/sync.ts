@@ -579,7 +579,7 @@ async function runInlineCostGate(
     staleChars = 0;
   }
   const staleCostUsd = estimateCostFromChars(staleChars, currentEmbeddingPricePerMTok());
-  const embeddingModelName = getEmbeddingModelName();
+  const embeddingModelName = 'configured embedding model';
   const floorUsd = await resolveCostGateFloorUsd(engine);
   const posture = await resolveSpendPosture(engine);
 

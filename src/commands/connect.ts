@@ -121,7 +121,7 @@ Flags:
   --yes                Skip the install confirmation prompt
   --force              On --install, replace an existing server of the same name
   --json               Emit machine-readable JSON (secret redacted)
-  --show-token         With --json, include the literal token/secret (avoid in logs)
+  --show-token         Deprecated compatibility flag; secrets remain redacted in output
   --timeout-ms <n>     Smoke-test timeout for --install (default: ${DEFAULT_TIMEOUT_MS})
 
 Examples:
@@ -299,7 +299,7 @@ export interface OAuthCreds {
 }
 
 function claudeBlock(p: { name: string; url: string; token: string | null }): string {
-  const headerToken = p.token ?? PLACEHOLDER_TOKEN;
+  const headerToken = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
   const cmd = cmdString('claude', buildClaudeMcpAddArgv({ name: p.name, url: p.url, headerToken }));
   const lines = ['# Paste into Claude Code:', '', 'Connect my knowledge brain, then learn what it can do:', '', `  ${cmd}`, ''];
   if (!p.token) lines.push(`Replace ${PLACEHOLDER_TOKEN} with a token from \`gbrain auth create "claude-code"\` on the host.`, '');
@@ -308,7 +308,7 @@ function claudeBlock(p: { name: string; url: string; token: string | null }): st
 }
 
 function codexBlock(p: { name: string; url: string; token: string | null }): string {
-  const tokenValue = p.token ?? PLACEHOLDER_TOKEN;
+  const tokenValue = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
   const cmd = cmdString('codex', buildCodexMcpAddArgv({ name: p.name, url: p.url, envVar: ENV_VAR }));
   const lines = [
     '# Paste into Codex:',
@@ -331,7 +331,7 @@ function codexBlock(p: { name: string; url: string; token: string | null }): str
 }
 
 function perplexityBearerBlock(p: { url: string; token: string | null }): string {
-  const tokenValue = p.token ?? PLACEHOLDER_TOKEN;
+  const tokenValue = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
   return [
     '# In Perplexity (Pro): Settings → Connectors → add a remote MCP server:',
     `#   URL:    ${p.url}`,
@@ -347,7 +347,7 @@ function perplexityBearerBlock(p: { url: string; token: string | null }): string
 }
 
 function perplexityOAuthBlock(p: { oauth: OAuthCreds }): string {
-  const secret = p.oauth.clientSecret ?? PLACEHOLDER_SECRET;
+  const secret = p.oauth.clientSecret == null ? PLACEHOLDER_SECRET : REDACTED;
   return [
     '# In Perplexity (Pro): Settings → Connectors → add a remote MCP server:',
     `#   URL:           ${p.oauth.issuer}/mcp`,
@@ -368,7 +368,7 @@ function perplexityOAuthBlock(p: { oauth: OAuthCreds }): string {
 }
 
 function genericBearerBlock(p: { url: string; token: string | null }): string {
-  const headerToken = p.token ?? PLACEHOLDER_TOKEN;
+  const headerToken = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
   return [
     '# Add an HTTP MCP server pointed at your gbrain:',
     `#   URL:    ${p.url}`,
@@ -379,7 +379,7 @@ function genericBearerBlock(p: { url: string; token: string | null }): string {
 }
 
 function genericOAuthBlock(p: { oauth: OAuthCreds }): string {
-  const secret = p.oauth.clientSecret ?? PLACEHOLDER_SECRET;
+  const secret = p.oauth.clientSecret == null ? PLACEHOLDER_SECRET : REDACTED;
   return [
     '# Add an OAuth 2.1 (client-credentials) MCP server pointed at your gbrain:',
     `#   URL:           ${p.oauth.issuer}/mcp`,
@@ -417,15 +417,15 @@ export function buildJson(p: { url: string; name: string; agent: AgentId; token:
       auth: 'oauth',
       issuer_url: p.oauth.issuer,
       client_id: p.oauth.clientId,
-      client_secret: secret == null ? null : (p.showToken ? secret : REDACTED),
-      secret_redacted: secret != null && !p.showToken,
+      client_secret: secret == null ? null : REDACTED,
+      secret_redacted: secret != null,
       scopes: p.scopes ?? DEFAULT_SCOPES,
       command: null,
       command_argv: null,
       learn_instruction: LEARN_INSTRUCTION,
     };
   }
-  const shownToken = p.token ? (p.showToken ? p.token : REDACTED) : PLACEHOLDER_TOKEN;
+  const shownToken = p.token ? REDACTED : PLACEHOLDER_TOKEN;
   let command_argv: string[] | null = null;
   let command: string | null = null;
   if (p.agent === 'claude-code') {
@@ -444,7 +444,7 @@ export function buildJson(p: { url: string; name: string; agent: AgentId; token:
     auth: 'bearer',
     env_var: ENV_VAR,
     token_present: p.token != null,
-    token_redacted: p.token != null && !p.showToken,
+    token_redacted: p.token != null,
     header: `Authorization: Bearer ${shownToken}`,
     command, // runnable CLI command; null for perplexity/generic (UI/manual setup)
     command_argv,
