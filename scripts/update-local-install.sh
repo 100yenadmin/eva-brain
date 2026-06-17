@@ -17,7 +17,8 @@ WITH_CODEX_PLUGIN="auto"
 WITH_SUPPORT_KB="false"
 WITH_WORKSPACE_DOCS="auto"
 WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"
-WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-$HOME/.openclaw/workspace/docs}"
+WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"
+OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 RUN_DOCTOR="true"
 RUN_PROVIDER_TEST="auto"
 RUN_HEALTH="auto"
@@ -42,7 +43,7 @@ Options:
   --with-codex-plugin          Install/update the Codex Desktop local plugin entry
   --without-codex-plugin       Skip Codex plugin install
   --with-support-kb            Install/update the OpenClaw Support KB source
-  --with-workspace-docs        Register/import ~/.openclaw/workspace/docs as source workspace-docs
+  --with-workspace-docs        Register/import OpenClaw workspace docs as source workspace-docs
   --without-workspace-docs     Skip workspace docs source registration/import
   --stop-stale-serve           Stop stale local gbrain serve processes before init/doctor
   --skip-doctor                Skip gbrain doctor
@@ -58,6 +59,10 @@ Environment:
   EVA_BRAIN_REF                Same as --ref. Use master only for development.
   GBRAIN_HOME                  Parent for .gbrain runtime data. If it points
                                directly at a .gbrain dir, the updater normalizes it.
+  EVA_BRAIN_WORKSPACE_DOCS_DIR Explicit workspace docs directory override.
+                               Otherwise resolved from OpenClaw config
+                               agents.defaults.workspace/docs, then
+                               ~/.openclaw/workspace/docs.
 
 Examples:
   scripts/update-local-install.sh
@@ -95,6 +100,45 @@ load_gbrain_env() {
   # shellcheck source=/dev/null
   . "$GBRAIN_ENV_FILE"
   set +a
+}
+
+resolve_openclaw_workspace_dir() {
+  if [ ! -f "$OPENCLAW_CONFIG_PATH" ] || ! command -v node >/dev/null 2>&1; then
+    return 0
+  fi
+  node - "$OPENCLAW_CONFIG_PATH" <<'NODE'
+const fs = require('node:fs');
+const configPath = process.argv[2];
+
+try {
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const workspace =
+    config?.agents?.defaults?.workspace ||
+    config?.agents?.default?.workspace ||
+    config?.workspace?.dir ||
+    config?.workspaceDir ||
+    '';
+  if (typeof workspace === 'string' && workspace.trim()) {
+    process.stdout.write(workspace.trim());
+  }
+} catch {
+  // Invalid local OpenClaw config should not block install/update.
+}
+NODE
+}
+
+resolve_workspace_docs_dir() {
+  if [ -n "$WORKSPACE_DOCS_DIR" ]; then
+    return
+  fi
+  local workspace_dir
+  workspace_dir="$(resolve_openclaw_workspace_dir || true)"
+  if [ -n "$workspace_dir" ]; then
+    WORKSPACE_DOCS_DIR="${workspace_dir%/}/docs"
+    log "Resolved workspace docs from OpenClaw config: $WORKSPACE_DOCS_DIR"
+    return
+  fi
+  WORKSPACE_DOCS_DIR="$HOME/.openclaw/workspace/docs"
 }
 
 need_cmd() {
@@ -289,6 +333,9 @@ doctor() {
 health_report() {
   if [ "$RUN_HEALTH" = "false" ]; then
     return
+  fi
+  if [ "$WITH_WORKSPACE_DOCS" != "false" ]; then
+    resolve_workspace_docs_dir
   fi
   local require_workspace_docs="false"
   if [ "$WITH_WORKSPACE_DOCS" = "true" ] || { [ "$WITH_WORKSPACE_DOCS" = "auto" ] && [ -d "$WORKSPACE_DOCS_DIR" ]; }; then
@@ -492,6 +539,7 @@ install_workspace_docs() {
   if [ "$WITH_WORKSPACE_DOCS" = "false" ]; then
     return
   fi
+  resolve_workspace_docs_dir
   if [ ! -d "$WORKSPACE_DOCS_DIR" ]; then
     if [ "$WITH_WORKSPACE_DOCS" = "true" ]; then
       die "Workspace docs directory not found: $WORKSPACE_DOCS_DIR"

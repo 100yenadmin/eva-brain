@@ -80,7 +80,8 @@ describe('Eva Brain thin distribution contract', () => {
     expect(guide).toContain('only when `~/brain` has a configured git remote and upstream tracking branch');
     expect(guide).toContain("OpenClaw's scheduler/Minions job path");
     expect(guide).toContain('Workspace docs refresh');
-    expect(guide).toContain('gbrain import /root/.openclaw/workspace/docs --source-id workspace-docs --no-embed');
+    expect(guide).toContain('gbrain import "$OPENCLAW_WORKSPACE/docs" --source-id workspace-docs --no-embed');
+    expect(guide).toContain('configured `agents.defaults.workspace` value');
     expect(guide).toContain('gbrain embed --stale --source openclaw-support-kb');
   });
 

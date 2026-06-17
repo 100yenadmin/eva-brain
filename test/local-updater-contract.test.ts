@@ -149,6 +149,11 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('EVA_BRAIN_UPDATER_REEXECED=1');
     expect(script).toContain('Skipping $label embedding because');
     expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
+    expect(script).toContain('WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"');
+    expect(script).toContain('OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"');
+    expect(script).toContain('resolve_workspace_docs_dir');
+    expect(script).toContain('config?.agents?.defaults?.workspace');
+    expect(script).toContain('WORKSPACE_DOCS_DIR="$HOME/.openclaw/workspace/docs"');
     expect(script).toContain('gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed');
     expect(script).toContain('sources "$freshness_command" "$source_id" off');
     expect(script).toContain('disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"');
@@ -820,6 +825,97 @@ exit 0
     expect(stdout).toContain(`gbrain sources add workspace-docs --path ${docsDir}`);
     expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
     expect(stdout).toContain('gbrain sources sync-freshness workspace-docs off');
+    expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
+    expect(stderr).not.toContain('workspace embed should have been skipped');
+  });
+
+  test('local updater resolves workspace docs from OpenClaw agents defaults config', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const workspaceDir = join(home, 'configured-openclaw-workspace');
+    const docsDir = join(workspaceDir, 'docs');
+    mkdirSync(join(docsDir, 'runbooks'), { recursive: true });
+    writeFileSync(join(docsDir, 'runbooks/customer-vm.md'), '# Configured Customer VM Runbook\n');
+    mkdirSync(join(home, '.openclaw'), { recursive: true });
+    writeFileSync(
+      join(home, '.openclaw/openclaw.json'),
+      JSON.stringify({ agents: { defaults: { workspace: workspaceDir } } }, null, 2),
+    );
+    const binDir = join(home, '.bun/bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'bun'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then
+  mkdir -p "$HOME/.gbrain"
+  printf '{"embedding_model":"voyage:voyage-4-large"}\\n' > "$HOME/.gbrain/config.json"
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  printf '{"sources":[]}\\n'
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "add" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
+  echo "cycle disabled"
+  exit 0
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "sync-freshness" ]; then
+  echo "sync disabled"
+  exit 0
+fi
+if [ "\${1:-}" = "import" ]; then
+  exit 0
+fi
+if [ "\${1:-}" = "embed" ]; then
+  echo "workspace embed should have been skipped when VOYAGE_API_KEY is missing" >&2
+  exit 9
+fi
+exit 0
+`,
+    );
+    chmodSync(join(binDir, 'bun'), 0o755);
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-workspace-docs',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        VOYAGE_API_KEY: '',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stderr).toContain(`Resolved workspace docs from OpenClaw config: ${docsDir}`);
+    expect(stdout).toContain(`gbrain sources add workspace-docs --path ${docsDir}`);
+    expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
     expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('workspace embed should have been skipped');
   });

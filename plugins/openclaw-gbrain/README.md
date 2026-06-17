@@ -60,8 +60,10 @@ scripts/update-local-install.sh --with-openclaw --with-codex-plugin --with-suppo
 ```
 
 Use `sourceId: "workspace-docs"` when an agent needs the local customer/company
-docs under `$HOME/.openclaw/workspace/docs`, and `sourceId:
-"openclaw-support-kb"` when it needs the reusable OpenClaw support corpus.
+docs. The updater resolves that docs path from `EVA_BRAIN_WORKSPACE_DOCS_DIR`,
+then `agents.defaults.workspace/docs` in OpenClaw config, then
+`$HOME/.openclaw/workspace/docs`. Use `sourceId: "openclaw-support-kb"` when it
+needs the reusable OpenClaw support corpus.
 `gbrain_status` now shells out to `gbrain status --json`,
 `gbrain doctor --scope=brain --json`, and `gbrain sources list --json`, so
 agents can distinguish an empty `default` source from a healthy source-scoped

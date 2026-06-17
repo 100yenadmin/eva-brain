@@ -987,8 +987,10 @@ What that command does:
 - installs the OpenClaw native plugin from `plugins/openclaw-gbrain`
 - installs the Codex Desktop plugin from `plugins/gbrain-codex`
 - installs or updates the OpenClaw support KB as source `openclaw-support-kb`
-- registers `/root/.openclaw/workspace/docs` or `$HOME/.openclaw/workspace/docs`
-  as source `workspace-docs` when present
+- registers OpenClaw workspace docs as source `workspace-docs` when present.
+  The updater first uses `EVA_BRAIN_WORKSPACE_DOCS_DIR`, then
+  `agents.defaults.workspace/docs` from OpenClaw config, then
+  `$HOME/.openclaw/workspace/docs`
 - embeds only stale chunks for those named sources
 - runs provider probe and `gbrain doctor` when possible
 
@@ -1238,8 +1240,10 @@ the canonical location is:
 /root/.openclaw/workspace/docs/runbooks
 ```
 
-On local developer machines the equivalent default is
-`$HOME/.openclaw/workspace/docs`. Register/import it with:
+On local developer machines the updater resolves the docs path from
+`EVA_BRAIN_WORKSPACE_DOCS_DIR` when set, otherwise from
+`agents.defaults.workspace/docs` in `$HOME/.openclaw/openclaw.json`, and finally
+from `$HOME/.openclaw/workspace/docs`. Register/import it with:
 
 ```bash
 scripts/update-local-install.sh --with-workspace-docs --with-support-kb
@@ -1362,7 +1366,9 @@ interactive shell-approval prompts.
   only when `~/brain` has a configured git remote and upstream tracking branch.
   If `git -C ~/brain remote -v` is empty, use the local-only import command above.
 - **Workspace docs refresh** (every 15 min on OpenClaw VMs): run
-  `gbrain import /root/.openclaw/workspace/docs --source-id workspace-docs --no-embed && gbrain embed --stale --source workspace-docs`.
+  `gbrain import "$OPENCLAW_WORKSPACE/docs" --source-id workspace-docs --no-embed && gbrain embed --stale --source workspace-docs`, where
+  `$OPENCLAW_WORKSPACE` is the configured `agents.defaults.workspace` value
+  or `/root/.openclaw/workspace` on default VM installs.
   This keeps customer runbooks searchable without pretending the tool checkout
   or Support KB is the whole brain.
 - **Support KB refresh** (after `openclaw-support-kb` updates): run
