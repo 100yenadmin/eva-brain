@@ -31,7 +31,10 @@ pass an exact release tag such as `--ref eva-v0.40.2.0`.
 Or install the plugin manually from an existing checkout:
 
 ```bash
-openclaw plugins install --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
+mkdir -p ~/.openclaw/extensions
+rm -rf ~/.openclaw/extensions/gbrain
+cp -R ./plugins/openclaw-gbrain ~/.openclaw/extensions/gbrain
+openclaw plugins install --force ~/.openclaw/extensions/gbrain
 openclaw plugins enable gbrain
 # Restart with exactly one host-appropriate command:
 # Customer/systemd hosts: sudo systemctl restart openclaw-gateway
@@ -41,15 +44,16 @@ openclaw plugins inspect gbrain --runtime --json
 ```
 
 This bridge intentionally shells out to the reviewed local `gbrain` and
-`openclaw` CLIs. OpenClaw's install scanner therefore requires the explicit
-unsafe-install override. The plugin does not accept arbitrary command strings;
-the command paths are configurable and arguments are built internally.
+`openclaw` CLIs. Newer OpenClaw releases require local plugin installs to be
+staged inside the host extensions directory; the updater performs this staging
+automatically. The plugin does not accept arbitrary command strings; the command
+paths are configurable and arguments are built internally.
 
-For local development, `plugins.load.paths` may point at this package directory,
-or you can link it:
+For local development against moving `master`, rerun the updater explicitly from
+the development ref:
 
 ```bash
-openclaw plugins install --link --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
+scripts/update-local-install.sh --ref master --with-openclaw
 ```
 
 For a full local support setup that also installs the Codex Desktop plugin,

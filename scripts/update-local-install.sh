@@ -19,6 +19,7 @@ WITH_WORKSPACE_DOCS="auto"
 WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"
 WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
+OPENCLAW_EXTENSIONS_DIR="${OPENCLAW_EXTENSIONS_DIR:-$HOME/.openclaw/extensions}"
 RUN_DOCTOR="true"
 RUN_PROVIDER_TEST="auto"
 RUN_HEALTH="auto"
@@ -63,6 +64,8 @@ Environment:
                                Otherwise resolved from OpenClaw config
                                agents.defaults.workspace/docs, then
                                ~/.openclaw/workspace/docs.
+  OPENCLAW_EXTENSIONS_DIR      OpenClaw extensions directory used when staging
+                               the gbrain plugin (default: ~/.openclaw/extensions).
 
 Examples:
   scripts/update-local-install.sh
@@ -440,7 +443,12 @@ install_openclaw_plugin() {
     return
   fi
   need_cmd openclaw
-  run openclaw plugins install --force --dangerously-force-unsafe-install ./plugins/openclaw-gbrain
+  local staged_plugin_dir="$OPENCLAW_EXTENSIONS_DIR/gbrain"
+  run mkdir -p "$OPENCLAW_EXTENSIONS_DIR"
+  run rm -rf "$staged_plugin_dir"
+  run mkdir -p "$staged_plugin_dir"
+  run cp -R ./plugins/openclaw-gbrain/. "$staged_plugin_dir"/
+  run openclaw plugins install --force "$staged_plugin_dir"
   run openclaw plugins enable gbrain
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files openclaw-gateway.service --no-legend 2>/dev/null | grep -q '^openclaw-gateway.service'; then
     if [ "$(id -u)" -eq 0 ]; then
