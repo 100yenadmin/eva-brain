@@ -151,6 +151,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
     expect(script).toContain('WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"');
     expect(script).toContain('OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"');
+    expect(script).toContain('OPENCLAW_EXTENSIONS_DIR="${OPENCLAW_EXTENSIONS_DIR:-$HOME/.openclaw/extensions}"');
     expect(script).toContain('resolve_workspace_docs_dir');
     expect(script).toContain('config?.agents?.defaults?.workspace');
     expect(script).toContain('WORKSPACE_DOCS_DIR="$HOME/.openclaw/workspace/docs"');
@@ -162,6 +163,10 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/init\s+--pglite\s+--embedding-model\s+voyage:voyage-4-large\s+--embedding-dimensions\s+2048/);
     expect(script).toMatch(/if \[ -f "\$config_path" \]; then/);
     expect(script).toMatch(/run "\$HOME\/\.bun\/bin\/gbrain" init/);
+    expect(script).toContain('local staged_plugin_dir="$OPENCLAW_EXTENSIONS_DIR/gbrain"');
+    expect(script).toContain('run cp -R ./plugins/openclaw-gbrain/. "$staged_plugin_dir"/');
+    expect(script).toContain('run openclaw plugins install --force "$staged_plugin_dir"');
+    expect(script).not.toContain('openclaw plugins install --force --dangerously-force-unsafe-install ./plugins/openclaw-gbrain');
     expect(script).not.toMatch(/\bfleet\b/i);
 
     const health = readFileSync(join(root, 'scripts/eva-brain-health.mjs'), 'utf8');
