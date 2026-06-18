@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,11 +9,14 @@ const SUPPORT_KB_QUERY = 'OpenClaw';
 const WORKSPACE_DOCS_SOURCE = process.env.EVA_BRAIN_WORKSPACE_DOCS_SOURCE || 'workspace-docs';
 const WORKSPACE_DOCS_QUERY = process.env.EVA_BRAIN_WORKSPACE_DOCS_QUERY || 'runbooks';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const CANONICAL_WORKSPACE_DOCS_PATH = '/root/.openclaw/workspace/docs';
+const CANONICAL_WORKSPACE_RUNBOOKS_PATH = '/root/.openclaw/workspace/docs/runbooks';
 
 const requireOpenClaw = process.argv.includes('--require-openclaw') || process.env.EVA_BRAIN_REQUIRE_OPENCLAW === 'true';
 const allowMissingSupportKb = process.argv.includes('--allow-missing-support-kb') || process.env.EVA_BRAIN_ALLOW_MISSING_SUPPORT_KB === 'true';
 const requireSupportKb = process.argv.includes('--require-support-kb') || !allowMissingSupportKb;
 const requireWorkspaceDocs = process.argv.includes('--require-workspace-docs') || process.env.EVA_BRAIN_REQUIRE_WORKSPACE_DOCS === 'true';
+const requireAgentsDocsGuidance = process.argv.includes('--require-agents-docs-guidance') || process.env.EVA_BRAIN_REQUIRE_AGENTS_DOCS_GUIDANCE === 'true' || requireWorkspaceDocs;
 
 function resolveBin(envName, fallback) {
   const configured = process.env[envName];
@@ -46,6 +49,79 @@ function parseJson(text, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function addWorkspaceAgentsFile(files, workspace) {
+  if (typeof workspace !== 'string' || !workspace.trim()) return;
+  files.add(join(workspace.trim(), 'AGENTS.md'));
+}
+
+function collectAgentHintFiles() {
+  const files = new Set();
+  if (process.env.OPENCLAW_AGENTS_FILE) files.add(process.env.OPENCLAW_AGENTS_FILE);
+  files.add(join(homedir(), '.openclaw', 'AGENTS.md'));
+  files.add(join(homedir(), '.openclaw', 'workspace', 'AGENTS.md'));
+
+  const configPath = process.env.OPENCLAW_CONFIG_PATH || join(homedir(), '.openclaw', 'openclaw.json');
+  const config = readJsonFile(configPath);
+  addWorkspaceAgentsFile(files, config?.workspace);
+  addWorkspaceAgentsFile(files, config?.agents?.defaults?.workspace);
+  addWorkspaceAgentsFile(files, config?.agents?.default?.workspace);
+  const agents = Array.isArray(config?.agents?.list)
+    ? config.agents.list
+    : config?.agents && typeof config.agents === 'object'
+      ? Object.values(config.agents).filter(value => value && typeof value === 'object')
+      : [];
+  for (const agent of agents) addWorkspaceAgentsFile(files, agent?.workspace);
+
+  return [...files];
+}
+
+function checkAgentsDocsGuidance() {
+  const checked = collectAgentHintFiles().map(file => {
+    let text = '';
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      return {
+        file,
+        exists: false,
+        hasWorkspaceDocsSource: false,
+        hasCanonicalDocsPath: false,
+        hasCanonicalRunbooksPath: false,
+      };
+    }
+    return {
+      file,
+      exists: true,
+      hasWorkspaceDocsSource: text.includes(WORKSPACE_DOCS_SOURCE),
+      hasCanonicalDocsPath: text.includes(CANONICAL_WORKSPACE_DOCS_PATH),
+      hasCanonicalRunbooksPath: text.includes(CANONICAL_WORKSPACE_RUNBOOKS_PATH),
+    };
+  });
+  const matching = checked.filter(item =>
+    item.exists &&
+    item.hasWorkspaceDocsSource &&
+    item.hasCanonicalDocsPath &&
+    item.hasCanonicalRunbooksPath,
+  );
+  return {
+    required: requireAgentsDocsGuidance,
+    ok: matching.length > 0,
+    expectedSource: WORKSPACE_DOCS_SOURCE,
+    expectedDocsPath: CANONICAL_WORKSPACE_DOCS_PATH,
+    expectedRunbooksPath: CANONICAL_WORKSPACE_RUNBOOKS_PATH,
+    matchingFiles: matching.map(item => item.file),
+    checked,
+  };
 }
 
 function normalizeSources(value) {
@@ -117,6 +193,7 @@ function main() {
         timedOut: false,
       };
   const workspaceDocsSearchSummary = summarizeSearch(workspaceDocsSearch);
+  const agentsDocsGuidance = checkAgentsDocsGuidance();
   const pluginInspect = run(openclaw, ['plugins', 'inspect', 'gbrain', '--runtime', '--json'], {
     timeoutMs: 15_000,
   });
@@ -136,6 +213,7 @@ function main() {
           workspaceDocs.pages > 0 &&
           workspaceDocsSearchSummary.ok &&
           workspaceDocsSearchSummary.resultCount > 0)) &&
+      (!requireAgentsDocsGuidance || agentsDocsGuidance.ok) &&
       (!requireOpenClaw || pluginInspect.ok),
     ),
     gbrain: {
@@ -161,6 +239,7 @@ function main() {
       required: requireWorkspaceDocs,
       ...workspaceDocsSearchSummary,
     },
+    agentsDocsGuidance,
     openclawPlugin: {
       required: requireOpenClaw,
       ok: pluginInspect.ok,
