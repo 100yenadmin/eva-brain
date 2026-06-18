@@ -3,9 +3,9 @@ name: retrieval-reflex
 version: 0.1.0
 description: When/what to retrieve - open the brain page for a salient entity before answering from memory.
 triggers:
-  - "who is"
-  - "what do we know about"
-  - "tell me about"
+  - "retrieval reflex"
+  - "salient entity pointer"
+  - "open brain page before answering"
 mutating: false
 writes_pages: false
 writes_to: []
@@ -13,6 +13,8 @@ tools: [get_page, query, graph, backlinks]
 ---
 
 # Retrieval Reflex - retrieve on demand, when an entity is salient
+
+> **Convention:** see [conventions/brain-first.md](../conventions/brain-first.md)
 
 A person doesn't bulk-load their whole address book into working memory. They
 retrieve on demand, when an entity becomes salient, use it, and drop it.
