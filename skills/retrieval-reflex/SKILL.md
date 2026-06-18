@@ -59,3 +59,28 @@ page, open it now. The write side captures everything; the read side only helps
 if you actually look.
 
 See also: `skills/query/SKILL.md` (search the brain), `skills/brain-ops/SKILL.md`.
+
+## Contract
+
+- Open only the current task's salient brain page(s), then answer from the retrieved page context.
+- Prefer `get_page` when a slug/pointer is already known; use `query` only to resolve an unknown notable name or term.
+- Pull `graph` or `backlinks` only when relationship context is needed for the answer.
+- Keep the operation read-only: this skill retrieves context but does not write pages, tags, edges, receipts, or facts.
+
+## Anti-Patterns
+
+- Do not bulk-load every possibly related person, company, or project page.
+- Do not skip retrieval when a pointer was explicitly supplied and the answer depends on page details.
+- Do not treat a passing mention as a reason to search if the detail would not change the response.
+- Do not invent relationship, status, attribution, or history details from memory when the brain can verify them.
+
+## Output Format
+
+When retrieval changes the answer, briefly ground the response in what was opened:
+
+```text
+Checked: <slug or page title>
+Answer: <concise answer using the retrieved context>
+```
+
+If retrieval is skipped, continue normally without adding a ritual note.
