@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -130,10 +130,12 @@ function normalizeSources(value) {
     const id = String(source.id ?? source.source_id ?? source.sourceId ?? source.name ?? 'unknown');
     const pages = Number(source.page_count ?? source.pageCount ?? source.pages ?? 0);
     const chunks = Number(source.chunk_count ?? source.chunkCount ?? source.chunks ?? 0);
+    const localPath = source.local_path ?? source.localPath ?? null;
     return {
       id,
       pages: Number.isFinite(pages) ? pages : 0,
       chunks: Number.isFinite(chunks) ? chunks : 0,
+      localPath: typeof localPath === 'string' && localPath.trim() ? localPath : null,
     };
   });
 }
@@ -150,6 +152,108 @@ function summarizeSearch(result) {
     command: result.command,
     stderr: result.ok ? '' : result.stderr.trim(),
   };
+}
+
+function walkMarkdownFiles(dir, limit = 12) {
+  const files = [];
+  const stack = [dir];
+  while (stack.length > 0 && files.length < limit) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.')) stack.push(path);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        files.push(path);
+        if (files.length >= limit) break;
+      }
+    }
+  }
+  return files;
+}
+
+function queryFromMarkdownFile(file) {
+  let text = '';
+  try {
+    if (!statSync(file).isFile()) return null;
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const heading = text.split(/\r?\n/u)
+    .map(line => line.replace(/^#+\s*/u, '').trim())
+    .find(line => line.length >= 5);
+  if (heading) return heading.slice(0, 120);
+
+  const basename = file.split('/').pop()?.replace(/\.md$/iu, '').replace(/[-_]+/gu, ' ') ?? '';
+  const words = `${basename} ${text}`
+    .replace(/[^A-Za-z0-9]+/gu, ' ')
+    .split(/\s+/u)
+    .filter(word => word.length >= 5)
+    .slice(0, 5);
+  return words.length > 0 ? words.join(' ') : null;
+}
+
+function workspaceDocsSearchCandidates(source) {
+  const queries = [WORKSPACE_DOCS_QUERY];
+  if (source?.localPath && existsSync(source.localPath)) {
+    for (const file of walkMarkdownFiles(source.localPath)) {
+      const query = queryFromMarkdownFile(file);
+      if (query) queries.push(query);
+    }
+  }
+  return [...new Set(queries.map(query => query.trim()).filter(Boolean))];
+}
+
+function searchWorkspaceDocs(gbrain, source) {
+  const attempts = [];
+  for (const query of workspaceDocsSearchCandidates(source)) {
+    const result = run(gbrain, [
+      'search',
+      query,
+      '--limit',
+      '3',
+      '--source',
+      WORKSPACE_DOCS_SOURCE,
+      '--json',
+    ]);
+    const summary = summarizeSearch(result);
+    attempts.push({
+      query,
+      ...summary,
+    });
+    if (summary.ok && summary.resultCount > 0) {
+      return {
+        ...summary,
+        query,
+        attempts,
+      };
+    }
+  }
+  const last = attempts.at(-1);
+  return last
+    ? {
+        ok: last.ok,
+        resultCount: last.resultCount,
+        command: last.command,
+        stderr: last.stderr,
+        query: last.query,
+        attempts,
+      }
+    : {
+        ok: false,
+        resultCount: 0,
+        command: `${gbrain} search ${WORKSPACE_DOCS_QUERY} --limit 3 --source ${WORKSPACE_DOCS_SOURCE} --json`,
+        stderr: `No searchable markdown files found for ${WORKSPACE_DOCS_SOURCE}`,
+        query: WORKSPACE_DOCS_QUERY,
+        attempts,
+      };
 }
 
 function main() {
@@ -173,26 +277,20 @@ function main() {
     '--json',
   ]);
   const supportKbSearchSummary = summarizeSearch(supportKbSearch);
-  const workspaceDocsSearch = workspaceDocs
-    ? run(gbrain, [
-        'search',
-        WORKSPACE_DOCS_QUERY,
-        '--limit',
-        '3',
-        '--source',
-        WORKSPACE_DOCS_SOURCE,
-        '--json',
-      ])
+  const workspaceDocsSearchSummary = workspaceDocs
+    ? searchWorkspaceDocs(gbrain, workspaceDocs)
     : {
         command: `${gbrain} search ${WORKSPACE_DOCS_QUERY} --limit 3 --source ${WORKSPACE_DOCS_SOURCE} --json`,
         ok: false,
         status: null,
         signal: null,
+        resultCount: 0,
+        query: WORKSPACE_DOCS_QUERY,
+        attempts: [],
         stdout: '',
         stderr: `Source ${WORKSPACE_DOCS_SOURCE} not present`,
         timedOut: false,
       };
-  const workspaceDocsSearchSummary = summarizeSearch(workspaceDocsSearch);
   const agentsDocsGuidance = checkAgentsDocsGuidance();
   const pluginInspect = run(openclaw, ['plugins', 'inspect', 'gbrain', '--runtime', '--json'], {
     timeoutMs: 15_000,

@@ -945,6 +945,75 @@ exit 3
     expect(report.agentsDocsGuidance.matchingFiles).toContain(join(home, '.openclaw/workspace/AGENTS.md'));
   });
 
+  test('Eva health proves workspace-docs search with an adaptive source query', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    const docsDir = join(home, '.openclaw/workspace/docs');
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(docsDir, { recursive: true });
+    mkdirSync(join(home, '.openclaw/workspace'), { recursive: true });
+    writeFileSync(join(docsDir, 'GBRAIN_SETUP.md'), '# GBrain Setup Guide\n\nDurable local docs are searchable.\n');
+    writeFileSync(
+      join(home, '.openclaw/workspace/AGENTS.md'),
+      [
+        '# Agent Manual',
+        'Durable customer docs live in /root/.openclaw/workspace/docs.',
+        'Customer runbooks live in /root/.openclaw/workspace/docs/runbooks.',
+        'Search local docs with source workspace-docs.',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.47.7"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100}'; exit 0; fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3},{"id":"workspace-docs","page_count":2,"local_path":"${docsDir}"}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  if [[ "$*" == *"openclaw-support-kb"* ]]; then echo '{"results":[{"slug":"kb","score":1}]}'; exit 0; fi
+  if [[ "$*" == *"runbooks"* ]]; then echo '{"results":[]}'; exit 0; fi
+  if [[ "$*" == *"GBrain Setup Guide"* ]]; then echo '{"results":[{"slug":"GBRAIN_SETUP","score":1}]}'; exit 0; fi
+  echo '{"results":[]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(
+      join(binDir, 'openclaw'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "plugins" ]; then echo '{"ok":true}'; exit 0; fi
+exit 3
+`,
+    );
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb', '--require-workspace-docs', '--require-openclaw'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(true);
+    expect(report.workspaceDocsSearch.resultCount).toBe(1);
+    expect(report.workspaceDocsSearch.query).toBe('GBrain Setup Guide');
+    expect(report.workspaceDocsSearch.attempts.map((attempt: { query: string }) => attempt.query)).toContain('runbooks');
+  });
+
   test('local updater resolves workspace docs from OpenClaw agents defaults config', () => {
     const home = tempHome();
     const repo = makeRepoWithEvaTags(home, []);
