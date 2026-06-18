@@ -126,6 +126,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/--with-openclaw\b/);
     expect(script).toMatch(/--with-codex-plugin\b/);
     expect(script).toMatch(/--with-support-kb\b/);
+    expect(script).toMatch(/--support-kb-ref\b/);
     expect(script).toMatch(/--with-workspace-docs\b/);
     expect(script).toMatch(/--skip-health\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
@@ -150,6 +151,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('Skipping $label embedding because');
     expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
     expect(script).toContain('WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"');
+    expect(script).toContain('SUPPORT_KB_REF="${EVA_BRAIN_SUPPORT_KB_REF:-${OPENCLAW_SUPPORT_KB_PINNED_REF:-}}"');
+    expect(script).toContain('OPENCLAW_SUPPORT_KB_PINNED_REF=$SUPPORT_KB_REF');
+    expect(script).toContain('git -C "$kb_dir" fetch --depth 1 origin "$SUPPORT_KB_REF"');
     expect(script).toContain('OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"');
     expect(script).toContain('OPENCLAW_EXTENSIONS_DIR="${OPENCLAW_EXTENSIONS_DIR:-$HOME/.openclaw/extensions}"');
     expect(script).toContain('resolve_workspace_docs_dir');
@@ -179,6 +183,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(health).toContain("process.argv.includes('--require-support-kb')");
     expect(health).toContain("process.argv.includes('--allow-missing-support-kb')");
     expect(health).toContain("process.argv.includes('--require-workspace-docs')");
+    expect(health).toContain("process.argv.includes('--require-agents-docs-guidance')");
+    expect(health).toContain('agentsDocsGuidance');
+    expect(health).toContain('/root/.openclaw/workspace/docs');
     expect(health).toContain('!requireOpenClaw || pluginInspect.ok');
 
     const result = Bun.spawnSync({
@@ -636,6 +643,48 @@ exit 3
     expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
   });
 
+  test('local updater dry-run pins Support KB to an exact commit ref', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeSupportKbRepo(tempHome());
+    const supportKbRef = '0123456789abcdef0123456789abcdef01234567';
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--dry-run',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--support-kb-ref',
+        supportKbRef,
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--skip-provider-test',
+        '--skip-doctor',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const stdout = new TextDecoder().decode(result.stdout);
+    expect(stdout).toContain(`git clone ${kbRepo} ${join(home, '.gbrain/sources/openclaw-support-kb')}`);
+    expect(stdout).toContain(`git -C ${join(home, '.gbrain/sources/openclaw-support-kb')} fetch --depth 1 origin ${supportKbRef}`);
+    expect(stdout).toContain('env OPENCLAW_SUPPORT_KB_PINNED_REF=0123456789abcdef0123456789abcdef01234567 node');
+  });
+
   test('local updater treats missing cycle-freshness support as optional during real support KB install', () => {
     const home = tempHome();
     const repo = makeRepoWithEvaTags(home, []);
@@ -832,6 +881,68 @@ exit 0
     expect(stdout).toContain('gbrain sources sync-freshness workspace-docs off');
     expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('workspace embed should have been skipped');
+  });
+
+  test('Eva health requires AGENTS guidance when workspace docs are required', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(join(home, '.openclaw/workspace'), { recursive: true });
+    writeFileSync(
+      join(home, '.openclaw/workspace/AGENTS.md'),
+      [
+        '# Agent Manual',
+        'Durable customer docs live in /root/.openclaw/workspace/docs.',
+        'Customer runbooks live in /root/.openclaw/workspace/docs/runbooks.',
+        'Search local docs with source workspace-docs.',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.47.6"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100}'; exit 0; fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3},{"id":"workspace-docs","page_count":2}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  echo '{"results":[{"slug":"ok","score":1}]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(
+      join(binDir, 'openclaw'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "plugins" ]; then echo '{"ok":true}'; exit 0; fi
+exit 3
+`,
+    );
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb', '--require-workspace-docs', '--require-openclaw'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(true);
+    expect(report.agentsDocsGuidance.ok).toBe(true);
+    expect(report.agentsDocsGuidance.matchingFiles).toContain(join(home, '.openclaw/workspace/AGENTS.md'));
   });
 
   test('local updater resolves workspace docs from OpenClaw agents defaults config', () => {

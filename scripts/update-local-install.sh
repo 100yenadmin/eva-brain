@@ -18,6 +18,7 @@ WITH_SUPPORT_KB="false"
 WITH_WORKSPACE_DOCS="auto"
 WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"
 WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"
+SUPPORT_KB_REF="${EVA_BRAIN_SUPPORT_KB_REF:-${OPENCLAW_SUPPORT_KB_PINNED_REF:-}}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_EXTENSIONS_DIR="${OPENCLAW_EXTENSIONS_DIR:-$HOME/.openclaw/extensions}"
 RUN_DOCTOR="true"
@@ -44,6 +45,7 @@ Options:
   --with-codex-plugin          Install/update the Codex Desktop local plugin entry
   --without-codex-plugin       Skip Codex plugin install
   --with-support-kb            Install/update the OpenClaw Support KB source
+  --support-kb-ref <sha>       Pin Support KB install/update to an exact commit
   --with-workspace-docs        Register/import OpenClaw workspace docs as source workspace-docs
   --without-workspace-docs     Skip workspace docs source registration/import
   --stop-stale-serve           Stop stale local gbrain serve processes before init/doctor
@@ -66,6 +68,7 @@ Environment:
                                ~/.openclaw/workspace/docs.
   OPENCLAW_EXTENSIONS_DIR      OpenClaw extensions directory used when staging
                                the gbrain plugin (default: ~/.openclaw/extensions).
+  EVA_BRAIN_SUPPORT_KB_REF     Same as --support-kb-ref.
 
 Examples:
   scripts/update-local-install.sh
@@ -180,6 +183,7 @@ parse_args() {
       --with-codex-plugin) WITH_CODEX_PLUGIN="true"; shift ;;
       --without-codex-plugin) WITH_CODEX_PLUGIN="false"; shift ;;
       --with-support-kb) WITH_SUPPORT_KB="true"; shift ;;
+      --support-kb-ref) SUPPORT_KB_REF="${2:?missing value for --support-kb-ref}"; shift 2 ;;
       --with-workspace-docs) WITH_WORKSPACE_DOCS="true"; shift ;;
       --without-workspace-docs) WITH_WORKSPACE_DOCS="false"; shift ;;
       --stop-stale-serve) STOP_STALE_SERVE="true"; shift ;;
@@ -496,13 +500,26 @@ install_support_kb() {
       run mv "$kb_dir" "$backup_dir"
       run git clone "$kb_repo" "$kb_dir"
     else
-      run git -C "$kb_dir" pull --ff-only
+      if [ -n "$SUPPORT_KB_REF" ]; then
+        run git -C "$kb_dir" fetch --depth 1 origin "$SUPPORT_KB_REF"
+        run git -C "$kb_dir" checkout --detach FETCH_HEAD
+      else
+        run git -C "$kb_dir" pull --ff-only
+      fi
     fi
   else
     run mkdir -p "$(dirname "$kb_dir")"
     run git clone "$kb_repo" "$kb_dir"
   fi
-  run node "$kb_dir/scripts/update-client.mjs"
+  if [ -n "$SUPPORT_KB_REF" ] && { [ ! -d "$kb_dir/.git" ] || [ "$(git -C "$kb_dir" rev-parse HEAD 2>/dev/null || true)" != "$SUPPORT_KB_REF" ]; }; then
+    run git -C "$kb_dir" fetch --depth 1 origin "$SUPPORT_KB_REF"
+    run git -C "$kb_dir" checkout --detach FETCH_HEAD
+  fi
+  if [ -n "$SUPPORT_KB_REF" ]; then
+    run env "OPENCLAW_SUPPORT_KB_PINNED_REF=$SUPPORT_KB_REF" node "$kb_dir/scripts/update-client.mjs"
+  else
+    run node "$kb_dir/scripts/update-client.mjs"
+  fi
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
   embed_support_kb_if_provider_auth_available
