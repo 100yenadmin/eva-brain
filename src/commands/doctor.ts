@@ -614,6 +614,33 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
     checks.push({ name: 'timeline_dedup_index', status: 'warn', message: 'Could not check idx_timeline_dedup shape' });
   }
 
+  // v0.42.x — Life Chronicle (#2390): orphaned event projections. Reads already
+  // hide projections whose event page is soft-deleted (read-time correctness);
+  // this always-run probe surfaces the cleanup backlog. Keyed off the real
+  // schema (event_page_id), NOT a migration verify-hook, per
+  // migration-verify-hook-never-runs-on-stamped-brains.
+  try {
+    const orphans = await engine.executeRaw<{ n: number }>(
+      `SELECT count(*)::int AS n FROM timeline_entries te
+       JOIN pages ep ON ep.id = te.event_page_id
+       WHERE te.event_page_id IS NOT NULL AND ep.deleted_at IS NOT NULL`,
+    );
+    const n = Number(orphans[0]?.n ?? 0);
+    checks.push(
+      n === 0
+        ? { name: 'chronicle_projection_health', status: 'ok', message: 'No orphaned event projections' }
+        : {
+            name: 'chronicle_projection_health',
+            status: 'warn',
+            message:
+              `${n} timeline projection(s) point to soft-deleted event pages ` +
+              '(hidden at read time; clean up with `gbrain integrity auto`).',
+          },
+    );
+  } catch {
+    checks.push({ name: 'chronicle_projection_health', status: 'ok', message: 'no event projections yet' });
+  }
+
   // 3. Brain score
   try {
     const health = await engine.getHealth();
@@ -770,6 +797,9 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
 
   // issue #1801 — wedged_queue (cross-surface parity with buildChecks).
   checks.push(await computeWedgedQueueCheck(engine));
+
+  // #2194 fix #5 — warn when autopilot fan-out exceeds worker concurrency.
+  checks.push(await computeAutopilotFanoutConcurrencyCheck(engine));
 
   // v0.41 Bug 2 / Eng D8 — subagent_health surfaces rate-lease pressure to the operator.
   checks.push(await checkSubagentHealth(engine));
@@ -1636,6 +1666,49 @@ export async function computeWedgedQueueCheck(engine: BrainEngine): Promise<Chec
       status: 'ok',
       message: `Skipped (${e instanceof Error ? e.message : String(e)})`,
     };
+  }
+}
+
+/**
+ * #2194 fix #5: warn when autopilot's per-tick fan-out exceeds the worker's
+ * effective concurrency. Fanning out more cycles than there are worker slots
+ * guarantees waiters that race the stalled-sweeper — a silent misconfig today.
+ * Advisory (started-event concurrency is fine here; the behavior-changing clamp
+ * in resolveEffectiveFanoutMax is the one that gates on liveness). Surfaces only
+ * when a supervisor has actually started (no noise on never-supervised brains).
+ */
+export async function computeAutopilotFanoutConcurrencyCheck(engine: BrainEngine): Promise<Check> {
+  if (engine.kind !== 'postgres') {
+    return { name: 'autopilot_fanout_concurrency', status: 'ok', message: 'PGLite — single-writer, fan-out is 1' };
+  }
+  try {
+    const { resolveFanoutMax, readSupervisorConcurrency } = await import('./autopilot-fanout.ts');
+    const concurrency = await readSupervisorConcurrency('default');
+    if (concurrency === null) {
+      return { name: 'autopilot_fanout_concurrency', status: 'ok', message: 'No supervisor observed — skipping fan-out/concurrency check' };
+    }
+    const fanoutMax = await resolveFanoutMax(engine);
+    const effectiveSlots = Math.max(1, concurrency - 1);
+    if (fanoutMax > effectiveSlots) {
+      return {
+        name: 'autopilot_fanout_concurrency',
+        status: 'warn',
+        message:
+          `autopilot fan-out (${fanoutMax}/tick) exceeds worker concurrency (${concurrency}). ` +
+          `Surplus cycles queue behind the worker and race the stalled-sweeper. ` +
+          `Lower fan-out: \`gbrain config set autopilot.fanout_max_per_tick ${effectiveSlots}\`, ` +
+          `or raise the supervisor's \`--concurrency\` to ${fanoutMax + 1}. ` +
+          `(The clamp in autopilot does this automatically unless disabled.)`,
+        details: { fanout_max: fanoutMax, concurrency, effective_slots: effectiveSlots },
+      };
+    }
+    return {
+      name: 'autopilot_fanout_concurrency',
+      status: 'ok',
+      message: `fan-out ${fanoutMax}/tick within worker concurrency ${concurrency}`,
+    };
+  } catch (e) {
+    return { name: 'autopilot_fanout_concurrency', status: 'ok', message: `Skipped (${e instanceof Error ? e.message : String(e)})` };
   }
 }
 
@@ -3472,6 +3545,40 @@ export async function checkSyncFreshness(
     let hasFailures = false;
     let skipped = 0;
 
+    // BUG 4 (v0.42.x): a source with a LIVE, non-expired per-source sync lock is
+    // actively syncing RIGHT NOW — it must not read as stale or never-synced.
+    // The live lock is the only honest "in progress" signal. Checkpoint banking
+    // is NOT usable: a blocked sync banks the good files then writes no anchor
+    // (test/sync-resumable-import.serial.test.ts), so banking can't tell
+    // in-progress from wedged. A blocked/failed sync's process has exited (no
+    // lock row) and a wedged holder stops refreshing (TTL lapses), so either
+    // correctly falls through to the stale path and is NEVER masked. Same
+    // dynamic import as the stale_locks check; any throw (stub engine in unit
+    // tests, pre-lock-table brain) is swallowed to false, so this can only ADD
+    // an in-progress verdict, never suppress a real stale one.
+    // Notes for sources caught actively syncing (surfaced in the result
+    // message so the operator sees "in progress", not just a silent healthy
+    // bucket). Empty when nothing is syncing — keeps the steady-state messages
+    // byte-for-byte unchanged.
+    const inProgress: string[] = [];
+    let liveSyncSnap: (sourceId: string) => Promise<{ holder_pid: number; holder_host: string } | null> =
+      async () => null;
+    try {
+      const { inspectLock, syncLockId } = await import('../core/db-lock.ts');
+      liveSyncSnap = async (sourceId: string) => {
+        try {
+          const snap = await inspectLock(engine, syncLockId(sourceId));
+          return snap && !snap.ttl_expired
+            ? { holder_pid: snap.holder_pid, holder_host: snap.holder_host }
+            : null;
+        } catch {
+          return null;
+        }
+      };
+    } catch {
+      /* db-lock unavailable — skip in-progress detection, staleness stands. */
+    }
+
     for (const source of sources) {
       // Embed source.id in user-visible messages so `gbrain sync --source <id>`
       // matches what the user copy-pastes. Show display name in parens when set.
@@ -3481,6 +3588,15 @@ export async function checkSyncFreshness(
       const config = parseDoctorSourceConfig(source.config);
       if (config.sync_freshness === false) {
         skipped++;
+        continue;
+      }
+
+      // BUG 4: actively syncing (live lock) → healthy, count as synced_recently
+      // and skip the staleness checks. Keeps the 3-bucket invariant intact.
+      const liveSnap = await liveSyncSnap(source.id);
+      if (liveSnap) {
+        inProgress.push(`${display} sync in progress (pid ${liveSnap.holder_pid} on ${liveSnap.holder_host})`);
+        synced_recently_count++;
         continue;
       }
 
@@ -3567,14 +3683,19 @@ export async function checkSyncFreshness(
       }
     }
 
-    // D6 invariant: every source incremented exactly one bucket.
+    // D6 invariant applies to sync-managed sources. Eva-managed updater
+    // sources opt out of sync freshness and are reported separately.
+    const processedCount = sources.length - skipped;
     const details = { unchanged_count, synced_recently_count, stale_count };
+    // BUG 4: append in-progress context when any source is actively syncing.
+    // Empty otherwise, so steady-state messages are byte-for-byte unchanged.
+    const inProgressNote = inProgress.length ? `. ${inProgress.join('; ')}` : '';
 
     if (hasFailures) {
       return {
         name: 'sync_freshness',
         status: 'fail',
-        message: `${issues.join('; ')}. Run \`gbrain sync --source <id>\` for each stale source`,
+        message: `${issues.join('; ')}. Run \`gbrain sync --source <id>\` for each stale source${inProgressNote}`,
         details,
       };
     }
@@ -3582,18 +3703,20 @@ export async function checkSyncFreshness(
       return {
         name: 'sync_freshness',
         status: 'warn',
-        message: `${issues.join('; ')}. Run \`gbrain sync --source <id>\` to refresh`,
+        message: `${issues.join('; ')}. Run \`gbrain sync --source <id>\` to refresh${inProgressNote}`,
         details,
       };
     }
     // v0.41.27.0: D2 ok-message reshape. Three branches surface what the
     // git short-circuit actually did so operators understand "unchanged
     // since last sync" vs "synced recently".
-    if (unchanged_count === sources.length) {
+    if (processedCount > 0 && unchanged_count === processedCount) {
       return {
         name: 'sync_freshness',
         status: 'ok',
-        message: `All ${sources.length} federated source(s) up to date (no new commits since last sync)`,
+        message: skipped > 0
+          ? `All ${processedCount} sync-managed source(s) up to date (no new commits since last sync; ${skipped} updater-managed skipped)${inProgressNote}`
+          : `All ${sources.length} federated source(s) up to date (no new commits since last sync)${inProgressNote}`,
         details,
       };
     }
@@ -3601,16 +3724,20 @@ export async function checkSyncFreshness(
       return {
         name: 'sync_freshness',
         status: 'ok',
-        message: `${sources.length} federated source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync`,
+        message: skipped > 0
+          ? `${processedCount} sync-managed source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync (${skipped} updater-managed skipped)${inProgressNote}`
+          : `${sources.length} federated source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync${inProgressNote}`,
         details,
       };
     }
     return {
       name: 'sync_freshness',
       status: 'ok',
-      message: skipped > 0
-        ? `All ${sources.length - skipped} sync-managed source(s) synced recently (${skipped} updater-managed skipped)`
-        : `All ${sources.length} federated source(s) synced recently`,
+      message: processedCount === 0
+        ? `All ${skipped} updater-managed source(s) skipped`
+        : skipped > 0
+        ? `All ${sources.length - skipped} sync-managed source(s) synced recently (${skipped} updater-managed skipped)${inProgressNote}`
+        : `All ${sources.length} federated source(s) synced recently${inProgressNote}`,
       details,
     };
   } catch (e) {
@@ -4407,7 +4534,22 @@ export async function buildChecks(
 
     const pidStatus = readSupervisorPid(DEFAULT_PID_FILE);
     const supervisorPid = pidStatus.pid;
-    const running = pidStatus.running;
+    const pidfileRunning = pidStatus.running;
+
+    // issue #2227 fix #1/#3: DEFAULT_PID_FILE is HOME-derived, so a supervisor
+    // started under a different $HOME reads as "not running" even when healthy.
+    // Consult the queue-scoped DB singleton lock (#1849, HOME-independent) before
+    // warning. PID-reuse-safe (isLockHolderLive keys on lock freshness).
+    let detectedViaDbLock = false;
+    if (!pidfileRunning && engine) {
+      try {
+        const { inspectLock, isLockHolderLive } = await import('../core/db-lock.ts');
+        const { supervisorLockId, SUPERVISOR_LOCK_TTL_MIN } = await import('../core/minions/supervisor.ts');
+        const snap = await inspectLock(engine, supervisorLockId('default'));
+        if (snap && isLockHolderLive(snap, SUPERVISOR_LOCK_TTL_MIN)) detectedViaDbLock = true;
+      } catch { /* pre-migration / transient: pidfile-only */ }
+    }
+    const running = pidfileRunning || detectedViaDbLock;
 
     const events = readSupervisorEvents({ sinceMs: 24 * 60 * 60 * 1000 });
     const lastStart = events.filter(e => e.event === 'started').pop()?.ts ?? null;
@@ -4455,7 +4597,7 @@ export async function buildChecks(
         checks.push({
           name: 'supervisor',
           status: 'ok',
-          message: `running=true pid=${supervisorPid} last_start=${lastStart ?? 'unknown'} crashes_24h=${crashes24h} clean_exits_24h=${summary.clean_exits}`,
+          message: `running=true${detectedViaDbLock ? ' (detected via DB lock; pidfile not at the HOME-derived path)' : ` pid=${supervisorPid}`} last_start=${lastStart ?? 'unknown'} crashes_24h=${crashes24h} clean_exits_24h=${summary.clean_exits}`,
         });
       }
     }
@@ -7238,6 +7380,9 @@ export async function buildChecks(
     // waiting, zero live-lock active, stale completions) as a health error.
     progress.heartbeat('wedged_queue');
     checks.push(await computeWedgedQueueCheck(engine));
+    // #2194 fix #5 — autopilot fan-out vs worker concurrency mismatch.
+    progress.heartbeat('autopilot_fanout_concurrency');
+    checks.push(await computeAutopilotFanoutConcurrencyCheck(engine));
     // v0.40.4 graph_signals_coverage — global inbound-link density when
     // graph_signals is enabled in the active mode bundle.
     progress.heartbeat('graph_signals_coverage');
