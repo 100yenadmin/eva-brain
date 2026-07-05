@@ -214,6 +214,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(workflow).toContain('Validate release tag matches package version');
     expect(workflow).toContain("require('./package.json').version");
     expect(workflow).toContain('Release tag must match package.json version');
+    expect(workflow).toContain("always() && needs.build.result == 'success'");
   });
 
   test('test workflow uses OSS gitleaks CLI without an organization license secret', () => {
