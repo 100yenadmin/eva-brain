@@ -208,9 +208,14 @@ Per-file detail is in `docs/architecture/KEY_FILES.md`.
 - **Source isolation.** Every read-side op routes through `sourceScopeOpts(ctx)`; precedence
   is federated array (`ctx.auth.allowedSources`) > scalar (`ctx.sourceId`) > nothing. Don't
   hand-roll source filtering — a missed thread is a cross-source data leak.
-- **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it;
-  PGLite hides the bug. Pass raw objects to `engine.executeRaw`, or use `executeRawJsonb`.
-  Guarded by `scripts/check-jsonb-pattern.sh`.
+- **JSONB: never `JSON.stringify` into a `::jsonb` cast.** postgres.js double-encodes it (a jsonb
+  string scalar); PGLite hides the bug. This bites BOTH spellings — the template form
+  (`${JSON.stringify(x)}::jsonb`) AND the positional form (`executeRaw(\`…$N::jsonb\`, [JSON.stringify(x)])`,
+  the #2339 class that aborted every sync). Fix: pass a raw object to `engine.executeRaw` / use
+  `executeRawJsonb` / `sql.json()`; or for the positional path bind through `$N::text::jsonb` (binds as
+  text, the cast parses it). Guarded by `scripts/check-jsonb-pattern.sh` (template grep) +
+  `scripts/check-jsonb-params.mjs` (positional AST scanner); the real backstop is the DATABASE_URL-gated
+  e2e parity tests, since PGLite can't surface the bug. Full rule in `docs/ENGINES.md`.
 - **Engine parity.** `src/core/postgres-engine.ts` and `src/core/pglite-engine.ts` move in
   lockstep — a new method/SQL shape lands in BOTH, pinned by `test/e2e/engine-parity.test.ts`.
   Forward-referenced columns/indexes go in the bootstrap probe set (guarded by
@@ -539,7 +544,7 @@ Progress banks into the append-only `op_checkpoint_paths` table (one row per dra
 path, written via the direct session pool so it survives `EMAXCONNSESSION`); a killed
 run resumes from the checkpoint and `last_commit` only advances on true completion. The
 per-source lock heartbeats through the direct pool and refuses to steal a live,
-recently-refreshed holder. Five env knobs tune it (all env-only, incident-time escape
+recently-refreshed holder. Six env knobs tune it (all env-only, incident-time escape
 hatches — no config-dashboard surface by design):
 
 | Env var | Default | What it does |
@@ -549,6 +554,58 @@ hatches — no config-dashboard surface by design):
 | `GBRAIN_SYNC_MAX_CHECKPOINT_FAILURES` | 3 | Consecutive failed flushes (each already retried ~12s) before the run aborts with `reason: 'checkpoint_unavailable'` instead of importing work it can never bank. |
 | `GBRAIN_SYNC_YIELD_EVERY` | 64 | Yield the event loop (`setTimeout(0)`, NOT `setImmediate` — Bun starves the timers phase under a tight setImmediate loop) every N files so the lock-refresh `setInterval` heartbeat fires mid-import. |
 | `GBRAIN_LOCK_STEAL_GRACE_SECONDS` | derived (~600 at 30min TTL) | A holder that refreshed within this window is NOT stolen even if its TTL lapsed (starved-but-alive). Dead holders stop refreshing, age past the grace, and become stealable; TTL stays the backstop. |
+| `GBRAIN_SYNC_STALL_ABORT_SECONDS` | 900 | Progress-aware stall watchdog (#1950): if the import drain makes no forward progress (keyed on file-import progress, NOT the lock heartbeat) for N seconds, abort the run and release the per-source lock so the next `gbrain sync` resumes from the checkpoint. Reports `reason: 'stall_timeout'`. Observed BETWEEN files; a hang inside one file's import isn't interrupted until it returns (the wall-clock hard deadline is that backstop). 0 disables. |
+
+## Pace Mode (DB-contention-aware backfill pacing)
+
+A naive `gbrain embed --stale` / large `sync` can saturate a PgBouncer
+transaction-mode pooler and starve the minion supervisor's lock renewals
+(`lock-renewal-failed` → dead jobs). Pacing is the native, composable fix — it
+replaces external SIGSTOP/SIGCONT wrapper scripts. **Opt-in: default mode `off`.**
+
+The composable primitive is `src/core/db-pacer.ts` (`createDbPacer`):
+- **Concurrency cap is the real lever** (caps simultaneous in-flight DB writes =
+  pooler slots held). Embed paths set their worker count to `maxConcurrency`
+  (single pool, no permit); `sync` uses the shared `acquire()` **permit** because
+  each parallel worker owns a separate engine (one budget must span pools).
+- **In-band signal** (`observe(ms)` EWMA from the work's own queries — never
+  blind the way an out-of-band probe pool was). **No probe loop, no
+  `probeLatency` engine method.**
+- **Cooperative `pace()` sleep** on `setTimeout` (keeps the lock heartbeat
+  firing), jittered to avoid a thundering-herd resume. `acquire()`/`pace()` throw
+  `AbortError` on cancel; everything else is fail-open (a pacer bug never kills a
+  backfill, never throws an unhandledRejection).
+
+Named bundles resolve through `src/core/pace-mode.ts` (`resolvePaceMode`), mirror
+of the search-mode pattern but with **env ABOVE config** (incident escape hatch):
+
+    per-call flag → GBRAIN_PACE_* env → config (pace.*) → PACE_BUNDLES[mode] → off
+
+| Knob | off | gentle | balanced | aggressive |
+|---|---|---|---|---|
+| `maxConcurrency` | (off) | 4 | 8 | 16 |
+| `paceAtMs` (EWMA → sleep) | — | 250 | 500 | 1000 |
+| `maxSleepMs` (jittered cap) | — | 2000 | 1500 | 1000 |
+
+**Surfaces.** `gbrain embed --stale --pace[=mode]` (bare `--pace` = balanced),
+`--pace-max-concurrency=N`. `--background` carries explicit pace OVERRIDES (not
+the resolved bundle) into the `embed` job payload; the handler re-resolves
+env>config>bundle at execution so `GBRAIN_PACE_*` still wins (CX5). Config-level
+`pace.mode` paces EVERY `runEmbedCore` caller (cycle embed, embed-catch-up,
+sync-auto-embed) and the prod `embed-backfill` job automatically. `sync` reads
+env/config. PGLite / mode `off` → no-op pacer.
+
+**Correctness fixes pacing bundles** (longer paced runs widen these): CLI
+`embed --stale` single-flights via the SAME per-source lock key as the
+`embed-backfill` handler (`src/core/embed-backfill-lock.ts`; all-source runs lock
+every source in sorted order) so a hand-run backfill and a queued job can't race
+the NULL→non-NULL upsert (`TODOS:2299`); a **bounded** end-of-run keyset re-entry
+(max 3 + forward-progress, paced runs only) catches rows inserted behind the
+cursor (`TODOS:2301`); and the embed wall-clock budget timer is re-armed around
+`pace()` sleeps so paced time doesn't burn the work budget.
+
+`EmbedResult.pacing` carries the end-of-run telemetry (cap, samples, EWMA, slept
+ms, max waiters) for `--json`; a one-line summary prints to stderr.
 
 ## Build
 
@@ -2219,6 +2276,39 @@ RRF fusion, multi-query expansion, and 4-layer dedup are engine-agnostic. They o
 | Backups | Manual (file copy) | Managed by Supabase |
 
 **Migration:** `gbrain migrate --to supabase` exports everything (pages, chunks, embeddings, links, tags, timeline) and imports into Supabase. `gbrain migrate --to pglite` goes the other direction. Bidirectional, lossless.
+
+## JSONB writes: never double-encode (the #2339 trap)
+
+Writing a JS value into a `jsonb` column has exactly two correct forms. Get this
+wrong and the write succeeds on PGLite but stores a **jsonb string scalar** on
+real Postgres — `col ->> 'k'` returns NULL, `jsonb_array_elements` throws, and a
+`jsonb_typeof = 'array'` CHECK rejects the row (this aborted every sync in #2339).
+
+| Form | Verdict |
+|---|---|
+| Template tag: `` sql`... ${sql.json(obj)}` `` (postgres-engine only) | ✅ native jsonb serialization |
+| Positional raw call, raw object: `executeRawJsonb(engine, sql, scalars, [obj])` | ✅ object reaches the wire as jsonb |
+| Positional raw call, stringified: `executeRaw(\`... $N::text::jsonb\`, [JSON.stringify(x)])` | ✅ binds as text, the cast parses it |
+| Positional raw call, BARE cast: `executeRaw(\`... $N::jsonb\`, [JSON.stringify(x)])` | ❌ **double-encodes** under postgres.js `.unsafe()` |
+| Template literal interpolation: `` `... ${JSON.stringify(x)}::jsonb` `` | ❌ double-encodes |
+
+**Why:** postgres.js `.unsafe(sql, params)` (the path behind `executeRaw` /
+`executeRawDirect`) binds a JS **string** as a text param. A bare `$N::jsonb`
+cast then wraps that already-JSON string into a jsonb scalar string instead of
+parsing it. Casting through `$N::text::jsonb` forces a text→jsonb parse.
+**PGLite's `db.query` parses text→jsonb natively, so it hides the bug** — which is
+why a regression only shows up on Postgres (and why the parity test must run there).
+
+**Two CI guards enforce this, both wired into `scripts/check-jsonb-pattern.sh`:**
+- the template-tag grep (`${JSON.stringify(x)}::jsonb`), and
+- `scripts/check-jsonb-params.mjs`, an AST-lite scanner for the positional
+  `$N::jsonb` + `JSON.stringify` form the grep misses. Sanctioned escapes:
+  `$N::text::jsonb`, `$N::text[]`, `executeRawJsonb`, `sql.json`, or an inline
+  `jsonb-guard-ok` comment.
+
+The real backstop is `test/e2e/op-checkpoint-jsonb-parity.test.ts` +
+`test/e2e/jsonb-roundtrip.test.ts`, which round-trip writes through real Postgres
+and assert `jsonb_typeof` — the assertion PGLite cannot make.
 
 ## Adding a new engine
 
