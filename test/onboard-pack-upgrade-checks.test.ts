@@ -98,6 +98,52 @@ describe('checkTypeProliferation (D16 pack-aware ratio)', () => {
     expect(result.check.status).toBe('warn');
     expect(result.check.message).toMatch(new RegExp(`${seedCount} distinct`));
   });
+
+  it('keeps current-pack custom type drift non-blocking when no built-in remediation exists', async () => {
+    await engine.setConfig('schema_pack', 'gbrain-base-v2');
+    const { loadActivePack } = await import('../src/core/schema-pack/load-active.ts');
+    const active = await loadActivePack({ cfg: null, remote: false, dbConfig: 'gbrain-base-v2' });
+    const declared = active.manifest.page_types.length;
+    const seedCount = declared * 2 + 1;
+    const types: string[] = [];
+    for (let i = 0; i < seedCount; i++) types.push(`current-pack-custom-type-${i}`);
+    await seedPages(types);
+
+    const result = await checkTypeProliferation(engine);
+
+    expect(result.check.status).toBe('ok');
+    expect(result.check.message).toContain(`${seedCount} distinct`);
+    expect(result.check.message).not.toContain('onboard --check --explain');
+    expect(result.check.details).toMatchObject({
+      distinct_type_count: seedCount,
+      declared_type_count: declared,
+      active_pack_name: 'gbrain-base-v2',
+      built_in_remediation_available: false,
+    });
+  });
+
+  it('keeps high type proliferation failing when an actionable built-in pack upgrade exists', async () => {
+    const { loadActivePack } = await import('../src/core/schema-pack/load-active.ts');
+    const dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
+    const active = await loadActivePack({ cfg: null, remote: false, dbConfig }).catch(() => null);
+    const declared = active ? active.manifest.page_types.length : 15;
+    const seedCount = declared * 2 + 1;
+    const types: string[] = [];
+    for (let i = 0; i < seedCount; i++) types.push(`upgradeable-custom-type-${i}`);
+    await seedPages(types);
+
+    const result = await checkTypeProliferation(engine);
+
+    expect(result.check.status).toBe('fail');
+    expect(result.check.message).toContain('gbrain-base-v2');
+    expect(result.check.message).toContain('onboard --check --explain');
+    expect(result.check.details).toMatchObject({
+      distinct_type_count: seedCount,
+      declared_type_count: declared,
+      active_pack_name: 'gbrain-base',
+      built_in_remediation_available: true,
+    });
+  });
 });
 
 describe('checkDanglingAliases (F12 source-scoped JOIN)', () => {

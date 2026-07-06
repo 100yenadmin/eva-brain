@@ -25,6 +25,7 @@ export interface OnboardCheckResult {
     name: string;
     status: 'ok' | 'warn' | 'fail';
     message: string;
+    details?: Record<string, unknown>;
   };
   remediations: RemediationStep[];
 }
@@ -454,15 +455,29 @@ export async function checkTypeProliferation(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
   let declared = 15;  // fallback to gbrain-base-v2 default if pack unavailable
+  let activeName: string | null = null;
+  let activeIdentity: string | null = null;
+  let builtInRemediationAvailable = false;
+  let successorIdentity: string | null = null;
   try {
-    const { loadActivePack } = await import('../schema-pack/load-active.ts');
+    const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
     let dbConfig: string | undefined;
     try {
       dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
     } catch { /* tolerate pre-config brains */ }
     const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
       .catch(() => null);
-    if (active) declared = active.manifest.page_types.length;
+    if (active) {
+      declared = active.manifest.page_types.length;
+      activeName = active.manifest.name;
+      activeIdentity = active.identity;
+      const successors = await findPackSuccessors(active.manifest.name, active.manifest.version)
+        .catch(() => []);
+      if (successors.length > 0) {
+        builtInRemediationAvailable = true;
+        successorIdentity = successors[0]!.identity;
+      }
+    }
   } catch {
     // Use fallback.
   }
@@ -472,6 +487,28 @@ export async function checkTypeProliferation(
   );
   const warn = declared + 5;
   const fail = declared * 2;
+  const details = {
+    distinct_type_count: n,
+    declared_type_count: declared,
+    active_pack_name: activeName,
+    active_pack_identity: activeIdentity,
+    built_in_remediation_available: builtInRemediationAvailable,
+    successor_identity: successorIdentity,
+  };
+  if (!builtInRemediationAvailable && n > warn) {
+    return {
+      check: {
+        name: 'type_proliferation',
+        status: 'ok',
+        message:
+          `${n} distinct page types (pack declares ${declared}); ` +
+          `active pack ${activeIdentity ?? activeName ?? 'unknown'} has no built-in type-unification successor. ` +
+          `Treat as custom taxonomy drift unless you define a custom pack with mapping_rules.`,
+        details,
+      },
+      remediations: [],
+    };
+  }
   if (n > fail) {
     return {
       check: {
@@ -479,8 +516,10 @@ export async function checkTypeProliferation(
         status: 'fail',
         message:
           `${n} distinct page types (pack declares ${declared}). ` +
+          (successorIdentity ? `Built-in successor available: ${successorIdentity}. ` : '') +
           `Run \`gbrain onboard --check --explain\` to preview a pack upgrade ` +
           `or define a custom pack with mapping_rules.`,
+        details,
       },
       remediations: [],  // pack_upgrade_available check emits the actionable step
     };
@@ -491,6 +530,7 @@ export async function checkTypeProliferation(
         name: 'type_proliferation',
         status: 'warn',
         message: `${n} distinct page types vs ${declared} declared in pack — consider unification.`,
+        details,
       },
       remediations: [],
     };
@@ -500,6 +540,7 @@ export async function checkTypeProliferation(
       name: 'type_proliferation',
       status: 'ok',
       message: `${n} distinct typed values (pack declares ${declared})`,
+      details,
     },
     remediations: [],
   };

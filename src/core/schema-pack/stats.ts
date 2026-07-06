@@ -67,6 +67,17 @@ interface RawCountRow {
   cnt: string;
 }
 
+function isMissingPagesTableError(err: unknown): boolean {
+  const code = typeof err === 'object' && err !== null && 'code' in err
+    ? String((err as { code?: unknown }).code ?? '')
+    : '';
+  if (code === '42P01') return true;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return /relation ["']?pages["']? does not exist/i.test(message)
+    || /no such table:\s*pages/i.test(message)
+    || /table ["']?pages["']? does not exist/i.test(message);
+}
+
 function computeCoverage(typed: number, total: number): number {
   if (total === 0) return 1.0;  // vacuous truth — matches getBrainScore pattern
   return Math.round((typed / total) * 10000) / 10000;
@@ -164,9 +175,14 @@ async function fetchCountRows(engine: BrainEngine, opts: StatsOpts): Promise<Raw
   `;
   try {
     return await engine.executeRaw<RawCountRow>(sql, params);
-  } catch {
-    // Empty / pre-init brain: pages table may not exist yet.
-    return [];
+  } catch (err) {
+    if (isMissingPagesTableError(err)) {
+      // Empty / pre-init brain: pages table may not exist yet.
+      return [];
+    }
+    // Any other DB failure is actionable. Reporting empty stats here makes a
+    // real brain look blank and hides the operator path to repair it.
+    throw err;
   }
 }
 
