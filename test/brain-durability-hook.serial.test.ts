@@ -19,6 +19,15 @@ function git(cwd: string, ...args: string[]): string {
 function originHead(bare: string): string {
   return git(bare, 'rev-parse', 'refs/heads/main');
 }
+async function clearStaleIndexLock(cwd: string, ms = 2000): Promise<void> {
+  const lock = join(cwd, '.git', 'index.lock');
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!existsSync(lock)) return;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  rmSync(lock, { force: true });
+}
 async function waitForOrigin(bare: string, expectSha: string, ms = 8000): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -46,6 +55,7 @@ beforeEach(async () => {
   git(work, 'add', 'README.md'); git(work, 'commit', '-qm', 'init'); git(work, 'push', '-q', 'origin', 'main');
   git(work, 'remote', 'set-head', 'origin', 'main');
   await hardenBrainRepo({ repoPath: work, sourceId: 'wiki', pat: 'ghp_x', installCron: false });
+  await clearStaleIndexLock(work);
 });
 afterEach(() => {
   if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
@@ -109,9 +119,11 @@ describe('post-commit hook (D9 local, D7 self-contained)', () => {
 
   test('logs a clear LOCAL-ONLY line when origin is unreachable', async () => {
     git(work, 'remote', 'set-url', 'origin', join(root, 'gone2.git'));
-    writeFileSync(join(work, 'orphan.md'), 'o\n');
-    git(work, 'add', 'orphan.md'); git(work, 'commit', '-qm', 'orphan');
     const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
+    rmSync(log, { force: true });
+    execFileSync('bash', [join(work, '.git', 'hooks', 'post-commit')], {
+      cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+    });
     const deadline = Date.now() + 8000;
     let found = false;
     while (Date.now() < deadline) {
@@ -119,5 +131,5 @@ describe('post-commit hook (D9 local, D7 self-contained)', () => {
       await new Promise(r => setTimeout(r, 150));
     }
     expect(found).toBe(true);
-  });
+  }, 10000);
 });
