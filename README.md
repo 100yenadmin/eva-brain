@@ -1,3 +1,14 @@
+<!-- FORK-IDENTITY: evaOS maintained fork — do not remove without updating docs/fleet-contract references -->
+> **⚠️ This is `electricsheephq/eva-brain` — evaOS's maintained fork of [GBrain](https://github.com/garrytan/gbrain) by Garry Tan.**
+>
+> The marketing content below **originates from upstream GBrain and describes the upstream project** (including its first-person framing and stats). evaOS runs this fork as the brain layer inside the HireEva / ElectricSheep customer fleet.
+>
+> - **Fleet install/deploy does NOT use the upstream `bun install -g github:garrytan/gbrain` instructions below** — it flows through the evaOS golden runtime + approval-gated fleet-rollout path. See `evaos-support-control/docs/fleet-contract.md`.
+> - **Upstream:** https://github.com/garrytan/gbrain — credit and upstream issues belong there.
+> - Fork-specific changes are tracked in this repo's `CHANGELOG.md` and PRs.
+
+---
+
 # GBrain
 
 **Search gives you raw pages. GBrain gives you the answer.** It's the brain layer your AI agent has been missing — the only one that does synthesis, graph traversal, and gap analysis in one box. Run a full autonomous agent on top of it, or just wire it into Claude Code or Codex as a supercharged retrieval layer in one command; either way your coding agent stops being amnesiac about everything that isn't code.
