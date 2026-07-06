@@ -152,6 +152,10 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('WORKSPACE_DOCS_SOURCE="${EVA_BRAIN_WORKSPACE_DOCS_SOURCE:-workspace-docs}"');
     expect(script).toContain('WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"');
     expect(script).toContain('SUPPORT_KB_REF="${EVA_BRAIN_SUPPORT_KB_REF:-${OPENCLAW_SUPPORT_KB_PINNED_REF:-}}"');
+    expect(script).toContain('SOURCE_EMBED_BATCH_SIZE="${EVA_BRAIN_SOURCE_EMBED_BATCH_SIZE:-25}"');
+    expect(script).toContain('SOURCE_EMBED_CONCURRENCY="${EVA_BRAIN_SOURCE_EMBED_CONCURRENCY:-1}"');
+    expect(script).toContain('SOURCE_EMBED_PACE_MODE="${EVA_BRAIN_SOURCE_EMBED_PACE_MODE:-gentle}"');
+    expect(script).toContain('SOURCE_EMBED_TIME_BUDGET_MS="${EVA_BRAIN_SOURCE_EMBED_TIME_BUDGET_MS:-600000}"');
     expect(script).toContain('OPENCLAW_SUPPORT_KB_PINNED_REF=$SUPPORT_KB_REF');
     expect(script).toContain('git -C "$kb_dir" fetch --depth 1 origin "$SUPPORT_KB_REF"');
     expect(script).toContain('OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"');
@@ -160,6 +164,13 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('config?.agents?.defaults?.workspace');
     expect(script).toContain('WORKSPACE_DOCS_DIR="$HOME/.openclaw/workspace/docs"');
     expect(script).toContain('gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed');
+    expect(script).toContain('GBRAIN_EMBED_CONCURRENCY=$SOURCE_EMBED_CONCURRENCY');
+    expect(script).toContain('GBRAIN_EMBED_TIME_BUDGET_MS=$SOURCE_EMBED_TIME_BUDGET_MS');
+    expect(script).toContain('embed --stale --source "$source_id"');
+    expect(script).toContain('--batch-size "$SOURCE_EMBED_BATCH_SIZE"');
+    expect(script).toContain('"--pace=$SOURCE_EMBED_PACE_MODE"');
+    expect(script).toContain('--pace-max-concurrency "$SOURCE_EMBED_CONCURRENCY"');
+    expect(script).not.toContain('run "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id"');
     expect(script).toContain('sources "$freshness_command" "$source_id" off');
     expect(script).toContain('disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
