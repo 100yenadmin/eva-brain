@@ -111,6 +111,42 @@ describe('gbrain schema CLI (Phase C)', () => {
     expect(r.stderr).toContain('Unknown schema subcommand');
   });
 
+  test('schema stats opens the configured PGLite database_path', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-schema-stats-config-'));
+    try {
+      const docsDir = join(home, 'docs');
+      mkdirSync(docsDir, { recursive: true });
+      writeFileSync(
+        join(docsDir, 'alice.md'),
+        `---\ntitle: Alice\ntype: person\n---\n# Alice\n\nSchema stats should see this page.\n`,
+        'utf-8',
+      );
+
+      const env = {
+        GBRAIN_HOME: home,
+        DATABASE_URL: '',
+        GBRAIN_DATABASE_URL: '',
+        OPENAI_API_KEY: '',
+        VOYAGE_API_KEY: '',
+      };
+      const init = gbrain(['init', '--pglite', '--no-embedding'], env);
+      expect(init.code).toBe(0);
+      const imported = gbrain(['import', docsDir, '--no-embed'], env);
+      expect(imported.code).toBe(0);
+
+      const r = gbrain(['schema', 'stats', '--json'], env);
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.stdout);
+      expect(parsed.aggregate.total_pages).toBe(1);
+      expect(parsed.aggregate.typed_pages).toBe(1);
+      expect(parsed.per_source).toEqual([
+        expect.objectContaining({ source_id: 'default', total_pages: 1 }),
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('schema use without arg shows usage hint', () => {
     const r = gbrain(['schema', 'use']);
     expect(r.code).toBe(2);
