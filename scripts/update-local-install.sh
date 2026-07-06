@@ -493,6 +493,7 @@ install_support_kb() {
   local kb_repo="${OPENCLAW_SUPPORT_KB_REPO:-https://github.com/electricsheephq/openclaw-support-kb.git}"
   local kb_dir="${OPENCLAW_SUPPORT_KB_DIR:-$GBRAIN_DIR/sources/openclaw-support-kb}"
   if [ -d "$kb_dir/.git" ]; then
+    run git -C "$kb_dir" remote set-url origin "$kb_repo"
     if [ -n "$(git -C "$kb_dir" status --porcelain)" ]; then
       local backup_dir="$GBRAIN_DIR/backups/openclaw-support-kb-$(date -u +%Y%m%dT%H%M%SZ)"
       log "Support KB checkout has local changes; archiving it to $backup_dir before reinstalling"
@@ -504,7 +505,16 @@ install_support_kb() {
         run git -C "$kb_dir" fetch --depth 1 origin "$SUPPORT_KB_REF"
         run git -C "$kb_dir" checkout --detach FETCH_HEAD
       else
-        run git -C "$kb_dir" pull --ff-only
+        run git -C "$kb_dir" fetch origin main
+        if git -C "$kb_dir" merge-base --is-ancestor HEAD origin/main; then
+          run git -C "$kb_dir" switch -C main origin/main
+        else
+          local backup_dir="$GBRAIN_DIR/backups/openclaw-support-kb-$(date -u +%Y%m%dT%H%M%SZ)"
+          log "Support KB checkout is not safely fast-forwardable to origin/main; archiving it to $backup_dir before reinstalling"
+          run mkdir -p "$(dirname "$backup_dir")"
+          run mv "$kb_dir" "$backup_dir"
+          run git clone "$kb_repo" "$kb_dir"
+        fi
       fi
     fi
   else
