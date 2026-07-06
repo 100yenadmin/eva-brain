@@ -21,6 +21,10 @@ WORKSPACE_DOCS_DIR="${EVA_BRAIN_WORKSPACE_DOCS_DIR:-}"
 SUPPORT_KB_REF="${EVA_BRAIN_SUPPORT_KB_REF:-${OPENCLAW_SUPPORT_KB_PINNED_REF:-}}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 OPENCLAW_EXTENSIONS_DIR="${OPENCLAW_EXTENSIONS_DIR:-$HOME/.openclaw/extensions}"
+SOURCE_EMBED_BATCH_SIZE="${EVA_BRAIN_SOURCE_EMBED_BATCH_SIZE:-25}"
+SOURCE_EMBED_CONCURRENCY="${EVA_BRAIN_SOURCE_EMBED_CONCURRENCY:-1}"
+SOURCE_EMBED_PACE_MODE="${EVA_BRAIN_SOURCE_EMBED_PACE_MODE:-gentle}"
+SOURCE_EMBED_TIME_BUDGET_MS="${EVA_BRAIN_SOURCE_EMBED_TIME_BUDGET_MS:-600000}"
 RUN_DOCTOR="true"
 RUN_PROVIDER_TEST="auto"
 RUN_HEALTH="auto"
@@ -66,6 +70,18 @@ Environment:
                                Otherwise resolved from OpenClaw config
                                agents.defaults.workspace/docs, then
                                ~/.openclaw/workspace/docs.
+  EVA_BRAIN_SOURCE_EMBED_BATCH_SIZE
+                              Batch size for updater-managed source embedding
+                              (default: 25).
+  EVA_BRAIN_SOURCE_EMBED_CONCURRENCY
+                              Worker cap for updater-managed source embedding
+                              (default: 1).
+  EVA_BRAIN_SOURCE_EMBED_PACE_MODE
+                              Pace mode for updater-managed source embedding
+                              (default: gentle).
+  EVA_BRAIN_SOURCE_EMBED_TIME_BUDGET_MS
+                              Work budget for updater-managed source embedding
+                              (default: 600000).
   OPENCLAW_EXTENSIONS_DIR      OpenClaw extensions directory used when staging
                                the gbrain plugin (default: ~/.openclaw/extensions).
   EVA_BRAIN_SUPPORT_KB_REF     Same as --support-kb-ref.
@@ -431,7 +447,14 @@ embed_source_if_provider_auth_available() {
     log "Skipping $label embedding because $model requires VOYAGE_API_KEY and no key is configured. Source-scoped text search will still be validated."
     return
   fi
-  run "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id"
+  log "Embedding stale $label chunks with updater-safe pacing: batch=$SOURCE_EMBED_BATCH_SIZE concurrency=$SOURCE_EMBED_CONCURRENCY pace=$SOURCE_EMBED_PACE_MODE"
+  run env \
+    "GBRAIN_EMBED_CONCURRENCY=$SOURCE_EMBED_CONCURRENCY" \
+    "GBRAIN_EMBED_TIME_BUDGET_MS=$SOURCE_EMBED_TIME_BUDGET_MS" \
+    "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id" \
+      --batch-size "$SOURCE_EMBED_BATCH_SIZE" \
+      "--pace=$SOURCE_EMBED_PACE_MODE" \
+      --pace-max-concurrency "$SOURCE_EMBED_CONCURRENCY"
 }
 
 embed_support_kb_if_provider_auth_available() {
