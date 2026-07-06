@@ -91,6 +91,34 @@ describe('runStatsCore — empty brain', () => {
       expect(result.per_source).toEqual([]);
     });
   });
+
+  it('treats a missing pages table as pre-init empty stats', async () => {
+    const missingPagesEngine = {
+      executeRaw: async () => {
+        const err = new Error('relation "pages" does not exist') as Error & { code?: string };
+        err.code = '42P01';
+        throw err;
+      },
+    };
+    const result = await runStatsCore({
+      ...ctxOf(),
+      engine: missingPagesEngine,
+    } as unknown as OperationContext);
+    expect(result.aggregate.total_pages).toBe(0);
+    expect(result.per_source).toEqual([]);
+  });
+
+  it('does not report empty stats when the DB query fails unexpectedly', async () => {
+    const brokenEngine = {
+      executeRaw: async () => {
+        throw new Error('boom unexpected stats query failure');
+      },
+    };
+    await expect(runStatsCore({
+      ...ctxOf(),
+      engine: brokenEngine,
+    } as unknown as OperationContext)).rejects.toThrow('boom unexpected stats query failure');
+  });
 });
 
 describe('runStatsCore — single source', () => {
