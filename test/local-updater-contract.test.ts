@@ -646,6 +646,73 @@ exit 3
     expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
   });
 
+  test('local updater recovers clean detached Support KB checkouts', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const kbRepo = makeSupportKbRepo(tempHome());
+    runGit(kbRepo, ['branch', '-M', 'main']);
+    const oldRef = Bun.spawnSync({
+      cmd: ['git', 'rev-parse', 'HEAD'],
+      cwd: kbRepo,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }).stdout.toString().trim();
+    writeFileSync(join(kbRepo, 'updated.md'), '# updated support kb\n');
+    runGit(kbRepo, ['add', 'updated.md']);
+    runGit(kbRepo, ['commit', '-m', 'update support kb']);
+    const newRef = Bun.spawnSync({
+      cmd: ['git', 'rev-parse', 'HEAD'],
+      cwd: kbRepo,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }).stdout.toString().trim();
+    const kbDir = join(home, '.gbrain/sources/openclaw-support-kb');
+    runGit(home, ['clone', kbRepo, kbDir]);
+    runGit(kbDir, ['checkout', '--detach', oldRef]);
+    writeFakeInstallBins(home, 'unknown');
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--with-support-kb',
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--without-workspace-docs',
+        '--skip-provider-test',
+        '--skip-doctor',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
+        VOYAGE_API_KEY: '',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(0);
+    expect(stdout).toContain(`git -C ${kbDir} fetch origin main`);
+    expect(stdout).toContain(`git -C ${kbDir} switch -C main origin/main`);
+    expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
+    expect(stderr).not.toContain('not safely fast-forwardable');
+    expect(Bun.spawnSync({ cmd: ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd: kbDir, stdout: 'pipe' }).stdout.toString().trim()).toBe('main');
+    expect(Bun.spawnSync({ cmd: ['git', 'rev-parse', 'HEAD'], cwd: kbDir, stdout: 'pipe' }).stdout.toString().trim()).toBe(newRef);
+  });
+
   test('local updater dry-run pins Support KB to an exact commit ref', () => {
     const home = tempHome();
     const repo = makeRepoWithEvaTags(home, []);
