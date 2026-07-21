@@ -11,6 +11,11 @@ const WORKSPACE_DOCS_QUERY = process.env.EVA_BRAIN_WORKSPACE_DOCS_QUERY || 'runb
 const DEFAULT_TIMEOUT_MS = 30_000;
 const CANONICAL_WORKSPACE_DOCS_PATH = '/root/.openclaw/workspace/docs';
 const CANONICAL_WORKSPACE_RUNBOOKS_PATH = '/root/.openclaw/workspace/docs/runbooks';
+const ADVISORY_DOCTOR_FAILURES = new Set([
+  'cycle_freshness',
+  'links_extraction_lag',
+  'sync_freshness',
+]);
 
 const requireOpenClaw = process.argv.includes('--require-openclaw') || process.env.EVA_BRAIN_REQUIRE_OPENCLAW === 'true';
 const allowMissingSupportKb = process.argv.includes('--allow-missing-support-kb') || process.env.EVA_BRAIN_ALLOW_MISSING_SUPPORT_KB === 'true';
@@ -295,11 +300,35 @@ function main() {
   const pluginInspect = run(openclaw, ['plugins', 'inspect', 'gbrain', '--runtime', '--json'], {
     timeoutMs: 15_000,
   });
+  const doctorReport = parseJson(doctor.stdout, null);
+  const doctorFailures = Array.isArray(doctorReport?.checks)
+    ? doctorReport.checks
+        .filter(check => check?.status === 'fail')
+        .map(check => ({
+          name: String(check.name ?? 'unknown'),
+          category: String(check.category ?? 'unknown'),
+          message: String(check.message ?? ''),
+        }))
+    : [];
+  const doctorDiagnosticAvailable = Boolean(
+    Array.isArray(doctorReport?.checks) &&
+    !doctor.timedOut &&
+    doctor.signal == null,
+  );
+  const doctorBlockingFailures = doctorFailures.filter(
+    failure => !ADVISORY_DOCTOR_FAILURES.has(failure.name),
+  );
+  const doctorExitAcceptable = Boolean(
+    doctor.ok ||
+    (doctorFailures.length > 0 && doctorBlockingFailures.length === 0),
+  );
 
   const report = {
     ok: Boolean(
       version.ok &&
-      doctor.ok &&
+      doctorDiagnosticAvailable &&
+      doctorExitAcceptable &&
+      doctorBlockingFailures.length === 0 &&
       sourcesResult.ok &&
       (!requireSupportKb ||
         (supportKb &&
@@ -318,7 +347,12 @@ function main() {
       version: version.stdout.trim(),
       versionOk: version.ok,
       doctorOk: doctor.ok,
-      doctor: parseJson(doctor.stdout, null),
+      doctorGate: 'advisory-content-only',
+      doctorDiagnosticAvailable,
+      doctorExitAcceptable,
+      doctorFailures,
+      doctorBlockingFailures,
+      doctor: doctorReport,
     },
     pages: {
       total: totalPages,

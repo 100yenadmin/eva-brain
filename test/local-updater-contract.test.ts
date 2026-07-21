@@ -175,8 +175,9 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toContain('"--pace=$SOURCE_EMBED_PACE_MODE"');
     expect(script).toContain('--pace-max-concurrency "$SOURCE_EMBED_CONCURRENCY"');
     expect(script).not.toContain('run "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id"');
-    expect(script).toContain('sources "$freshness_command" "$source_id" off');
-    expect(script).toContain('disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"');
+    expect(script).not.toContain('sources "$freshness_command" "$source_id" off');
+    expect(script).toContain('Doctor reported brain/content readiness gaps; continuing to the source-aware runtime health gate.');
+    expect(script).not.toContain('Skipping source-aware health report because no source package was requested or detected');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/init\s+--pglite\s+--embedding-model\s+voyage:voyage-4-large\s+--embedding-dimensions\s+2048/);
@@ -200,6 +201,10 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(health).toContain("process.argv.includes('--require-workspace-docs')");
     expect(health).toContain("process.argv.includes('--require-agents-docs-guidance')");
     expect(health).toContain('agentsDocsGuidance');
+    expect(health).toContain("doctorGate: 'advisory-content-only'");
+    expect(health).toContain('doctorExitAcceptable');
+    expect(health).toContain('doctorBlockingFailures.length === 0');
+    expect(health).not.toContain('version.ok &&\n      doctor.ok &&');
     expect(health).toContain('/root/.openclaw/workspace/docs');
     expect(health).toContain('!requireOpenClaw || pluginInspect.ok');
 
@@ -655,7 +660,7 @@ exit 3
     const stdout = new TextDecoder().decode(result.stdout);
     const stderr = new TextDecoder().decode(result.stderr);
     expect(stderr).toContain('Support KB checkout has local changes; archiving it');
-    expect(stderr).toContain('Dry-run: skipping optional cycle-freshness disable execution');
+    expect(stderr).not.toContain('cycle-freshness');
     expect(stdout).toContain(`mv ${kbDir}`);
     expect(stdout).toContain(`git clone ${kbRepo} ${kbDir}`);
     expect(stdout).not.toContain(`git -C ${kbDir} pull --ff-only`);
@@ -770,7 +775,7 @@ exit 3
     expect(stdout).toContain('env OPENCLAW_SUPPORT_KB_PINNED_REF=0123456789abcdef0123456789abcdef01234567 node');
   });
 
-  test('local updater treats missing cycle-freshness support as optional during real support KB install', () => {
+  test('local updater does not call removed source freshness subcommands', () => {
     const home = tempHome();
     const repo = makeRepoWithEvaTags(home, []);
     const kbRepo = makeSupportKbRepo(tempHome());
@@ -805,9 +810,10 @@ exit 3
       stderr: 'pipe',
     });
 
-    const stderr = new TextDecoder().decode(result.stderr);
+    const stdout = new TextDecoder().decode(result.stdout);
     expect(result.exitCode).toBe(0);
-    expect(stderr).toContain("Skipping cycle-freshness disable; installed gbrain does not expose 'sources cycle-freshness'.");
+    expect(stdout).not.toContain('cycle-freshness');
+    expect(stdout).not.toContain('sync-freshness');
   });
 
   test('local updater skips Support KB embedding on no-key Voyage installs', () => {
@@ -963,7 +969,7 @@ exit 0
     expect(result.exitCode).toBe(0);
     expect(stdout).toContain(`gbrain sources add workspace-docs --path ${docsDir}`);
     expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
-    expect(stdout).toContain('gbrain sources sync-freshness workspace-docs off');
+    expect(stdout).not.toContain('gbrain sources sync-freshness workspace-docs off');
     expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('workspace embed should have been skipped');
   });
@@ -987,7 +993,7 @@ exit 0
       `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.47.6"; exit 0; fi
-if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100}'; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100,"checks":[]}'; exit 0; fi
 if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
   echo '{"sources":[{"id":"openclaw-support-kb","page_count":3},{"id":"workspace-docs","page_count":2}]}'
   exit 0
@@ -1030,6 +1036,204 @@ exit 3
     expect(report.agentsDocsGuidance.matchingFiles).toContain(join(home, '.openclaw/workspace/AGENTS.md'));
   });
 
+  test('Eva health reports doctor content gaps without failing a callable install', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.63.3"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then
+  echo '{"health_score":5,"checks":[{"name":"cycle_freshness","status":"fail","category":"brain","message":"never cycled"}]}'
+  exit 1
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  echo '{"results":[{"slug":"agents","score":1}]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(true);
+    expect(report.gbrain.doctorOk).toBe(false);
+    expect(report.gbrain.doctorGate).toBe('advisory-content-only');
+    expect(report.gbrain.doctorFailures).toEqual([
+      { name: 'cycle_freshness', category: 'brain', message: 'never cycled' },
+    ]);
+    expect(report.gbrain.doctorDiagnosticAvailable).toBe(true);
+    expect(report.gbrain.doctorExitAcceptable).toBe(true);
+    expect(report.gbrain.doctorBlockingFailures).toEqual([]);
+  });
+
+  test('Eva health blocks runtime-critical doctor failures even when source search passes', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.63.3"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then
+  echo '{"health_score":80,"checks":[{"name":"timeline_dedup_index","status":"fail","category":"runtime","message":"missing unique index"}]}'
+  exit 1
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  echo '{"results":[{"slug":"agents","score":1}]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(false);
+    expect(report.gbrain.doctorDiagnosticAvailable).toBe(true);
+    expect(report.gbrain.doctorExitAcceptable).toBe(false);
+    expect(report.gbrain.doctorBlockingFailures).toEqual([
+      { name: 'timeline_dedup_index', category: 'runtime', message: 'missing unique index' },
+    ]);
+  });
+
+  test('Eva health fails closed when doctor does not return a diagnostic report', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.63.3"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo 'doctor crashed' >&2; exit 2; fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  echo '{"results":[{"slug":"agents","score":1}]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(false);
+    expect(report.gbrain.doctorGate).toBe('advisory-content-only');
+    expect(report.gbrain.doctorDiagnosticAvailable).toBe(false);
+    expect(report.gbrain.doctorExitAcceptable).toBe(false);
+    expect(report.gbrain.doctor).toBeNull();
+  });
+
+  test('Eva health rejects parseable error JSON that is not a doctor report', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.63.3"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"error":"connection lost"}'; exit 1; fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then
+  echo '{"results":[{"slug":"agents","score":1}]}'
+  exit 0
+fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.ok).toBe(false);
+    expect(report.gbrain.doctorDiagnosticAvailable).toBe(false);
+    expect(report.gbrain.doctorExitAcceptable).toBe(false);
+    expect(report.gbrain.doctor).toEqual({ error: 'connection lost' });
+  });
+
   test('Eva health proves workspace-docs search with an adaptive source query', () => {
     const home = tempHome();
     const binDir = join(home, 'bin');
@@ -1052,7 +1256,7 @@ exit 3
       `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.47.7"; exit 0; fi
-if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100}'; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100,"checks":[]}'; exit 0; fi
 if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
   echo '{"sources":[{"id":"openclaw-support-kb","page_count":3},{"id":"workspace-docs","page_count":2,"local_path":"${docsDir}"}]}'
   exit 0
@@ -1188,46 +1392,6 @@ exit 0
     expect(stdout).toContain(`gbrain import ${docsDir} --source-id workspace-docs --no-embed`);
     expect(stderr).toContain('Skipping Workspace docs embedding because voyage:voyage-4-large requires VOYAGE_API_KEY');
     expect(stderr).not.toContain('workspace embed should have been skipped');
-  });
-
-  test('local updater still fails non-compatibility cycle-freshness errors', () => {
-    const home = tempHome();
-    const repo = makeRepoWithEvaTags(home, []);
-    const kbRepo = makeSupportKbRepo(tempHome());
-    writeFakeInstallBins(home, 'other');
-
-    const result = Bun.spawnSync({
-      cmd: [
-        'bash',
-        'scripts/update-local-install.sh',
-        '--ref',
-        'master',
-        '--repo',
-        repo,
-        '--dir',
-        join(home, 'eva-brain'),
-        '--with-support-kb',
-        '--without-openclaw',
-        '--without-codex-plugin',
-        '--skip-provider-test',
-        '--skip-doctor',
-        '--skip-health',
-      ],
-      cwd: root,
-      env: {
-        ...process.env,
-        HOME: home,
-        PATH: `${join(home, '.bun/bin')}:${process.env.PATH ?? ''}`,
-        GBRAIN_HOME: home,
-        OPENCLAW_SUPPORT_KB_REPO: kbRepo,
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-
-    const stderr = new TextDecoder().decode(result.stderr);
-    expect(result.exitCode).not.toBe(0);
-    expect(stderr).toContain('database locked while updating source freshness');
   });
 
   test('Codex installer rejects missing option values instead of falling back to cwd', () => {

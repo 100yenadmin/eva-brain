@@ -350,7 +350,20 @@ doctor() {
     return
   fi
   stop_stale_serve_if_requested
-  run env GBRAIN_SKILLS_DIR="$INSTALL_DIR/skills" "$HOME/.bun/bin/gbrain" doctor --json
+  local output
+  local cmd=(env GBRAIN_SKILLS_DIR="$INSTALL_DIR/skills" "$HOME/.bun/bin/gbrain" doctor --json)
+  printf '+'
+  printf ' %q' "${cmd[@]}"
+  printf '\n'
+  if [ "$DRY_RUN" = "true" ]; then
+    return
+  fi
+  if output="$("${cmd[@]}" 2>&1)"; then
+    printf '%s\n' "$output"
+    return
+  fi
+  printf '%s\n' "$output"
+  log "Doctor reported brain/content readiness gaps; continuing to the source-aware runtime health gate."
 }
 
 health_report() {
@@ -363,10 +376,6 @@ health_report() {
   local require_workspace_docs="false"
   if [ "$WITH_WORKSPACE_DOCS" = "true" ] || { [ "$WITH_WORKSPACE_DOCS" = "auto" ] && [ -d "$WORKSPACE_DOCS_DIR" ]; }; then
     require_workspace_docs="true"
-  fi
-  if [ "$RUN_HEALTH" = "auto" ] && [ "$WITH_SUPPORT_KB" != "true" ] && [ "$require_workspace_docs" != "true" ]; then
-    log "Skipping source-aware health report because no source package was requested or detected"
-    return
   fi
   local health_args=()
   if [ "$WITH_OPENCLAW" = "true" ]; then
@@ -556,43 +565,6 @@ install_support_kb() {
   run node "$kb_dir/scripts/status.mjs"
   run "$HOME/.bun/bin/gbrain" sync --repo "$kb_dir" --source openclaw-support-kb --no-embed
   embed_support_kb_if_provider_auth_available
-  disable_source_cycle_freshness_if_supported openclaw-support-kb
-}
-
-disable_source_cycle_freshness_if_supported() {
-  disable_source_freshness_if_supported "$1" cycle-freshness
-}
-
-disable_source_sync_freshness_if_supported() {
-  disable_source_freshness_if_supported "$1" sync-freshness
-}
-
-disable_source_freshness_if_supported() {
-  local source_id="$1"
-  local freshness_command="$2"
-  local output
-  local cmd=("$HOME/.bun/bin/gbrain" sources "$freshness_command" "$source_id" off)
-  printf '+'
-  printf ' %q' "${cmd[@]}"
-  printf '\n'
-  if [ "$DRY_RUN" = "true" ]; then
-    log "Dry-run: skipping optional $freshness_command disable execution"
-    return
-  fi
-  if output="$("${cmd[@]}" 2>&1)"; then
-    printf '%s\n' "$output"
-    return
-  fi
-  local normalized_output
-  normalized_output="$(printf '%s' "$output" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
-  local first_line
-  first_line="$(printf '%s\n' "$normalized_output" | sed -n '1p')"
-  if [ "$first_line" = "Unknown sources subcommand: $freshness_command" ]; then
-    log "Skipping $freshness_command disable; installed gbrain does not expose 'sources $freshness_command'."
-    return
-  fi
-  printf '%s\n' "$output" >&2
-  return 1
 }
 
 install_workspace_docs() {
@@ -621,8 +593,6 @@ install_workspace_docs() {
   fi
   run "$HOME/.bun/bin/gbrain" import "$WORKSPACE_DOCS_DIR" --source-id "$WORKSPACE_DOCS_SOURCE" --no-embed
   embed_source_if_provider_auth_available "$WORKSPACE_DOCS_SOURCE" "Workspace docs"
-  disable_source_cycle_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"
-  disable_source_sync_freshness_if_supported "$WORKSPACE_DOCS_SOURCE"
 }
 
 main() {
