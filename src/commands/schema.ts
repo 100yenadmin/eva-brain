@@ -23,6 +23,7 @@ import {
   addAliasToType,
   addLinkTypeToPack,
   addPrefixToType,
+  BUNDLED_PACK_NAMES,
   addTypeToPack,
   invalidatePackCache,
   loadActivePack,
@@ -179,7 +180,7 @@ async function runActive(_args: string[]): Promise<void> {
 }
 
 function runList(_args: string[]): void {
-  const bundled = ['gbrain-base', 'gbrain-recommended'];
+  const bundled = [...BUNDLED_PACK_NAMES];
   const installedDir = gbrainPath('schema-packs');
   const installed: string[] = [];
   if (existsSync(installedDir)) {
@@ -366,12 +367,12 @@ function runUse(args: string[]): void {
 }
 
 function packPathByName(name: string): string | null {
-  if (name === 'gbrain-base') {
+  if (BUNDLED_PACK_NAMES.has(name)) {
     // Resolve bundled YAML — try a few locations.
     const here = dirname(new URL(import.meta.url).pathname);
     const candidates = [
-      join(here, '..', 'core', 'schema-pack', 'base', 'gbrain-base.yaml'),
-      join(here, '..', '..', 'src', 'core', 'schema-pack', 'base', 'gbrain-base.yaml'),
+      join(here, '..', 'core', 'schema-pack', 'base', `${name}.yaml`),
+      join(here, '..', '..', 'src', 'core', 'schema-pack', 'base', `${name}.yaml`),
     ];
     for (const c of candidates) {
       if (existsSync(c)) return c;
@@ -433,14 +434,12 @@ function parseFlags(args: string[]): ParsedFlags {
 
 async function withConnectedEngine<T>(fn: (engine: import('../core/engine.ts').BrainEngine) => Promise<T>): Promise<T> {
   const { createEngine } = await import('../core/engine-factory.ts');
-  const cfg = loadConfig() ?? {};
-  // Keep schema subcommands on the same configured engine path as status/search.
-  // A hand-built config used to drop PGLite's database_path, opening an empty
-  // in-memory brain while the real local brain had pages.
-  const connectConfig: import('../core/types.ts').EngineConfig = toEngineConfig({
-    ...cfg,
-    engine: (cfg as { engine?: string }).engine === 'postgres' ? 'postgres' : 'pglite',
-  });
+  const cfg = loadConfig() ?? { engine: 'pglite' as const };
+  // PR #1321 (closed) defensive fix retained: build the EngineConfig once and
+  // pass it to BOTH createEngine and engine.connect. The factory captures
+  // config at construction; explicit re-pass at connect() is defense in depth
+  // against future engine implementations that read URL from connect-time.
+  const connectConfig = toEngineConfig(cfg);
   const engine = await createEngine(connectConfig);
   await engine.connect(connectConfig);
   try {

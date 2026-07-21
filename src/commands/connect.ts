@@ -121,7 +121,7 @@ Flags:
   --yes                Skip the install confirmation prompt
   --force              On --install, replace an existing server of the same name
   --json               Emit machine-readable JSON (secret redacted)
-  --show-token         Deprecated compatibility flag; secrets remain redacted in output
+  --show-token         With --json, include the literal token/secret (avoid in logs)
   --timeout-ms <n>     Smoke-test timeout for --install (default: ${DEFAULT_TIMEOUT_MS})
 
 Examples:
@@ -299,7 +299,7 @@ export interface OAuthCreds {
 }
 
 function claudeBlock(p: { name: string; url: string; token: string | null }): string {
-  const headerToken = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
+  const headerToken = p.token ?? PLACEHOLDER_TOKEN;
   const cmd = cmdString('claude', buildClaudeMcpAddArgv({ name: p.name, url: p.url, headerToken }));
   const lines = ['# Paste into Claude Code:', '', 'Connect my knowledge brain, then learn what it can do:', '', `  ${cmd}`, ''];
   if (!p.token) lines.push(`Replace ${PLACEHOLDER_TOKEN} with a token from \`gbrain auth create "claude-code"\` on the host.`, '');
@@ -308,7 +308,7 @@ function claudeBlock(p: { name: string; url: string; token: string | null }): st
 }
 
 function codexBlock(p: { name: string; url: string; token: string | null }): string {
-  const tokenValue = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
+  const tokenValue = p.token ?? PLACEHOLDER_TOKEN;
   const cmd = cmdString('codex', buildCodexMcpAddArgv({ name: p.name, url: p.url, envVar: ENV_VAR }));
   const lines = [
     '# Paste into Codex:',
@@ -331,7 +331,7 @@ function codexBlock(p: { name: string; url: string; token: string | null }): str
 }
 
 function perplexityBearerBlock(p: { url: string; token: string | null }): string {
-  const tokenValue = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
+  const tokenValue = p.token ?? PLACEHOLDER_TOKEN;
   return [
     '# In Perplexity (Pro): Settings → Connectors → add a remote MCP server:',
     `#   URL:    ${p.url}`,
@@ -347,7 +347,7 @@ function perplexityBearerBlock(p: { url: string; token: string | null }): string
 }
 
 function perplexityOAuthBlock(p: { oauth: OAuthCreds }): string {
-  const secret = p.oauth.clientSecret == null ? PLACEHOLDER_SECRET : REDACTED;
+  const secret = p.oauth.clientSecret ?? PLACEHOLDER_SECRET;
   return [
     '# In Perplexity (Pro): Settings → Connectors → add a remote MCP server:',
     `#   URL:           ${p.oauth.issuer}/mcp`,
@@ -368,7 +368,7 @@ function perplexityOAuthBlock(p: { oauth: OAuthCreds }): string {
 }
 
 function genericBearerBlock(p: { url: string; token: string | null }): string {
-  const headerToken = p.token == null ? PLACEHOLDER_TOKEN : REDACTED;
+  const headerToken = p.token ?? PLACEHOLDER_TOKEN;
   return [
     '# Add an HTTP MCP server pointed at your gbrain:',
     `#   URL:    ${p.url}`,
@@ -379,7 +379,7 @@ function genericBearerBlock(p: { url: string; token: string | null }): string {
 }
 
 function genericOAuthBlock(p: { oauth: OAuthCreds }): string {
-  const secret = p.oauth.clientSecret == null ? PLACEHOLDER_SECRET : REDACTED;
+  const secret = p.oauth.clientSecret ?? PLACEHOLDER_SECRET;
   return [
     '# Add an OAuth 2.1 (client-credentials) MCP server pointed at your gbrain:',
     `#   URL:           ${p.oauth.issuer}/mcp`,
@@ -391,37 +391,6 @@ function genericOAuthBlock(p: { oauth: OAuthCreds }): string {
     '',
     OAUTH_SECRET_NOTE,
   ].join('\n');
-}
-
-function redactedOAuthBlock(p: { agent: AgentId; issuer: string }): string {
-  const lines = p.agent === 'generic'
-    ? [
-        '# Add an OAuth 2.1 (client-credentials) MCP server pointed at your gbrain:',
-        `#   URL:           ${p.issuer}/mcp`,
-        `#   Issuer URL:    ${p.issuer}`,
-      ]
-    : [
-        '# In Perplexity (Pro): Settings -> Connectors -> add a remote MCP server:',
-        `#   URL:           ${p.issuer}/mcp`,
-        '#   Auth:          OAuth 2.1 (client credentials)',
-        `#   Issuer URL:    ${p.issuer}`,
-      ];
-  lines.push(
-    `#   Client ID:     ${REDACTED}`,
-    `#   Client Secret: ${REDACTED}`,
-    '',
-  );
-  if (p.agent !== 'generic') {
-    lines.push(
-      'OAuth is the recommended path for Perplexity (a cloud service): the connector',
-      'mints short-lived, scoped access tokens instead of holding a long-lived secret.',
-      '',
-      PERPLEXITY_REMOTE_NOTE,
-      '',
-    );
-  }
-  lines.push(LEARN_INSTRUCTION, '', OAUTH_SECRET_NOTE);
-  return lines.join('\n');
 }
 
 export function buildConnectBlock(p: { agent: AgentId; name: string; url: string; token: string | null; oauth?: OAuthCreds }): string {
@@ -437,24 +406,6 @@ export function buildConnectBlock(p: { agent: AgentId; name: string; url: string
   }
 }
 
-function buildRedactedOAuthJson(p: { url: string; name: string; agent: AgentId; issuer: string; scopes?: string }): Record<string, unknown> {
-  return {
-    schema_version: 1,
-    agent: p.agent,
-    mcp_url: p.url,
-    name: p.name,
-    auth: 'oauth',
-    issuer_url: p.issuer,
-    client_id: REDACTED,
-    client_secret: REDACTED,
-    secret_redacted: true,
-    scopes: p.scopes ?? DEFAULT_SCOPES,
-    command: null,
-    command_argv: null,
-    learn_instruction: LEARN_INSTRUCTION,
-  };
-}
-
 export function buildJson(p: { url: string; name: string; agent: AgentId; token: string | null; showToken: boolean; oauth?: OAuthCreds; scopes?: string }): Record<string, unknown> {
   if (p.oauth) {
     const secret = p.oauth.clientSecret;
@@ -466,15 +417,15 @@ export function buildJson(p: { url: string; name: string; agent: AgentId; token:
       auth: 'oauth',
       issuer_url: p.oauth.issuer,
       client_id: p.oauth.clientId,
-      client_secret: secret == null ? null : REDACTED,
-      secret_redacted: secret != null,
+      client_secret: secret == null ? null : (p.showToken ? secret : REDACTED),
+      secret_redacted: secret != null && !p.showToken,
       scopes: p.scopes ?? DEFAULT_SCOPES,
       command: null,
       command_argv: null,
       learn_instruction: LEARN_INSTRUCTION,
     };
   }
-  const shownToken = p.token ? REDACTED : PLACEHOLDER_TOKEN;
+  const shownToken = p.token ? (p.showToken ? p.token : REDACTED) : PLACEHOLDER_TOKEN;
   let command_argv: string[] | null = null;
   let command: string | null = null;
   if (p.agent === 'claude-code') {
@@ -493,7 +444,7 @@ export function buildJson(p: { url: string; name: string; agent: AgentId; token:
     auth: 'bearer',
     env_var: ENV_VAR,
     token_present: p.token != null,
-    token_redacted: p.token != null,
+    token_redacted: p.token != null && !p.showToken,
     header: `Authorization: Bearer ${shownToken}`,
     command, // runnable CLI command; null for perplexity/generic (UI/manual setup)
     command_argv,
@@ -585,7 +536,7 @@ interface ParsedFlags {
   token?: string;
   name: string;
   agent: AgentId;
-  useOAuth: boolean;
+  oauth: boolean;
   register: boolean;
   clientId?: string;
   clientSecret?: string;
@@ -605,7 +556,7 @@ function parseArgs(args: string[]): ParsedFlags {
   const out: ParsedFlags = {
     name: DEFAULT_NAME,
     agent: 'claude-code',
-    useOAuth: false,
+    oauth: false,
     register: false,
     scopes: DEFAULT_SCOPES,
     install: false,
@@ -635,7 +586,7 @@ function parseArgs(args: string[]): ParsedFlags {
     switch (a) {
       case '--help': case '-h': out.help = true; break;
       case '--install': out.install = true; break;
-      case '--oauth': out.useOAuth = true; break;
+      case '--oauth': out.oauth = true; break;
       case '--register': out.register = true; break;
       case '--yes': case '-y': out.yes = true; break;
       case '--force': out.force = true; break;
@@ -671,10 +622,6 @@ function parseArgs(args: string[]): ParsedFlags {
 function fail(msg: string): never {
   console.error(msg);
   process.exit(1);
-}
-
-function writeCliOutput(text: string): void {
-  process.stdout.write(`${text}\n`);
 }
 
 /** Resolve OAuth creds from explicit flags or by registering a client on the host. */
@@ -720,40 +667,38 @@ export async function runConnect(args: string[], deps: ConnectDeps = defaultDeps
   const spec = AGENT_SPECS[f.agent];
 
   // ---- OAuth path (connector-style agents only; no --install) ----
-  if (f.useOAuth) {
+  if (f.oauth) {
     if (!spec.supportsOAuth) {
       fail(`--oauth (client credentials) is for connector-style agents (${AGENT_IDS.filter((a) => AGENT_SPECS[a].supportsOAuth).join(', ')}). ${spec.label} uses the bearer path — drop --oauth.`);
     }
     if (f.install) {
       fail(`--install is not supported with --oauth. ${spec.label} is configured through its UI; this prints the OAuth connector fields to paste.`);
     }
-    resolveOAuthCreds(f, url, deps);
-    const issuer = issuerFromMcpUrl(url);
+    const oauth = resolveOAuthCreds(f, url, deps);
     if (f.json) {
-      writeCliOutput(JSON.stringify(buildRedactedOAuthJson({ url, name: f.name, agent: f.agent, issuer, scopes: f.scopes }), null, 2));
+      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken, oauth, scopes: f.scopes }), null, 2));
     } else {
-      writeCliOutput(redactedOAuthBlock({ agent: f.agent, issuer }));
+      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null, oauth }));
     }
     return;
   }
+
+  const mode = f.install ? 'install' : 'print';
+  const tok = resolveToken({ tokenFlag: f.token ?? null, env: deps.env(ENV_VAR) ?? null, mode });
+  if (tok.kind === 'error') fail(tok.error);
+  const token: string | null = tok.kind === 'literal' ? tok.token : null;
 
   if (!f.install) {
-    // Print mode is documentation-only: do not read or carry a bearer secret
-    // through the render path. Users paste/create their token separately.
     if (f.json) {
-      writeCliOutput(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token: null, showToken: f.showToken }), null, 2));
+      console.log(JSON.stringify(buildJson({ url, name: f.name, agent: f.agent, token, showToken: f.showToken }), null, 2));
     } else {
-      writeCliOutput(buildConnectBlock({ agent: f.agent, name: f.name, url, token: null }));
+      console.log(buildConnectBlock({ agent: f.agent, name: f.name, url, token }));
     }
     return;
   }
 
-  const tok = resolveToken({ tokenFlag: f.token ?? null, env: deps.env(ENV_VAR) ?? null, mode: 'install' });
-  if (tok.kind === 'error') fail(tok.error);
-
   // --install path. token is guaranteed literal here (install mode resolveToken).
-  if (tok.kind !== 'literal') fail('Install mode needs a token from --token or GBRAIN_REMOTE_TOKEN.');
-  const realToken = tok.token;
+  const realToken = token as string;
   if (!spec.installable) {
     fail(`--install supports claude-code and codex. ${spec.label} is set up through its own UI — drop --install to print the setup steps.`);
   }

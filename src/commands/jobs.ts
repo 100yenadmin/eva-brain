@@ -132,8 +132,22 @@ function formatJobDetail(job: MinionJob): string {
   return lines.join('\n');
 }
 
-export async function runJobs(engine: BrainEngine, args: string[]): Promise<void> {
+export async function runJobs(engineOrNull: BrainEngine | null, args: string[]): Promise<void> {
   const sub = args[0];
+
+  // Thin-client dispatch (cli.ts) passes engine=null for the subcommands
+  // with remote MCP routing (`list`, `get`) so no scratch local engine is
+  // ever built. Any other subcommand arriving with a null engine is a
+  // routing bug upstream of this function — refuse instead of crashing
+  // inside MinionQueue.
+  if (!engineOrNull && sub !== 'list' && sub !== 'get') {
+    console.error(`\`gbrain jobs ${sub ?? ''}\` needs a local engine and cannot run on a thin client.`);
+    process.exit(1);
+  }
+  // Null only ever reaches the MCP-routed `list`/`get` branches, which
+  // never touch the engine — narrowed once here so the host-only cases
+  // below typecheck unchanged.
+  const engine = engineOrNull as BrainEngine;
 
   if (!sub || sub === '--help' || sub === '-h') {
     console.log(`gbrain jobs — Minions job queue
@@ -217,6 +231,8 @@ HANDLER TYPES (built in)
     return;
   }
 
+  // The constructor just stores the reference; on the null (thin-client
+  // list/get) paths no queue method is ever reached.
   const queue = new MinionQueue(engine);
 
   switch (sub) {
@@ -1481,7 +1497,7 @@ export async function registerBuiltinHandlers(
     }
     const types = Array.isArray(job.data.types)
       ? (job.data.types as string[]).filter((t) =>
-          ['conversation', 'meeting', 'slack', 'email'].includes(t),
+          ['conversation', 'meeting', 'slack', 'email', 'imessage', 'imessage-daily'].includes(t),
         )
       : undefined;
     const result = await runExtractConversationFactsCore(engine, {
@@ -1610,6 +1626,43 @@ export async function registerBuiltinHandlers(
       ? job.data.dir
       : (await engine.getConfig('sync.repo_path')) ?? '.';
     return await runBacklinksCore({ action, dir, dryRun: !!job.data.dryRun });
+  });
+
+  // Local patch 2026-06-11: durable facts:absorb. One-shot CLI processes
+  // (capture/put/sync) can't finish the extraction chat before their exit
+  // drain aborts it, so backstop.ts submits this job instead and the
+  // long-lived worker does the LLM work here. Inline mode: errors throw,
+  // so minion retry/backoff handles transient gateway failures and real
+  // failures stay visible in `gbrain jobs list --status failed`.
+  worker.register('facts-absorb', async (job) => {
+    const slug = typeof job.data.slug === 'string' ? job.data.slug : '';
+    if (!slug) throw new Error('facts-absorb job requires data.slug');
+    const sourceId = typeof job.data.sourceId === 'string' ? job.data.sourceId : 'default';
+    const page = await engine.getPage(slug, { sourceId });
+    if (!page) return { skipped: 'page_missing', slug, sourceId };
+    const { runFactsBackstop } = await import('../core/facts/backstop.ts');
+    const KNOWN_SOURCES = ['sync:import', 'mcp:put_page', 'mcp:extract_facts', 'file_upload', 'code_import'] as const;
+    const source = (KNOWN_SOURCES as readonly string[]).includes(job.data.source as string)
+      ? (job.data.source as typeof KNOWN_SOURCES[number])
+      : 'mcp:put_page';
+    return await runFactsBackstop(
+      {
+        slug: page.slug,
+        type: page.type,
+        compiled_truth: page.compiled_truth,
+        frontmatter: (page.frontmatter ?? {}) as Record<string, unknown>,
+      },
+      {
+        engine,
+        sourceId,
+        sessionId: typeof job.data.sessionId === 'string' ? job.data.sessionId : null,
+        source,
+        mode: 'inline',
+        notabilityFilter: job.data.notabilityFilter === 'high-only' ? 'high-only' : 'all',
+        visibility: job.data.visibility === 'world' ? 'world' : 'private',
+        ...(typeof job.data.model === 'string' && job.data.model ? { model: job.data.model } : {}),
+      },
+    );
   });
 
   // Autopilot-cycle handler: delegates to runCycle. Shares the exact same
@@ -1743,6 +1796,7 @@ export async function registerBuiltinHandlers(
       brainDir: effectiveBrainDir,
       pull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
+      deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
       ...(sourceId ? { sourceId } : {}),
       ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
       yieldBetweenPhases: async () => {
@@ -1780,6 +1834,7 @@ export async function registerBuiltinHandlers(
       brainDir: repoPath,
       pull: false, // brain-wide DB/maintenance work never git-pulls
       signal: job.signal,
+      deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
       phases,
       yieldBetweenPhases: async () => { await new Promise<void>((r) => setImmediate(r)); },
     });
@@ -1925,6 +1980,7 @@ export async function registerBuiltinHandlers(
       brainDir: repoPath,
       phases: [phase as any],
       signal: job.signal,
+      deadlineAtMs: job.deadlineAtMs, // #2781: phases budget sub-work from remaining time
     });
     return { phase, status: report.status, report };
   };

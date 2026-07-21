@@ -34,11 +34,12 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
 import { withPageLock } from '../page-lock.ts';
 import { gbrainPath } from '../config.ts';
+import { isWriteTargetContained } from '../path-confine.ts';
 import { upsertFactRow, parseFactsFence } from '../facts-fence.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
@@ -166,7 +167,20 @@ export async function writeFactsToFence(
     return { inserted: 0, ids: [] };
   }
 
+  // sources.local_path is the root of this source's own working tree. Match
+  // writePageThrough: only host-root layouts without a per-source local_path
+  // use `.sources/<id>`. Fence writes require local_path, so they always write
+  // directly beneath that source root.
   const filePath = join(target.localPath, `${target.slug}.md`);
+  if (!isWriteTargetContained(filePath, target.localPath)) {
+    recordWriteFailure(
+      target.slug,
+      target.sourceId,
+      ['facts fence target resolves outside source root'],
+      filePath,
+    );
+    return { inserted: 0, ids: [], fenceWriteFailed: true };
+  }
   const tmpPath = `${filePath}.tmp`;
 
   return withPageLock(

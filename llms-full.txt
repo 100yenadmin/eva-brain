@@ -3,13 +3,13 @@
 > GBrain is a personal knowledge brain and GStack mod for agent platforms. Pluggable engines (PGLite default, Postgres+pgvector for scale), contract-first operations, 26 fat-markdown skills. Teaches agents brain ops, ingestion, enrichment, scheduling, identity, and access control.
 
 This file concatenates core GBrain documentation for single-fetch ingestion.
-For the link-only index, see `llms.txt`. Source of truth: https://github.com/garrytan/gbrain.
+For the link-only index, see `llms.txt`. Source of truth: https://github.com/electricsheephq/eva-brain.
 
 # Core entry points
 
 ## AGENTS.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/AGENTS.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/AGENTS.md
 
 # Agents working on GBrain
 
@@ -145,7 +145,7 @@ publishing: `LLMS_REPO_BASE=https://raw.githubusercontent.com/your-org/your-fork
 
 ## CLAUDE.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/CLAUDE.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/CLAUDE.md
 
 # CLAUDE.md
 
@@ -986,7 +986,7 @@ Key routing rules:
 
 ## INSTALL_FOR_AGENTS.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/INSTALL_FOR_AGENTS.md
 
 # GBrain Installation Guide for AI Agents
 
@@ -1502,7 +1502,7 @@ columns. PGLite brains no-op. If wiki-style imports were truncated by the old
 
 ## skills/RESOLVER.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/skills/RESOLVER.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/skills/RESOLVER.md
 
 # GBrain Skill Resolver
 
@@ -1521,7 +1521,6 @@ This is the dispatcher. Skills are the implementation. **Read the skill file bef
 |---------|-------|
 | "What do we know about", "tell me about", "search for", "who is", "background on", "notes on" | `skills/query/SKILL.md` |
 | "Who knows who", "relationship between", "connections", "graph query" | `skills/query/SKILL.md` (use graph-query) |
-| "retrieval reflex", "salient entity pointer", "open brain page before answering" | `skills/retrieval-reflex/SKILL.md` |
 | Creating/enriching a person or company page | `skills/enrich/SKILL.md` |
 | Where does a new file go? Filing rules | `skills/repo-architecture/SKILL.md` |
 | "where does this brain page go", "file this in the brain", "brain taxonomist", "taxonomy check", "refile brain page", "which directory does this page go" | `skills/brain-taxonomist/SKILL.md` |
@@ -1646,7 +1645,18 @@ These apply to ALL brain-writing skills:
 
 ## README.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/README.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/README.md
+
+<!-- FORK-IDENTITY: evaOS maintained fork — do not remove without updating docs/fleet-contract references -->
+> **⚠️ This is `electricsheephq/eva-brain` — evaOS's maintained fork of [GBrain](https://github.com/garrytan/gbrain) by Garry Tan.**
+>
+> The marketing content below **originates from upstream GBrain and describes the upstream project** (including its first-person framing and stats). evaOS runs this fork as the brain layer inside the HireEva / ElectricSheep customer fleet.
+>
+> - **Fleet install/deploy does NOT use the upstream `bun install -g github:garrytan/gbrain` instructions below** — it flows through the evaOS golden runtime + approval-gated fleet-rollout path. See `evaos-support-control/docs/fleet-contract.md`.
+> - **Upstream:** https://github.com/garrytan/gbrain — credit and upstream issues belong there.
+> - Fork-specific changes are tracked in this repo's `CHANGELOG.md` and PRs.
+
+---
 
 # GBrain
 
@@ -1908,6 +1918,24 @@ The whole loop is described in [`docs/architecture/topologies.md`](docs/architec
 
 **Job queue (Minions).** BullMQ-shaped, Postgres-native job queue. Durable subagents (LLM tool loops that survive crashes via two-phase pending→done persistence), shell jobs with audit, child jobs with cascading timeouts, rate leases for outbound providers, attachments via S3/Supabase storage. Replaces "spawn subagent as fire-and-forget Promise" with something that recovers from anything.
 
+**Non-English brains (FTS language config).** The Postgres full-text search tokenizer is configurable via `GBRAIN_FTS_LANGUAGE`. Defaults to `english`. Set it to any text-search configuration that exists in your Postgres instance:
+
+```bash
+export GBRAIN_FTS_LANGUAGE=portuguese     # uses built-in portuguese stemmer
+export GBRAIN_FTS_LANGUAGE=spanish        # built-in spanish stemmer
+export GBRAIN_FTS_LANGUAGE=pt_br          # custom config (e.g. unaccent + portuguese)
+```
+
+List available configs: `psql -c "SELECT cfgname FROM pg_ts_config"`. Both the **query side** (`websearch_to_tsquery`) and the **write side** (the trigger functions that populate `pages.search_vector` and `content_chunks.search_vector`) honor `GBRAIN_FTS_LANGUAGE`. On first install (or upgrade), the `configurable_fts_language` schema migration reads the env var and creates trigger functions in the configured language; subsequent inserts/updates tokenize using that setting. To change language on a brain that has already run the migration, use the dedicated CLI command:
+
+```bash
+export GBRAIN_FTS_LANGUAGE=portuguese
+gbrain reindex-search-vector --dry-run    # preview row counts
+gbrain reindex-search-vector --yes        # recreate triggers + backfill
+```
+
+The command is idempotent (re-running with the same language is a no-op for vector content) and uses the same recreate-and-backfill primitives as the migration. For accent-insensitive Portuguese (`pt_br`), see [docs/guides/multi-language-fts.md](docs/guides/multi-language-fts.md) for the `unaccent` + portuguese stemmer recipe.
+
 **43 curated skills.** Routing lives in [`skills/RESOLVER.md`](skills/RESOLVER.md). Covers signal capture, ingest (idea / media / meeting), enrichment, querying, brain ops, citation fixing, daily task management, cron scheduling, reports, voice, soul audit, skill creation, eval framework, and migrations. Skills are markdown files (tool-agnostic), packaged as a single skillpack the installer drops into your agent workspace.
 
 **Eval framework.** `gbrain eval longmemeval` runs the public [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval) benchmark against your hybrid retrieval. `gbrain eval export` + `gbrain eval replay` capture real queries and replay them against code changes (set `GBRAIN_CONTRIBUTOR_MODE=1`). `gbrain eval cross-modal` cross-checks an output against the task using three different-provider frontier models. `gbrain eval retrieval-quality` runs NamedThingBench, which hard-gates the named-thing retrieval families (title-substring, alias-synonym, generic-to-named, multi-chunk-dilution) so a regression in "find the page this query names" fails CI loudly. Full methodology in [`docs/eval/SEARCH_MODE_METHODOLOGY.md`](docs/eval/SEARCH_MODE_METHODOLOGY.md).
@@ -1938,6 +1966,8 @@ Data flowing into the brain. Each integration is a recipe — markdown + setup h
 **Why the graph matters.** Vector search returns chunks that are semantically close. The graph returns chunks that are factually connected. Hybrid search pulls from both; auto-linking on every write keeps the graph fresh. Deep dive: [`docs/architecture/RETRIEVAL.md`](docs/architecture/RETRIEVAL.md).
 
 ## Troubleshooting
+
+**`gbrain init --pglite` crashes on macOS 26.x (Tahoe)?** PGLite's embedded WASM engine is incompatible with macOS 26.x on Apple Silicon. The fix is to use native Homebrew PostgreSQL + pgvector instead. Full step-by-step setup in [`docs/INSTALL.md` — Troubleshooting: PGLite crashes on macOS 26.x](docs/INSTALL.md#pglite-crashes-on-macos-26x-tahoe).
 
 **`gbrain import` fails with `expected N dimensions, not M`?** Run `gbrain doctor`. It will print the exact `gbrain config set ...` or `gbrain retrieval-upgrade` command to repair the mismatch. You should not need to delete `~/.gbrain`. Fresh `gbrain init --pglite` auto-detects your embedding provider from API keys in your environment: set `OPENAI_API_KEY` (or `ZEROENTROPY_API_KEY` / `VOYAGE_API_KEY`) before running init, or pass `--embedding-model <provider>:<model>` explicitly. With multiple keys set, init fires an interactive picker. In non-TTY contexts (CI, Docker) with no keys, init exits 1 with a paste-ready setup hint; pass `--no-embedding` to defer setup until runtime. See [`docs/integrations/embedding-providers.md`](docs/integrations/embedding-providers.md) for the full provider matrix and [`docs/operations/headless-install.md`](docs/operations/headless-install.md) for Docker/CI sequencing.
 
@@ -2097,7 +2127,7 @@ Community PR contributors are credited in `CHANGELOG.md` per release. ZeroEntrop
 
 ## docs/ENGINES.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/ENGINES.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/ENGINES.md
 
 # Pluggable Engine Architecture
 
@@ -2195,7 +2225,7 @@ export interface BrainEngine {
 
 **Slug-based API, not ID-based.** Every method takes slugs, not numeric IDs. The engine resolves slugs to IDs internally. This keeps the interface portable... slugs are strings, IDs are database-specific.
 
-**Embedding is NOT in the engine.** The engine stores embeddings and searches by vector, but it doesn't generate embeddings. `src/core/embedding.ts` handles that. This is intentional: embedding is an external API call (OpenAI), not a storage concern. All engines share the same embedding service.
+**Embedding is NOT in the engine.** The engine stores embeddings and searches by vector, but it doesn't generate embeddings. `src/core/embedding.ts` handles that (a thin delegation to the provider-agnostic AI gateway in `src/core/ai/gateway.ts`). This is intentional: embedding is an external API call (OpenAI, Voyage, a local Ollama — whichever provider you configured), not a storage concern. All engines share the same embedding service.
 
 **Chunking is NOT in the engine.** Same logic. `src/core/chunkers/` handles chunking. The engine stores and retrieves chunks. All engines share the same chunkers.
 
@@ -2248,6 +2278,51 @@ RRF fusion, multi-query expansion, and 4-layer dedup are engine-agnostic. They o
 **Hosting:** Supabase Pro ($25/mo). Zero-ops. Managed Postgres with pgvector built in.
 
 **Why not self-hosted for v0:** The brain should be infrastructure agents use, not something you maintain. Self-hosted Postgres with Docker is a welcome community PR, but v0 optimizes for zero ops.
+
+### Opt-in RLS source-scope binding (`GBRAIN_RLS_SCOPE_BINDING`)
+
+Defense-in-depth layer for Postgres deployments that want the database itself
+to enforce source isolation, in addition to the mandatory app-layer filters
+(`sourceScopeOpts` — layer 1, always on).
+
+**Mechanism.** With `GBRAIN_RLS_SCOPE_BINDING=1` (or `true`), the engine's
+source-scoped read methods wrap their queries in a transaction that first runs
+`SELECT set_config('app.scopes', $1, true)` — the value is a bound parameter
+(federated `sourceIds` CSV > scalar `sourceId` > `'*'` for unscoped internal
+reads), transaction-local (equivalent to `SET LOCAL`, which itself can't take
+bound params). An RLS policy can then filter rows by
+`current_setting('app.scopes', true)`.
+
+**Default off.** With the env var unset, reads call through on the shared pool
+exactly as before — no per-read transaction, no pool-slot hold (the search
+methods keep the transaction they always had for their `SET LOCAL
+statement_timeout`). Existing operators see zero behavior change.
+
+**Enabling it** (operator-managed SQL; gbrain ships no DDL for this):
+
+```sql
+ALTER TABLE pages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY pages_scope_filter ON pages
+  USING (current_setting('app.scopes', true) = '*'
+         OR source_id = ANY(string_to_array(current_setting('app.scopes', true), ',')));
+
+-- Required: connections that don't run through the scoped read helper
+-- (admin, autopilot, cycle, writes) must default to unscoped, or they
+-- see zero rows once the policy exists:
+ALTER ROLE <runtime-role> SET app.scopes = '*';
+
+-- If the runtime role OWNS the table, RLS is skipped for it unless forced:
+ALTER TABLE pages FORCE ROW LEVEL SECURITY;
+```
+
+Safe to enable in either order: the env var without a policy is a no-op
+setting; a policy without the env var is enforced only via the role default.
+
+**Honest caveat:** only read paths routed through the scoped helper carry a
+per-request scope binding — unwrapped paths (writes, admin/maintenance reads)
+run under the role default and are not backstopped per caller. This is layer 2;
+the app-layer source filters remain layer 1 and stay mandatory. Behavioral pins
+live in `test/postgres-engine-rls-scope.test.ts`.
 
 ## PGLiteEngine (v0.7, ships)
 
@@ -2371,7 +2446,7 @@ Note: The original SQLite engine plan (`docs/SQLITE_ENGINE.md`) was superseded b
 
 ## docs/what-schemas-unlock.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/what-schemas-unlock.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/what-schemas-unlock.md
 
 # What schemas unlock
 
@@ -2555,7 +2630,7 @@ That's what we built. Try it on a corpus you actually have and the numbers go up
 
 ## docs/schema-author-tutorial.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/schema-author-tutorial.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/schema-author-tutorial.md
 
 # Tutorial: Build your first schema pack
 
@@ -2786,7 +2861,7 @@ gbrain schema lint --with-db
 
 ## docs/guides/live-sync.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/live-sync.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/live-sync.md
 
 # Live Sync: Keep the Index Current
 
@@ -2921,6 +2996,16 @@ hashes match. If both a cron and `--watch` fire simultaneously, no conflict.
    history rewrite still hard-blocks even with `--skip-failed`. Run
    `gbrain sync --skip-failed` to acknowledge a known-bad set yourself.
 
+5. **Import checkpoints name the import target, not the caller's CWD.**
+   Interrupted `gbrain import <dir>` runs may leave
+   `~/.gbrain/import-checkpoint.json` so the next import can resume. The
+   checkpoint `dir` is the absolute, resolved import target captured when
+   import starts. It is not a cleanup instruction and it must not be
+   re-derived from the process working directory. Checkpoints written by
+   gbrain include `schema_version: 1`, `owner: "gbrain"`, and
+   `kind: "import"` so downstream tools can validate the contract before
+   deciding whether to resume.
+
 ## How to Verify
 
 1. **Edit a file and search for the change.** Edit a brain markdown file,
@@ -2946,7 +3031,7 @@ hashes match. If both a cron and `--watch` fire simultaneously, no conflict.
 
 ## docs/guides/cron-schedule.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/cron-schedule.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/cron-schedule.md
 
 # Reference Cron Schedule
 
@@ -3146,7 +3231,7 @@ echo "Dream cycle complete at $(date)"
 
 ## docs/guides/quiet-hours.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/quiet-hours.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/quiet-hours.md
 
 # Quiet Hours and Timezone-Aware Delivery
 
@@ -3318,7 +3403,7 @@ Set `enabled: false` to disable quiet hours entirely (e.g., for 24/7 monitoring)
 
 ## docs/guides/scaling-skills.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/scaling-skills.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/scaling-skills.md
 
 # Scaling skills past 300 without drowning the context window
 
@@ -3635,7 +3720,7 @@ the bundled resolver lives at [`skills/RESOLVER.md`](../../skills/RESOLVER.md).
 
 ## docs/guides/push-context.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/push-context.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/push-context.md
 
 # Push-based context (#2095, v0.42.43.0)
 
@@ -3721,7 +3806,7 @@ never reach a prompt regardless of caller trust.
 
 ## docs/mcp/DEPLOY.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/mcp/DEPLOY.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/mcp/DEPLOY.md
 
 # Deploy GBrain Remote MCP Server
 
@@ -3799,12 +3884,19 @@ to the HTTP server, so no migration is required.
 gbrain serve --http --port 3131
 ```
 
-On first start, the server prints an **admin bootstrap token** to stderr:
+On first start in an interactive terminal, the server prints an **admin
+bootstrap token** to stderr:
 
 ```
 Admin bootstrap token: 3a1f9c...
 Open http://localhost:3131/admin and paste it to log in.
 ```
+
+On a non-TTY start (systemd, Docker, any piped or captured logs) the generated
+token is hidden so it never lands in log storage. For headless deploys either
+set `GBRAIN_ADMIN_BOOTSTRAP_TOKEN` to a value you control before starting, or
+run `gbrain serve --http --print-admin-token` once on a trusted terminal to
+force printing.
 
 Save this token. Open `http://localhost:3131/admin` and paste it to access the
 dashboard. The dashboard shows live activity, registered clients, request logs,
@@ -4016,7 +4108,7 @@ built-in server is the recommended path.
 
 ## docs/GBRAIN_VERIFY.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/GBRAIN_VERIFY.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/GBRAIN_VERIFY.md
 
 # GBrain Installation Verification Runbook
 
@@ -4318,7 +4410,7 @@ end-to-end sync test (4c), push a real change and verify it appears in search.
 
 ## docs/guides/minions-fix.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/guides/minions-fix.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/guides/minions-fix.md
 
 # Minions fix — repairing a half-migrated install
 
@@ -4484,7 +4576,7 @@ Each phase is idempotent. Re-running is safe. Common failure modes:
 
 ## docs/integrations/reliability-repair.md
 
-Source: https://raw.githubusercontent.com/garrytan/gbrain/master/docs/integrations/reliability-repair.md
+Source: https://raw.githubusercontent.com/electricsheephq/eva-brain/master/docs/integrations/reliability-repair.md
 
 # Reliability repair (v0.12.2)
 

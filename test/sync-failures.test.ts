@@ -133,6 +133,40 @@ describe('Bug 9 — sync-failures JSONL helpers', () => {
   });
 });
 
+describe('full-sync failure scope', () => {
+  test('does not clear sibling failures outside a scoped sync', async () => {
+    const { isSyncFailurePathInScope } = await import('../src/commands/sync.ts');
+    expect(isSyncFailurePathInScope('wiki/fixed.md', 'wiki')).toBe(true);
+    expect(isSyncFailurePathInScope('wiki\\fixed.md', 'wiki')).toBe(true);
+    expect(isSyncFailurePathInScope('docs/still-broken.md', 'wiki')).toBe(false);
+    expect(isSyncFailurePathInScope('docs/still-broken.md', '')).toBe(true);
+  });
+
+  test('does not clear failures excluded from the active sync scope', async () => {
+    const { isSyncFailurePathExcluded } = await import('../src/commands/sync.ts');
+    const exclude = ['generated/**'];
+
+    expect(isSyncFailurePathExcluded('wiki/generated/broken.md', 'wiki', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('wiki\\generated\\broken.md', 'wiki', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('wiki/docs/retried.md', 'wiki', exclude)).toBe(false);
+    expect(isSyncFailurePathExcluded('generated/broken.md', '', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('docs/generated/sibling.md', 'wiki', exclude)).toBe(false);
+  });
+});
+
+describe('incremental sync path containment', () => {
+  test('accepts children and rejects siblings on POSIX and Windows paths', async () => {
+    const { isResolvedPathContained } = await import('../src/commands/sync.ts');
+
+    expect(isResolvedPathContained('/repo/wiki/page.md', '/repo')).toBe(true);
+    expect(isResolvedPathContained('/repo', '/repo')).toBe(true);
+    expect(isResolvedPathContained('/repo-sibling/page.md', '/repo')).toBe(false);
+    expect(isResolvedPathContained('C:\\repo\\wiki\\page.md', 'C:\\repo')).toBe(true);
+    expect(isResolvedPathContained('C:\\repo-sibling\\page.md', 'C:\\repo')).toBe(false);
+    expect(isResolvedPathContained('D:\\other\\page.md', 'C:\\repo')).toBe(false);
+  });
+});
+
 describe('Bug 9 — doctor surfaces sync failures', () => {
   test('doctor source contains sync_failures check', async () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();

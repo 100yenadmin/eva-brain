@@ -115,8 +115,9 @@ function formatInitEmbedWarning(d: Exclude<EmbeddingDiagnosis, { ok: true }>): s
     case 'no_touchpoint':
       lines.push(`  Provider "${d.provider}" has no embedding touchpoint.`);
       break;
-    case 'user_provided_model_unset':
-      lines.push(`  Provider "${d.provider}" needs an explicit model id (provider:model).`);
+    case 'user_provided_dims_unset':
+      lines.push(`  Provider "${d.provider}" ships no default embedding dimension — set one explicitly.`);
+      lines.push(`    re-run: gbrain init --embedding-dimensions <N>   (e.g. 1024 for bge-large)`);
       break;
     case 'no_model_configured':
       lines.push('  No embedding model is configured.');
@@ -151,7 +152,7 @@ function formatLiveProbeWarning(p: { reason: string; message: string }, model: s
  * regardless. Returns the result for the `--json` envelope.
  */
 export async function runInitEmbedCheck(opts: RunInitEmbedCheckOpts): Promise<InitEmbedCheckResult> {
-  const warn = opts.warn ?? (() => console.error('Embedding provider check failed; verify the configured model/key/endpoint, or re-run init with --skip-embed-check to bypass this probe.'));
+  const warn = opts.warn ?? ((m: string) => console.error(m));
 
   if (opts.noEmbedding) return { ok: true, skipped: 'no_embedding' };
   if (opts.skipFlag) return { ok: true, skipped: 'flag' };

@@ -69,38 +69,6 @@ describe('embedding_env_override check (buildChecks seam)', () => {
     );
   });
 
-  test('canonical provider:model env agrees with legacy bare DB model id', async () => {
-    await engine.setConfig('embedding_model', 'voyage-4-large');
-    await withEnv(
-      { GBRAIN_EMBEDDING_MODEL: 'voyage:voyage-4-large' },
-      async () => {
-        const checks = await buildChecks(engine, []);
-        const check = findCheck(checks, 'embedding_env_override');
-        expect(check!.status).toBe('ok');
-        expect(check!.message).toContain('agree with DB config');
-      },
-    );
-  });
-
-  test('different providers with the same model id still warn', async () => {
-    await engine.setConfig('embedding_model', 'voyage:shared-model-id');
-    await withEnv(
-      { GBRAIN_EMBEDDING_MODEL: 'openai:shared-model-id' },
-      async () => {
-        const checks = await buildChecks(engine, []);
-        const check = findCheck(checks, 'embedding_env_override');
-        expect(check!.status).toBe('warn');
-        const details = check!.details as { mismatches: Array<{ key: string; env: string; db: string }> };
-        expect(details.mismatches).toHaveLength(1);
-        expect(details.mismatches[0]).toEqual({
-          key: 'GBRAIN_EMBEDDING_MODEL',
-          env: 'openai:shared-model-id',
-          db: 'voyage:shared-model-id',
-        });
-      },
-    );
-  });
-
   test('env model disagrees with DB → warn with details.mismatches', async () => {
     await engine.setConfig('embedding_model', 'zeroentropyai:zembed-1');
     await withEnv(

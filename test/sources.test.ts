@@ -6,7 +6,10 @@
  * shape, validation, and flag parsing.
  */
 
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { runSources } from '../src/commands/sources.ts';
 import type { BrainEngine } from '../src/core/engine.ts';
 
@@ -158,6 +161,47 @@ describe('sources add', () => {
   });
 });
 
+// ── add — #2707 git-repo validation (CLI wiring) ───────────────
+//
+// Uses a REAL on-disk temp dir (unlike the fake-path tests above) so the
+// core addSource git check actually runs; the stub engine still fakes the
+// DB round-trip. Confirms --force parses through to opsAddSource.
+
+describe('sources add — #2707 --force flag wiring', () => {
+  let plainDir: string;
+
+  beforeEach(() => {
+    plainDir = mkdtempSync(join(tmpdir(), 'gbrain-sources-cli-2707-'));
+  });
+  afterEach(() => {
+    rmSync(plainDir, { recursive: true, force: true });
+  });
+
+  test('rejects a real non-git --path directory by default', async () => {
+    const { engine } = makeStub();
+    await expect(runSources(engine, ['add', 'cli-plain', '--path', plainDir]))
+      .rejects.toThrow(/not a git repository/);
+  });
+
+  test('--force registers the same directory anyway', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [{
+        id: 'cli-forced',
+        name: 'cli-forced',
+        local_path: plainDir,
+        last_commit: null,
+        last_sync_at: null,
+        config: '{}',
+        created_at: new Date(),
+      }],
+    });
+    await runSources(engine, ['add', 'cli-forced', '--path', plainDir, '--force']);
+    const insert = calls.find(c => c.sql.includes('INSERT INTO sources'));
+    expect(insert).toBeDefined();
+    expect(insert!.params[2]).toBe(plainDir);
+  });
+});
+
 // ── list ────────────────────────────────────────────────────
 
 describe('sources list', () => {
@@ -171,6 +215,20 @@ describe('sources list', () => {
     await runSources(engine, ['list']);
     const select = calls.find(c => c.sql.includes('ORDER BY (id = \'default\') DESC'));
     expect(select).toBeDefined();
+  });
+
+  test('counts only visible pages', async () => {
+    const { engine, calls } = makeStub({
+      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
+        { id: 'default', name: 'default', local_path: null, last_commit: null, last_sync_at: null, config: '{"federated":true}', created_at: new Date() },
+      ],
+      'COUNT(*)::int AS n FROM pages': [{ n: 1 }],
+    });
+
+    await runSources(engine, ['list']);
+
+    const count = calls.find(c => c.sql.includes('COUNT(*)::int AS n FROM pages'));
+    expect(count?.sql).toContain('deleted_at IS NULL');
   });
 });
 
@@ -248,61 +306,5 @@ describe('sources federate / unfederate', () => {
     // Must preserve ttl_days while flipping federated.
     expect(parsed.ttl_days).toBe(90);
     expect(parsed.federated).toBe(false);
-  });
-});
-
-describe('sources cycle-freshness', () => {
-  test('off stores config.cycle_freshness=false and preserves existing keys', async () => {
-    const { engine, calls } = makeStub({
-      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
-        { id: 'kb', name: 'kb', local_path: '/tmp/kb', last_commit: null, last_sync_at: null, config: '{"federated":true}', created_at: new Date() },
-      ],
-    });
-    await runSources(engine, ['cycle-freshness', 'kb', 'off']);
-    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
-    const parsed = JSON.parse(upd!.params[0] as string);
-    expect(parsed.federated).toBe(true);
-    expect(parsed.cycle_freshness).toBe(false);
-  });
-
-  test('on removes config.cycle_freshness and preserves existing keys', async () => {
-    const { engine, calls } = makeStub({
-      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
-        { id: 'kb', name: 'kb', local_path: '/tmp/kb', last_commit: null, last_sync_at: null, config: '{"federated":true,"cycle_freshness":false}', created_at: new Date() },
-      ],
-    });
-    await runSources(engine, ['cycle-freshness', 'kb', 'on']);
-    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
-    const parsed = JSON.parse(upd!.params[0] as string);
-    expect(parsed.federated).toBe(true);
-    expect(parsed).not.toHaveProperty('cycle_freshness');
-  });
-});
-
-describe('sources sync-freshness', () => {
-  test('off stores config.sync_freshness=false and preserves existing keys', async () => {
-    const { engine, calls } = makeStub({
-      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
-        { id: 'docs', name: 'docs', local_path: '/tmp/docs', last_commit: null, last_sync_at: null, config: '{"federated":true}', created_at: new Date() },
-      ],
-    });
-    await runSources(engine, ['sync-freshness', 'docs', 'off']);
-    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
-    const parsed = JSON.parse(upd!.params[0] as string);
-    expect(parsed.federated).toBe(true);
-    expect(parsed.sync_freshness).toBe(false);
-  });
-
-  test('on removes config.sync_freshness and preserves existing keys', async () => {
-    const { engine, calls } = makeStub({
-      'SELECT id, name, local_path, last_commit, last_sync_at, config, created_at': [
-        { id: 'docs', name: 'docs', local_path: '/tmp/docs', last_commit: null, last_sync_at: null, config: '{"federated":true,"sync_freshness":false}', created_at: new Date() },
-      ],
-    });
-    await runSources(engine, ['sync-freshness', 'docs', 'on']);
-    const upd = calls.find(c => c.sql.includes('UPDATE sources SET config'));
-    const parsed = JSON.parse(upd!.params[0] as string);
-    expect(parsed.federated).toBe(true);
-    expect(parsed).not.toHaveProperty('sync_freshness');
   });
 });

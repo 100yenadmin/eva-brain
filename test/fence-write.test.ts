@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -177,6 +177,45 @@ describe('writeFactsToFence — happy path', () => {
     expect(existsSync(join(brainDir, 'companies/acme.md'))).toBe(true);
     const body = readFileSync(join(brainDir, 'companies/acme.md'), 'utf-8');
     expect(body).toContain('type: company');  // type inferred from slug prefix
+  });
+
+  test('writes a non-default source page at its configured source root', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO sources (id, name, local_path, config)
+       VALUES ('customer-docs', 'Customer docs', $1, '{}'::jsonb)
+       ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path`,
+      [brainDir],
+    );
+
+    const result = await writeFactsToFence(
+      engine,
+      { sourceId: 'customer-docs', localPath: brainDir, slug: 'people/alice' },
+      [baseInput({ fact: 'Owns the customer documentation source.' })],
+    );
+
+    expect(result.inserted).toBe(1);
+    expect(existsSync(join(brainDir, 'people/alice.md'))).toBe(true);
+    expect(existsSync(join(brainDir, '.sources/customer-docs/people/alice.md'))).toBe(false);
+  });
+
+  test('refuses a facts fence target through a symlink outside the source root', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'fence-write-outside-'));
+    try {
+      symlinkSync(outsideDir, join(brainDir, 'people'));
+
+      const result = await writeFactsToFence(
+        engine,
+        { sourceId: 'default', localPath: brainDir, slug: 'people/alice' },
+        [baseInput()],
+      );
+
+      expect(result).toEqual({ inserted: 0, ids: [], fenceWriteFailed: true });
+      expect(existsSync(join(outsideDir, 'alice.md'))).toBe(false);
+      expect(existsSync(join(outsideDir, 'alice.md.tmp'))).toBe(false);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 });
 

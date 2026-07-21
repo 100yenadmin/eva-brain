@@ -24,6 +24,8 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { safeLoad as parseYaml } from 'js-yaml';
+import { buildAssembledPage } from '../src/commands/book-mirror.ts';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 
@@ -138,5 +140,27 @@ describe('gbrain book-mirror — source file invariants', () => {
     // section. Don't abort the whole run on one chapter failure.
     expect(source).toContain('Failed chapters');
     expect(source).toContain('chapters_failed');
+  });
+});
+
+describe('gbrain book-mirror — assembled page', () => {
+  it('escapes YAML double-quoted title, author, and context values', () => {
+    const title = 'A "quoted" \\ title\ncontinued\f\0';
+    const author = 'An "author" \\ name\b';
+    const contextPack = 'A "context" \\ path\u001b';
+    const page = buildAssembledPage({
+      slug: 'test',
+      title,
+      author,
+      contextPack,
+      chapterAnalyses: [],
+    });
+
+    const frontmatterEnd = page.indexOf('\n---', 4);
+    expect(frontmatterEnd).toBeGreaterThan(4);
+    const frontmatter = parseYaml(page.slice(4, frontmatterEnd)) as Record<string, unknown>;
+    expect(frontmatter.title).toBe(`${title} — Personalized`);
+    expect(frontmatter.author).toBe(author);
+    expect(frontmatter.context).toBe(contextPack);
   });
 });

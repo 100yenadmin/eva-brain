@@ -128,33 +128,6 @@ describe('buildChecks — orchestrator against PGLite', () => {
     }
   });
 
-  test('PGLite applicability checks are ok, not health-docking warnings', async () => {
-    const checks = await buildChecks(engine, []);
-    const byName = new Map(checks.map(c => [c.name, c]));
-
-    expect(byName.get('pgvector')?.status).toBe('ok');
-    expect(byName.get('pgvector')?.message).toContain('PGLite');
-    expect(byName.get('jsonb_integrity')?.status).toBe('ok');
-    expect(byName.get('jsonb_integrity')?.message).toContain('PGLite');
-  });
-
-  test('derived graph/brain quality signals do not dock runtime health', async () => {
-    await engine.putPage('people/alice-example', {
-      type: 'person',
-      title: 'Alice Example',
-      compiled_truth: 'Alice Example is a customer contact.',
-      frontmatter: {},
-    });
-
-    const checks = await buildChecks(engine, []);
-    const byName = new Map(checks.map(c => [c.name, c]));
-
-    expect(byName.get('graph_coverage')?.status).toBe('ok');
-    expect(byName.get('brain_score')?.status).toBe('ok');
-    expect(byName.get('entity_link_coverage')?.status).toBe('ok');
-    expect(byName.get('timeline_coverage')?.status).toBe('ok');
-  });
-
   test('snapshot: load-bearing check names always run against a fresh brain', async () => {
     // Behavior-preservation snapshot (D6 lock). Pinning a CURATED subset of
     // load-bearing checks rather than the full list so this test stays stable

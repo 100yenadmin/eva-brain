@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 const root = process.cwd();
@@ -46,6 +46,13 @@ describe('Eva Brain thin distribution contract', () => {
     expect(manifest.configSchema?.database_url?.required).toBe(false);
     expect(manifest.configSchema).not.toHaveProperty('voyage_api_key');
     expect(manifest.contracts?.contextEngines).toContain('gbrain-context');
+  });
+
+  test('root bundle plugin declares only paths that exist', () => {
+    const manifest = readJson('openclaw.plugin.json');
+    for (const path of [...(manifest.skills ?? []), ...(manifest.shared_deps ?? [])]) {
+      expect(existsSync(join(root, path))).toBe(true);
+    }
   });
 
   test('agent install guide documents the Eva profile and source-aware KB checks', () => {
