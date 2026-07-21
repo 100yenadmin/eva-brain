@@ -480,6 +480,41 @@ export async function extractLinksFromFile(
 
 // --- Timeline extraction ---
 
+function scanSourceCitations(line: string): {
+  dated: Array<{ source: string; date: string }>;
+  stripped: string;
+} {
+  const dated: Array<{ source: string; date: string }> = [];
+  const kept: string[] = [];
+  let cursor = 0;
+
+  while (cursor < line.length) {
+    const start = line.indexOf('[Source:', cursor);
+    if (start === -1) {
+      kept.push(line.slice(cursor));
+      break;
+    }
+
+    kept.push(line.slice(cursor, start));
+    const end = line.indexOf(']', start + 8);
+    if (end === -1) {
+      kept.push(line.slice(start));
+      break;
+    }
+
+    const citation = line.slice(start + 8, end).trim();
+    const comma = citation.lastIndexOf(',');
+    if (comma !== -1) {
+      const source = citation.slice(0, comma).trim();
+      const date = citation.slice(comma + 1).trim();
+      if (source && /^\d{4}-\d{2}-\d{2}$/.test(date)) dated.push({ source, date });
+    }
+    cursor = end + 1;
+  }
+
+  return { dated, stripped: kept.join('') };
+}
+
 /** Extract timeline entries from markdown content */
 export function extractTimelineFromContent(content: string, slug: string): ExtractedTimelineEntry[] {
   const entries: ExtractedTimelineEntry[] = [];
@@ -518,22 +553,20 @@ export function extractTimelineFromContent(content: string, slug: string): Extra
   // carries its own [Source: ...] citation, and re-extracting it would file
   // a duplicate entry under a different (source, summary) shape that the
   // DB-level uniqueness cannot collapse.
-  const citationPattern = /\[Source:\s*([^\]]+?),\s*(\d{4}-\d{2}-\d{2})\s*\]/g;
   const bulletLinePattern = /^-\s+\*\*\d{4}-\d{2}-\d{2}\*\*\s*\|/;
   for (const line of content.split(/\r?\n/)) {
     if (bulletLinePattern.test(line)) continue;
-    const lineMatches = [...line.matchAll(citationPattern)];
-    if (lineMatches.length === 0) continue;
+    const citations = scanSourceCitations(line);
+    if (citations.dated.length === 0) continue;
     // Strip every citation marker from the line to leave the annotated text.
-    const summary = line
-      .replace(/\[Source:[^\]]*\]/g, '')
+    const summary = citations.stripped
       .replace(/^[-*>#\s]+/, '')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 300);
     if (!summary) continue; // a bare citation with no surrounding text is not an event
-    for (const m of lineMatches) {
-      entries.push({ slug, date: m[2], source: m[1].trim().slice(0, 200), summary });
+    for (const citation of citations.dated) {
+      entries.push({ slug, date: citation.date, source: citation.source.slice(0, 200), summary });
     }
   }
 

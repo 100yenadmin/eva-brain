@@ -153,6 +153,11 @@ describe('extractTimelineFromContent', () => {
     expect(entries[0].source).toBe('email from alice-example re: offer, signed');
   });
 
+  it('handles long malformed source markers without backtracking', () => {
+    const content = `Claim [Source:${'x'.repeat(100_000)}`;
+    expect(extractTimelineFromContent(content, 'test')).toHaveLength(0);
+  });
+
   it('extracts one entry per citation when a line carries several', () => {
     const content = `Both sides confirmed the partnership. [Source: call with widget-co, 2025-06-01] [Source: follow-up email, 2025-06-03]`;
     const entries = extractTimelineFromContent(content, 'companies/widget-co');

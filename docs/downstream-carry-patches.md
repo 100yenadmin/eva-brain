@@ -9,6 +9,12 @@ Eva Brain uses upstream GBrain as its core. Core changes in this file are tempor
 - Removal condition: upstream merges equivalent watermark handling and regression coverage.
 - Upstream tracking: <https://github.com/garrytan/gbrain/pull/3018>
 
+## Bounded timeline citation parsing
+
+- Files: `src/commands/extract.ts`, `test/extract.test.ts`
+- Reason: imported document lines must not trigger unbounded regex backtracking while parsing inline `[Source: ..., YYYY-MM-DD]` citations.
+- Removal condition: upstream ships an equivalent bounded parser and regression coverage.
+
 ## Honest schema-pack stats failures
 
 - Files: `src/core/schema-pack/stats.ts`, `test/schema-pack-stats.test.ts`
