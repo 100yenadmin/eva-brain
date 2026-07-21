@@ -141,6 +141,17 @@ describe('full-sync failure scope', () => {
     expect(isSyncFailurePathInScope('docs/still-broken.md', 'wiki')).toBe(false);
     expect(isSyncFailurePathInScope('docs/still-broken.md', '')).toBe(true);
   });
+
+  test('does not clear failures excluded from the active sync scope', async () => {
+    const { isSyncFailurePathExcluded } = await import('../src/commands/sync.ts');
+    const exclude = ['generated/**'];
+
+    expect(isSyncFailurePathExcluded('wiki/generated/broken.md', 'wiki', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('wiki\\generated\\broken.md', 'wiki', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('wiki/docs/retried.md', 'wiki', exclude)).toBe(false);
+    expect(isSyncFailurePathExcluded('generated/broken.md', '', exclude)).toBe(true);
+    expect(isSyncFailurePathExcluded('docs/generated/sibling.md', 'wiki', exclude)).toBe(false);
+  });
 });
 
 describe('Bug 9 — doctor surfaces sync failures', () => {

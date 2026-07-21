@@ -3404,9 +3404,25 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
 }
 
 export function isSyncFailurePathInScope(path: string, scopePrefix: string): boolean {
+  return syncFailurePathRelativeToScope(path, scopePrefix) !== null;
+}
+
+export function syncFailurePathRelativeToScope(path: string, scopePrefix: string): string | null {
   const normalizedPath = path.replace(/\\/g, '/').replace(/^\/+/, '');
   const normalizedScope = scopePrefix.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  return normalizedScope === '' || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+  if (normalizedScope === '') return normalizedPath;
+  if (normalizedPath === normalizedScope) return '';
+  if (!normalizedPath.startsWith(`${normalizedScope}/`)) return null;
+  return normalizedPath.slice(normalizedScope.length + 1);
+}
+
+export function isSyncFailurePathExcluded(
+  path: string,
+  scopePrefix: string,
+  patterns?: string[],
+): boolean {
+  const scopedPath = syncFailurePathRelativeToScope(path, scopePrefix);
+  return scopedPath !== null && matchesAnyGlob(scopedPath, patterns);
 }
 
 async function performFullSync(
@@ -3506,6 +3522,7 @@ async function performFullSync(
       e.source_id === fullSourceId &&
       isSkippablePath(e.path) &&
       isSyncFailurePathInScope(e.path, fullScopePrefix) &&
+      !isSyncFailurePathExcluded(e.path, fullScopePrefix, opts.exclude) &&
       !fullFailureSet.has(e.path))
     .map(e => e.path);
   const advanceFull = async (): Promise<void> => {
