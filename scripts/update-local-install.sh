@@ -363,6 +363,9 @@ doctor() {
     return
   fi
   printf '%s\n' "$output"
+  if [ "$RUN_HEALTH" = "false" ]; then
+    die "Doctor failed and --skip-health disabled the structured failure classifier. Rerun without --skip-health or repair the reported doctor failure."
+  fi
   log "Doctor reported brain/content readiness gaps; continuing to the source-aware runtime health gate."
 }
 

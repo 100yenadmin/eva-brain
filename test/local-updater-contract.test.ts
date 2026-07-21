@@ -177,6 +177,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).not.toContain('run "$HOME/.bun/bin/gbrain" embed --stale --source "$source_id"');
     expect(script).not.toContain('sources "$freshness_command" "$source_id" off');
     expect(script).toContain('Doctor reported brain/content readiness gaps; continuing to the source-aware runtime health gate.');
+    expect(script).toContain('Doctor failed and --skip-health disabled the structured failure classifier.');
     expect(script).not.toContain('Skipping source-aware health report because no source package was requested or detected');
     expect(script).toMatch(/config_path="\$GBRAIN_DIR\/config\.json"/);
     expect(script).toMatch(/stop_stale_serve_if_requested\s*\n\s*local config_path="\$GBRAIN_DIR\/config\.json"/);
@@ -814,6 +815,61 @@ exit 3
     expect(result.exitCode).toBe(0);
     expect(stdout).not.toContain('cycle-freshness');
     expect(stdout).not.toContain('sync-freshness');
+  });
+
+  test('local updater fails on nonzero doctor when structured health is explicitly skipped', () => {
+    const home = tempHome();
+    const repo = makeRepoWithEvaTags(home, []);
+    const binDir = join(home, '.bun/bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'bun'), '#!/usr/bin/env bash\nexit 0\n');
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "init" ]; then exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then
+  echo '{"health_score":80,"checks":[{"name":"timeline_dedup_index","status":"fail"}]}'
+  exit 1
+fi
+exit 0
+`,
+    );
+    chmodSync(join(binDir, 'bun'), 0o755);
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: [
+        'bash',
+        'scripts/update-local-install.sh',
+        '--ref',
+        'master',
+        '--repo',
+        repo,
+        '--dir',
+        join(home, 'eva-brain'),
+        '--without-openclaw',
+        '--without-codex-plugin',
+        '--without-workspace-docs',
+        '--skip-provider-test',
+        '--skip-health',
+      ],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        GBRAIN_HOME: home,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(
+      'Doctor failed and --skip-health disabled the structured failure classifier.',
+    );
+    expect(result.stderr.toString()).not.toContain('Update complete.');
   });
 
   test('local updater skips Support KB embedding on no-key Voyage installs', () => {
