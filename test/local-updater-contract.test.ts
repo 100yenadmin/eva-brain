@@ -94,6 +94,8 @@ fi
 if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "cycle-freshness" ]; then
   if [ "${cycleExit}" = "unknown" ]; then
     echo "Unknown sources subcommand: cycle-freshness" >&2
+    echo "gbrain sources - manage multi-source brain configuration" >&2
+    echo "Subcommands: add, list, remove" >&2
   else
     echo "Unknown sources subcommand: cycle-freshness; database locked while updating source freshness" >&2
   fi
@@ -102,6 +104,8 @@ fi
 if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "sync-freshness" ]; then
   if [ "${cycleExit}" = "unknown" ]; then
     echo "Unknown sources subcommand: sync-freshness" >&2
+    echo "gbrain sources - manage multi-source brain configuration" >&2
+    echo "Subcommands: add, list, remove" >&2
   else
     echo "Unknown sources subcommand: sync-freshness; database locked while updating source freshness" >&2
   fi

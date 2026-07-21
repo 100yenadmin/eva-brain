@@ -585,7 +585,9 @@ disable_source_freshness_if_supported() {
   fi
   local normalized_output
   normalized_output="$(printf '%s' "$output" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
-  if [ "$normalized_output" = "Unknown sources subcommand: $freshness_command" ]; then
+  local first_line
+  first_line="$(printf '%s\n' "$normalized_output" | sed -n '1p')"
+  if [ "$first_line" = "Unknown sources subcommand: $freshness_command" ]; then
     log "Skipping $freshness_command disable; installed gbrain does not expose 'sources $freshness_command'."
     return
   fi
