@@ -24,6 +24,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { buildAssembledPage } from '../src/commands/book-mirror.ts';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 
@@ -138,5 +139,21 @@ describe('gbrain book-mirror — source file invariants', () => {
     // section. Don't abort the whole run on one chapter failure.
     expect(source).toContain('Failed chapters');
     expect(source).toContain('chapters_failed');
+  });
+});
+
+describe('gbrain book-mirror — assembled page', () => {
+  it('escapes YAML double-quoted title, author, and context values', () => {
+    const page = buildAssembledPage({
+      slug: 'test',
+      title: 'A "quoted" \\ title\ncontinued',
+      author: 'An "author" \\ name',
+      contextPack: 'A "context" \\ path',
+      chapterAnalyses: [],
+    });
+
+    expect(page).toContain('title: "A \\"quoted\\" \\\\ title\\ncontinued — Personalized"');
+    expect(page).toContain('author: "An \\"author\\" \\\\ name"');
+    expect(page).toContain('context: "A \\"context\\" \\\\ path"');
   });
 });

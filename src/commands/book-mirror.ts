@@ -300,7 +300,15 @@ You have ${DEFAULT_MAX_TURNS} turns and read-only tools (get_page, search). You 
 When done, your final message should contain ONLY the \`## Chapter ${chapter.index}: ...\` section above. No preamble, no postscript, no commentary.`;
 }
 
-function buildAssembledPage(opts: {
+function escapeYamlDoubleQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+export function buildAssembledPage(opts: {
   slug: string;
   title: string;
   author: string | undefined;
@@ -308,16 +316,16 @@ function buildAssembledPage(opts: {
   chapterAnalyses: Array<{ index: number; result: string; failed: boolean; error?: string }>;
 }): string {
   const today = new Date().toISOString().split('T')[0];
-  const authorLine = opts.author ? `\nauthor: "${opts.author}"` : '';
+  const authorLine = opts.author ? `\nauthor: "${escapeYamlDoubleQuoted(opts.author)}"` : '';
   const contextSummary = opts.contextPack
     ? opts.contextPack.split('\n').slice(0, 3).join(' ').slice(0, 200)
     : 'No reader-context pack supplied.';
 
   const frontmatter = `---
-title: "${opts.title} — Personalized"
+title: "${escapeYamlDoubleQuoted(`${opts.title} — Personalized`)}"
 type: book-analysis${authorLine}
 date: ${today}
-context: "${contextSummary.replace(/"/g, '\\"')}"
+context: "${escapeYamlDoubleQuoted(contextSummary)}"
 tags: [book, personalized, two-column-htmltable-valign-top]
 ---`;
 
