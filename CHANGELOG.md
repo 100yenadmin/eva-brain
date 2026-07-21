@@ -2,6 +2,16 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.63.3] - 2026-07-22
+
+**Eva Brain install success now means the brain is callable, not that every optional content-maintenance cycle has run.**
+
+### Fixed
+
+- **Installer health now proves callability without hiding runtime failures.** The updater permits explicit content-maintenance gaps (`cycle_freshness` and `links_extraction_lag`), and permits `sync_freshness` only for sources whose search succeeds in the same health run. Unknown, schema, migration, index, database, and malformed doctor results still fail the install. The health probe runs through the guaranteed Bun runtime and remains compatible with successful minimal doctor JSON from older installs.
+- **Non-actionable taxonomy drift no longer fails doctor.** `type_proliferation` stays blocking only when the active schema pack has a built-in successor; otherwise the report identifies custom taxonomy drift without suggesting a no-op onboard command.
+- **Removed stale source-freshness calls.** The Eva updater no longer invokes `sources cycle-freshness` or `sources sync-freshness`, which current upstream GBrain does not expose.
+
 ## [0.42.63.2] - 2026-07-22
 
 **Eva Brain installs now finish cleanly against upstream GBrain 0.42.63.1.**

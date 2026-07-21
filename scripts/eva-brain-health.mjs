@@ -11,6 +11,10 @@ const WORKSPACE_DOCS_QUERY = process.env.EVA_BRAIN_WORKSPACE_DOCS_QUERY || 'runb
 const DEFAULT_TIMEOUT_MS = 30_000;
 const CANONICAL_WORKSPACE_DOCS_PATH = '/root/.openclaw/workspace/docs';
 const CANONICAL_WORKSPACE_RUNBOOKS_PATH = '/root/.openclaw/workspace/docs/runbooks';
+const ADVISORY_DOCTOR_FAILURES = new Set([
+  'cycle_freshness',
+  'links_extraction_lag',
+]);
 
 const requireOpenClaw = process.argv.includes('--require-openclaw') || process.env.EVA_BRAIN_REQUIRE_OPENCLAW === 'true';
 const allowMissingSupportKb = process.argv.includes('--allow-missing-support-kb') || process.env.EVA_BRAIN_ALLOW_MISSING_SUPPORT_KB === 'true';
@@ -154,6 +158,17 @@ function summarizeSearch(result) {
   };
 }
 
+function staleSourceIds(message) {
+  return [...String(message).matchAll(/Source '([^']+)'/gu)].map(match => match[1]);
+}
+
+function isAdvisoryDoctorFailure(failure, verifiedSearchSources) {
+  if (ADVISORY_DOCTOR_FAILURES.has(failure.name)) return true;
+  if (failure.name !== 'sync_freshness') return false;
+  const sourceIds = staleSourceIds(failure.message);
+  return sourceIds.length > 0 && sourceIds.every(sourceId => verifiedSearchSources.has(sourceId));
+}
+
 function walkMarkdownFiles(dir, limit = 12) {
   const files = [];
   const stack = [dir];
@@ -295,11 +310,47 @@ function main() {
   const pluginInspect = run(openclaw, ['plugins', 'inspect', 'gbrain', '--runtime', '--json'], {
     timeoutMs: 15_000,
   });
+  const doctorReport = parseJson(doctor.stdout, null);
+  const doctorFailures = Array.isArray(doctorReport?.checks)
+    ? doctorReport.checks
+        .filter(check => check?.status === 'fail')
+        .map(check => ({
+          name: String(check.name ?? 'unknown'),
+          category: String(check.category ?? 'unknown'),
+          message: String(check.message ?? ''),
+        }))
+    : [];
+  const doctorHasBasicReport = Boolean(
+    doctorReport &&
+    typeof doctorReport === 'object' &&
+    Number.isFinite(doctorReport.health_score),
+  );
+  const doctorDiagnosticAvailable = Boolean(
+    (doctor.ok ? doctorHasBasicReport : Array.isArray(doctorReport?.checks)) &&
+    !doctor.timedOut &&
+    doctor.signal == null,
+  );
+  const verifiedSearchSources = new Set();
+  if (supportKb?.pages > 0 && supportKbSearchSummary.ok && supportKbSearchSummary.resultCount > 0) {
+    verifiedSearchSources.add(SUPPORT_KB_SOURCE);
+  }
+  if (workspaceDocs?.pages > 0 && workspaceDocsSearchSummary.ok && workspaceDocsSearchSummary.resultCount > 0) {
+    verifiedSearchSources.add(WORKSPACE_DOCS_SOURCE);
+  }
+  const doctorBlockingFailures = doctorFailures.filter(
+    failure => !isAdvisoryDoctorFailure(failure, verifiedSearchSources),
+  );
+  const doctorExitAcceptable = Boolean(
+    doctor.ok ||
+    (doctorFailures.length > 0 && doctorBlockingFailures.length === 0),
+  );
 
   const report = {
     ok: Boolean(
       version.ok &&
-      doctor.ok &&
+      doctorDiagnosticAvailable &&
+      doctorExitAcceptable &&
+      doctorBlockingFailures.length === 0 &&
       sourcesResult.ok &&
       (!requireSupportKb ||
         (supportKb &&
@@ -318,7 +369,12 @@ function main() {
       version: version.stdout.trim(),
       versionOk: version.ok,
       doctorOk: doctor.ok,
-      doctor: parseJson(doctor.stdout, null),
+      doctorGate: 'advisory-content-only',
+      doctorDiagnosticAvailable,
+      doctorExitAcceptable,
+      doctorFailures,
+      doctorBlockingFailures,
+      doctor: doctorReport,
     },
     pages: {
       total: totalPages,

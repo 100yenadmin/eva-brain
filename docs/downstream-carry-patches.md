@@ -45,6 +45,12 @@ Eva Brain uses upstream GBrain as its core. Core changes in this file are tempor
 - Reason: only a truly missing `pages` table means an empty brain. Other database failures must surface instead of being reported as zero pages.
 - Removal condition: upstream distinguishes missing-table errors from unexpected query/database failures.
 
+## Actionable type-proliferation diagnostics
+
+- Files: `src/core/onboard/checks.ts`, `test/onboard-pack-upgrade-checks.test.ts`
+- Reason: a current schema pack with no built-in successor cannot remediate custom type drift through `gbrain onboard`. The diagnostic must report the observed and declared type counts without failing the brain or recommending a no-op command.
+- Removal condition: upstream makes type-proliferation severity depend on an available pack successor or another concrete, previewable remediation.
+
 ## Install-time migration policy
 
 - File: `package.json`
