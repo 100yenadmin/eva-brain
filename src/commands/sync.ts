@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, statSync, realpathSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { join, relative } from 'path';
+import { join, relative, posix, win32 } from 'path';
 import type { BrainEngine } from '../core/engine.ts';
 import { DELETE_BATCH_SIZE } from '../core/engine-constants.ts';
 import { importFile } from '../core/import-file.ts';
@@ -1113,11 +1113,19 @@ function createSyncBaselineCommit(repoPath: string): void {
  * Guards symlink escape at the per-file level (a committed symlink whose
  * target lives outside the repo), not just at scope entry.
  */
+export function isResolvedPathContained(realPath: string, realRoot: string): boolean {
+  const windowsStyle = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(realPath) ||
+    /^(?:[A-Za-z]:[\\/]|\\\\)/.test(realRoot);
+  const pathApi = windowsStyle ? win32 : posix;
+  const rel = pathApi.relative(realRoot, realPath);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel));
+}
+
 function isPathSafe(filePath: string, gitRoot: string): boolean {
   try {
     const real = realpathSync(filePath);
     const rootReal = realpathSync(gitRoot);
-    return real === rootReal || real.startsWith(rootReal + '/');
+    return isResolvedPathContained(real, rootReal);
   } catch {
     return false;
   }

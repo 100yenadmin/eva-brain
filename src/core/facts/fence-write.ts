@@ -34,10 +34,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
-import { resolvePageFilePath } from '../markdown.ts';
 import { withPageLock } from '../page-lock.ts';
 import { gbrainPath } from '../config.ts';
 import { upsertFactRow, parseFactsFence } from '../facts-fence.ts';
@@ -167,12 +166,11 @@ export async function writeFactsToFence(
     return { inserted: 0, ids: [] };
   }
 
-  // Local patch 2026-06-11: route through resolvePageFilePath so non-default
-  // sources fence into `<local_path>/.sources/<id>/<slug>.md` — the same path
-  // the put_page write-through and dream-cycle reverse-render compute. The
-  // bare join wrote main-source fences to the repo ROOT (the default source's
-  // tree), polluting ~/brain with stray root-level fence files.
-  const filePath = resolvePageFilePath(target.localPath, target.slug, target.sourceId);
+  // sources.local_path is the root of this source's own working tree. Match
+  // writePageThrough: only host-root layouts without a per-source local_path
+  // use `.sources/<id>`. Fence writes require local_path, so they always write
+  // directly beneath that source root.
+  const filePath = join(target.localPath, `${target.slug}.md`);
   const tmpPath = `${filePath}.tmp`;
 
   return withPageLock(

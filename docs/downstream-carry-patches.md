@@ -30,8 +30,14 @@ Eva Brain uses upstream GBrain as its core. Core changes in this file are tempor
 ## Read and sync bounds
 
 - Files: `src/core/operations.ts`, `src/commands/sync.ts`, focused tests.
-- Reason: remote timeline reads need a bounded result limit, and subpath full sync must not clear failure-ledger rows for sibling paths it did not retry.
-- Removal condition: upstream ships equivalent operation-boundary clamping and scope-aware failure clearing.
+- Reason: remote timeline reads need a bounded result limit; subpath full sync must not clear failure-ledger rows it did not retry; and incremental sync containment must work with native Windows paths.
+- Removal condition: upstream ships equivalent operation-boundary clamping, scope-aware failure clearing, and platform-aware path containment.
+
+## Source-root facts fence writes
+
+- Files: `src/core/facts/fence-write.ts`, `test/fence-write.test.ts`
+- Reason: `sources.local_path` is already the source's own working-tree root. Facts must update `<local_path>/<slug>.md`, matching `put_page`, rather than creating a second hidden `.sources/<id>` tree that later syncs do not read.
+- Removal condition: upstream aligns fact fence writes with its per-source `local_path` write-through behavior and carries regression coverage.
 
 ## Honest schema-pack stats failures
 
