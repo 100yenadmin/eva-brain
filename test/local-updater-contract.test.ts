@@ -134,7 +134,7 @@ describe('public local updater and Codex plugin packaging', () => {
     expect(script).toMatch(/--with-workspace-docs\b/);
     expect(script).toMatch(/--skip-health\b/);
     expect(script).toMatch(/node\s+scripts\/install-codex-plugin\.mjs/);
-    expect(script).toMatch(/node\s+scripts\/eva-brain-health\.mjs/);
+    expect(script).toMatch(/bun\s+scripts\/eva-brain-health\.mjs/);
     expect(script).toContain('health_args+=(--require-openclaw)');
     expect(script).toContain('health_args+=(--require-support-kb)');
     expect(script).toContain('health_args+=(--allow-missing-support-kb)');
@@ -1092,6 +1092,43 @@ exit 3
     expect(report.agentsDocsGuidance.matchingFiles).toContain(join(home, '.openclaw/workspace/AGENTS.md'));
   });
 
+  test('Eva health accepts a successful minimal doctor report for mixed-version compatibility', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain compatible"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then echo '{"health_score":100}'; exit 0; fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then echo '{"sources":[]}'; exit 0; fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--allow-missing-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.gbrain.doctorDiagnosticAvailable).toBe(true);
+    expect(report.gbrain.doctorExitAcceptable).toBe(true);
+  });
+
   test('Eva health reports doctor content gaps without failing a callable install', () => {
     const home = tempHome();
     const binDir = join(home, 'bin');
@@ -1195,6 +1232,50 @@ exit 3
     expect(report.gbrain.doctorBlockingFailures).toEqual([
       { name: 'timeline_dedup_index', category: 'runtime', message: 'missing unique index' },
     ]);
+  });
+
+  test('Eva health keeps sync freshness blocking for a source it did not search', () => {
+    const home = tempHome();
+    const binDir = join(home, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(
+      join(binDir, 'gbrain'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "version" ]; then echo "gbrain 0.42.63.3"; exit 0; fi
+if [ "\${1:-}" = "doctor" ]; then
+  echo '{"health_score":80,"checks":[{"name":"sync_freshness","status":"fail","category":"brain","message":"Source '\''private-notes'\'' last synced 30d ago"}]}'
+  exit 1
+fi
+if [ "\${1:-}" = "sources" ] && [ "\${2:-}" = "list" ]; then
+  echo '{"sources":[{"id":"openclaw-support-kb","page_count":3},{"id":"private-notes","page_count":4}]}'
+  exit 0
+fi
+if [ "\${1:-}" = "search" ]; then echo '{"results":[{"slug":"agents","score":1}]}'; exit 0; fi
+exit 3
+`,
+    );
+    writeFileSync(join(binDir, 'openclaw'), '#!/usr/bin/env bash\nexit 3\n');
+    chmodSync(join(binDir, 'gbrain'), 0o755);
+    chmodSync(join(binDir, 'openclaw'), 0o755);
+
+    const result = Bun.spawnSync({
+      cmd: ['node', 'scripts/eva-brain-health.mjs', '--require-support-kb'],
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        GBRAIN_BIN: join(binDir, 'gbrain'),
+        OPENCLAW_BIN: join(binDir, 'openclaw'),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout.toString());
+    expect(report.gbrain.doctorBlockingFailures).toHaveLength(1);
+    expect(report.gbrain.doctorBlockingFailures[0].name).toBe('sync_freshness');
   });
 
   test('Eva health fails closed when doctor does not return a diagnostic report', () => {

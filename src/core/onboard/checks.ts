@@ -465,6 +465,7 @@ export async function checkTypeProliferation(
   let activeName: string | null = null;
   let activeIdentity: string | null = null;
   let builtInRemediationAvailable = false;
+  let successorLookupSucceeded = false;
   let successorIdentity: string | null = null;
   try {
     const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
@@ -478,8 +479,8 @@ export async function checkTypeProliferation(
       declared = active.manifest.page_types.length;
       activeName = active.manifest.name;
       activeIdentity = active.identity;
-      const successors = await findPackSuccessors(active.manifest.name, active.manifest.version)
-        .catch(() => []);
+      const successors = await findPackSuccessors(active.manifest.name, active.manifest.version);
+      successorLookupSucceeded = true;
       if (successors.length > 0) {
         builtInRemediationAvailable = true;
         successorIdentity = successors[0]!.identity;
@@ -500,9 +501,10 @@ export async function checkTypeProliferation(
     active_pack_name: activeName,
     active_pack_identity: activeIdentity,
     built_in_remediation_available: builtInRemediationAvailable,
+    successor_lookup_succeeded: successorLookupSucceeded,
     successor_identity: successorIdentity,
   };
-  if (!builtInRemediationAvailable && n > warn) {
+  if (activeIdentity && successorLookupSucceeded && !builtInRemediationAvailable && n > warn) {
     return {
       check: {
         name: 'type_proliferation',

@@ -116,6 +116,7 @@ describe('checkTypeProliferation (D16 pack-aware ratio)', () => {
       declared_type_count: declared,
       active_pack_name: 'gbrain-base-v2',
       built_in_remediation_available: false,
+      successor_lookup_succeeded: true,
     });
   });
 
@@ -136,6 +137,7 @@ describe('checkTypeProliferation (D16 pack-aware ratio)', () => {
       declared_type_count: declared,
       active_pack_name: 'gbrain-base',
       built_in_remediation_available: true,
+      successor_lookup_succeeded: true,
     });
   });
 });

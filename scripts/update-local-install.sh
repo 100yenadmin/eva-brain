@@ -393,10 +393,10 @@ health_report() {
     health_args+=(--require-workspace-docs)
   fi
   if [ "$DRY_RUN" = "true" ]; then
-    run node scripts/eva-brain-health.mjs "${health_args[@]}"
+    run bun scripts/eva-brain-health.mjs "${health_args[@]}"
     return
   fi
-  run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" node scripts/eva-brain-health.mjs "${health_args[@]}"
+  run env GBRAIN_BIN="$HOME/.bun/bin/gbrain" bun scripts/eva-brain-health.mjs "${health_args[@]}"
 }
 
 provider_test() {

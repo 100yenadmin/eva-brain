@@ -14,7 +14,6 @@ const CANONICAL_WORKSPACE_RUNBOOKS_PATH = '/root/.openclaw/workspace/docs/runboo
 const ADVISORY_DOCTOR_FAILURES = new Set([
   'cycle_freshness',
   'links_extraction_lag',
-  'sync_freshness',
 ]);
 
 const requireOpenClaw = process.argv.includes('--require-openclaw') || process.env.EVA_BRAIN_REQUIRE_OPENCLAW === 'true';
@@ -157,6 +156,17 @@ function summarizeSearch(result) {
     command: result.command,
     stderr: result.ok ? '' : result.stderr.trim(),
   };
+}
+
+function staleSourceIds(message) {
+  return [...String(message).matchAll(/Source '([^']+)'/gu)].map(match => match[1]);
+}
+
+function isAdvisoryDoctorFailure(failure, verifiedSearchSources) {
+  if (ADVISORY_DOCTOR_FAILURES.has(failure.name)) return true;
+  if (failure.name !== 'sync_freshness') return false;
+  const sourceIds = staleSourceIds(failure.message);
+  return sourceIds.length > 0 && sourceIds.every(sourceId => verifiedSearchSources.has(sourceId));
 }
 
 function walkMarkdownFiles(dir, limit = 12) {
@@ -310,13 +320,25 @@ function main() {
           message: String(check.message ?? ''),
         }))
     : [];
+  const doctorHasBasicReport = Boolean(
+    doctorReport &&
+    typeof doctorReport === 'object' &&
+    Number.isFinite(doctorReport.health_score),
+  );
   const doctorDiagnosticAvailable = Boolean(
-    Array.isArray(doctorReport?.checks) &&
+    (doctor.ok ? doctorHasBasicReport : Array.isArray(doctorReport?.checks)) &&
     !doctor.timedOut &&
     doctor.signal == null,
   );
+  const verifiedSearchSources = new Set();
+  if (supportKb?.pages > 0 && supportKbSearchSummary.ok && supportKbSearchSummary.resultCount > 0) {
+    verifiedSearchSources.add(SUPPORT_KB_SOURCE);
+  }
+  if (workspaceDocs?.pages > 0 && workspaceDocsSearchSummary.ok && workspaceDocsSearchSummary.resultCount > 0) {
+    verifiedSearchSources.add(WORKSPACE_DOCS_SOURCE);
+  }
   const doctorBlockingFailures = doctorFailures.filter(
-    failure => !ADVISORY_DOCTOR_FAILURES.has(failure.name),
+    failure => !isAdvisoryDoctorFailure(failure, verifiedSearchSources),
   );
   const doctorExitAcceptable = Boolean(
     doctor.ok ||
