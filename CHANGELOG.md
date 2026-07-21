@@ -2,6 +2,19 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.63.2] - 2026-07-22
+
+**Eva Brain installs now finish cleanly against upstream GBrain 0.42.63.1.**
+
+The public updater no longer treats upstream's help text after an unsupported optional `sources cycle-freshness` command as a fatal error. Release metadata is aligned across the CLI, OpenClaw plugin, Codex plugin, skill manifest, and repository version marker. The resolved dependency set also moves the Hono Node adapter to a fixed release for GHSA-frvp-7c67-39w9; Eva Brain's HTTP implementation remains unchanged.
+
+### Itemized changes
+
+#### Fixed
+- **Optional source-freshness compatibility is non-fatal.** The updater recognizes the exact unsupported-command first line even when upstream appends usage help, while different first-line errors still fail closed.
+- **Release identities agree.** All repo-owned plugin and package version surfaces report `0.42.63.2`.
+- **Dependency scan is clean.** The unused transitive Hono Node adapter resolves to fixed `2.0.10` instead of vulnerable 1.x.
+
 ## [0.42.63.1] - 2026-07-20
 
 **Schema commands now open the local brain you actually configured.**
