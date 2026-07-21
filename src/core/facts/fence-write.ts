@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import type { BrainEngine, NewFact, FactVisibility } from '../engine.ts';
 import { withPageLock } from '../page-lock.ts';
 import { gbrainPath } from '../config.ts';
+import { isWriteTargetContained } from '../path-confine.ts';
 import { upsertFactRow, parseFactsFence } from '../facts-fence.ts';
 import { extractFactsFromFenceText } from './extract-from-fence.ts';
 import { logStubGuardEvent } from './stub-guard-audit.ts';
@@ -171,6 +172,15 @@ export async function writeFactsToFence(
   // use `.sources/<id>`. Fence writes require local_path, so they always write
   // directly beneath that source root.
   const filePath = join(target.localPath, `${target.slug}.md`);
+  if (!isWriteTargetContained(filePath, target.localPath)) {
+    recordWriteFailure(
+      target.slug,
+      target.sourceId,
+      ['facts fence target resolves outside source root'],
+      filePath,
+    );
+    return { inserted: 0, ids: [], fenceWriteFailed: true };
+  }
   const tmpPath = `${filePath}.tmp`;
 
   return withPageLock(
