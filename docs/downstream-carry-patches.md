@@ -21,6 +21,18 @@ Eva Brain uses upstream GBrain as its core. Core changes in this file are tempor
 - Reason: user-supplied titles, authors, and context must remain valid YAML when they contain backslashes, quotes, or line breaks.
 - Removal condition: upstream escapes all double-quoted frontmatter values equivalently and carries regression coverage.
 
+## v123 overflow-safe FTS backfill
+
+- Files: `src/core/migrate.ts`, `test/fts-language-migration.serial.test.ts`
+- Reason: non-English brains must not backfill `compiled_truth` through the old trigger and abort before v124 installs the overflow-safe shape.
+- Removal condition: upstream v123 uses the post-v124 page trigger shape or otherwise guarantees v124 runs before any unsafe backfill.
+
+## Read and sync bounds
+
+- Files: `src/core/operations.ts`, `src/commands/sync.ts`, focused tests.
+- Reason: remote timeline reads need a bounded result limit, and subpath full sync must not clear failure-ledger rows for sibling paths it did not retry.
+- Removal condition: upstream ships equivalent operation-boundary clamping and scope-aware failure clearing.
+
 ## Honest schema-pack stats failures
 
 - Files: `src/core/schema-pack/stats.ts`, `test/schema-pack-stats.test.ts`

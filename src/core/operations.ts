@@ -2205,12 +2205,12 @@ const get_timeline: Operation = {
     // engine via TimelineOpts.sourceIds; scalar/unset unchanged.
     const after = typeof p.after === 'string' ? p.after : typeof p.since === 'string' ? p.since : undefined;
     const before = typeof p.before === 'string' ? p.before : typeof p.until === 'string' ? p.until : undefined;
-    const limit = typeof p.limit === 'number' ? p.limit : undefined;
+    const limit = clampSearchLimit(typeof p.limit === 'number' ? p.limit : undefined, 100, 500);
     return ctx.engine.getTimeline(p.slug as string, {
       ...sourceScopeOpts(ctx),
       ...(after ? { after } : {}),
       ...(before ? { before } : {}),
-      ...(limit !== undefined ? { limit } : {}),
+      limit,
     });
   },
   scope: 'read',

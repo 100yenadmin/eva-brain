@@ -74,4 +74,11 @@ describe('get_timeline op', () => {
       before: '2026-04-30',
     });
   });
+
+  test('clamps caller-supplied limits at the operation boundary', async () => {
+    const ctx = makeCtx();
+    await getTimeline.handler(ctx, { slug: 'people/alice-example', limit: 1_000_000 });
+
+    expect((ctx as typeof ctx & { __calls: Array<{ slug: string; opts?: TimelineOpts }> }).__calls[0]?.opts?.limit).toBe(500);
+  });
 });

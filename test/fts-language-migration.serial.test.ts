@@ -62,6 +62,7 @@ describe('configurable_fts_language migration', () => {
     expect(calls.length).toBe(2);
     expect(calls[0]).toContain('CREATE OR REPLACE FUNCTION update_page_search_vector');
     expect(calls[0]).toContain("to_tsvector('english'");
+    expect(calls[0]).not.toContain('compiled_truth');
     expect(calls[1]).toContain('CREATE OR REPLACE FUNCTION update_chunk_search_vector');
     expect(calls[1]).toContain("to_tsvector('english'");
     // v120/#1647 hardening must survive the CREATE OR REPLACE (which resets
@@ -89,6 +90,7 @@ describe('configurable_fts_language migration', () => {
     // pt_br \u2014 2 CREATE + 2 backfill UPDATEs = 4 calls
     expect(calls.length).toBe(4);
     expect(calls[0]).toContain("to_tsvector('pt_br'");
+    expect(calls[0]).not.toContain('compiled_truth');
     expect(calls[1]).toContain("to_tsvector('pt_br'");
     expect(calls[2]).toMatch(/UPDATE pages/);
     expect(calls[3]).toContain("to_tsvector('pt_br'");

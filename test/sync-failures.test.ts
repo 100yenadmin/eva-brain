@@ -133,6 +133,16 @@ describe('Bug 9 — sync-failures JSONL helpers', () => {
   });
 });
 
+describe('full-sync failure scope', () => {
+  test('does not clear sibling failures outside a scoped sync', async () => {
+    const { isSyncFailurePathInScope } = await import('../src/commands/sync.ts');
+    expect(isSyncFailurePathInScope('wiki/fixed.md', 'wiki')).toBe(true);
+    expect(isSyncFailurePathInScope('wiki\\fixed.md', 'wiki')).toBe(true);
+    expect(isSyncFailurePathInScope('docs/still-broken.md', 'wiki')).toBe(false);
+    expect(isSyncFailurePathInScope('docs/still-broken.md', '')).toBe(true);
+  });
+});
+
 describe('Bug 9 — doctor surfaces sync failures', () => {
   test('doctor source contains sync_failures check', async () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();

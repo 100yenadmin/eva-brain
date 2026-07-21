@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.42.63.0] - 2026-07-20
+## [0.42.63.1] - 2026-07-20
 
 **Schema commands now open the local brain you actually configured.**
 

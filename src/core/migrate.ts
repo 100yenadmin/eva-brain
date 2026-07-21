@@ -5522,8 +5522,10 @@ export const MIGRATIONS: Migration[] = [
     // must be a literal in the SQL. getFtsLanguage() validates the value
     // (lowercase letters/digits/underscores only) before interpolation.
     //
-    // Function bodies mirror schema.sql / pglite-schema.ts exactly —
-    // INCLUDING the `SET search_path = pg_catalog, public` hardening from
+    // The pages function uses the overflow-safe v124 shape (title + timeline,
+    // not unbounded compiled_truth) so a non-English backfill cannot abort
+    // before v124 gets a chance to run. Both functions retain the
+    // `SET search_path = pg_catalog, public` hardening from
     // v120/#1647 (CREATE OR REPLACE resets proconfig, so omitting it here
     // would silently strip the hardening on every upgraded brain). Only
     // the text-search config name is parameterized. Keep all copies in
@@ -5550,7 +5552,6 @@ export const MIGRATIONS: Migration[] = [
 
           NEW.search_vector :=
             setweight(to_tsvector('${lang}', coalesce(NEW.title, '')), 'A') ||
-            setweight(to_tsvector('${lang}', coalesce(NEW.compiled_truth, '')), 'B') ||
             setweight(to_tsvector('${lang}', coalesce(NEW.timeline, '')), 'C') ||
             setweight(to_tsvector('${lang}', coalesce(timeline_text, '')), 'C');
 

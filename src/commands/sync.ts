@@ -3403,6 +3403,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   };
 }
 
+export function isSyncFailurePathInScope(path: string, scopePrefix: string): boolean {
+  const normalizedPath = path.replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedScope = scopePrefix.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  return normalizedScope === '' || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
 async function performFullSync(
   engine: BrainEngine,
   // #753/#774: the three roots resolved once at the top of performSyncInner.
@@ -3494,8 +3500,13 @@ async function performFullSync(
   // failures still climb their attempts.
   const fullSourceId = opts.sourceId ?? DEFAULT_SOURCE_ID;
   const fullFailureSet = new Set(result.failures.map(f => f.path));
+  const fullScopePrefix = slugRoot ? relative(gitContextRoot, syncScopeRoot) : '';
   const fullSucceeded = loadSyncFailures()
-    .filter(e => e.source_id === fullSourceId && isSkippablePath(e.path) && !fullFailureSet.has(e.path))
+    .filter(e =>
+      e.source_id === fullSourceId &&
+      isSkippablePath(e.path) &&
+      isSyncFailurePathInScope(e.path, fullScopePrefix) &&
+      !fullFailureSet.has(e.path))
     .map(e => e.path);
   const advanceFull = async (): Promise<void> => {
     // Persist sync state so the next sync is incremental. Routed through
