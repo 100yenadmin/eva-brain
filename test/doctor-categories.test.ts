@@ -25,15 +25,6 @@ import {
 } from '../src/core/doctor-categories.ts';
 
 const DOCTOR_TS_PATH = join(import.meta.dir, '..', 'src', 'commands', 'doctor.ts');
-const RUNTIME_DOCTOR_CHECK_NAMES = new Set([
-  'dangling_aliases',
-  'embed_staleness',
-  'entity_link_coverage',
-  'pack_upgrade_available',
-  'takes_count',
-  'timeline_coverage',
-  'type_proliferation',
-]);
 
 function enumerateCheckNames(): Set<string> {
   const source = readFileSync(DOCTOR_TS_PATH, 'utf-8');
@@ -113,10 +104,9 @@ describe('doctor-categories drift guard', () => {
     // catch the drift quickly. Use a soft assertion via console hint and a
     // strict expectation that the count is small (<=2). Adjust if real
     // refactors require more headroom.
-    const unexpectedStale = stale.filter(name => !RUNTIME_DOCTOR_CHECK_NAMES.has(name));
-    if (unexpectedStale.length > 2) {
+    if (stale.length > 2) {
       throw new Error(
-        `These categorized names no longer appear in doctor.ts: ${unexpectedStale.sort().join(', ')}. ` +
+        `These categorized names no longer appear in doctor.ts: ${stale.sort().join(', ')}. ` +
           `Remove them from src/core/doctor-categories.ts.`,
       );
     }

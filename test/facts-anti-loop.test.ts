@@ -15,11 +15,11 @@
  * graceful no-op → put_page succeeds regardless of sibling pollution.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { dispatchToolCall } from '../src/mcp/dispatch.ts';
 import { extractFactsFromTurn } from '../src/core/facts/extract.ts';
-import { configureGateway, resetGateway } from '../src/core/ai/gateway.ts';
+import { resetGateway } from '../src/core/ai/gateway.ts';
 
 let engine: PGLiteEngine;
 
@@ -37,25 +37,10 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
-  try {
-    await engine.disconnect();
-  } finally {
-    resetGateway();
-  }
+  await engine.disconnect();
 }, 60_000);
 
 describe('anti-loop dream_generated marker', () => {
-  beforeEach(() => {
-    // This file validates facts backstop gating, not embedding. The global
-    // legacy preload can inherit CI's fake OPENAI_API_KEY=sk-test and make
-    // put_page attempt a real embedding call before the backstop runs.
-    configureGateway({
-      embedding_model: 'openai:text-embedding-3-large',
-      embedding_dimensions: 1536,
-      env: {},
-    });
-  });
-
   test('extractFactsFromTurn skips when isDreamGenerated:true', async () => {
     const r = await extractFactsFromTurn({
       turnText: 'This would normally produce facts about Sam.',

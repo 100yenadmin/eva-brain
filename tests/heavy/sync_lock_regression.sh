@@ -81,22 +81,19 @@ EOF
 # git-init so sync's diff-walk has something to anchor (sync expects a git repo)
 (cd "$BRAIN_DIR" && git init -q && git add . && git -c user.email=test@test -c user.name=test commit -q -m "seed" >/dev/null 2>&1) || true
 
-# Tell current source-aware sync to use this brain dir. Older versions read
-# sync.repo_path, but current sync resolves the default source local_path.
-escaped_brain_dir=${BRAIN_DIR//\'/\'\'}
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
-  "INSERT INTO sources (id, name, local_path, config)
-   VALUES ('default', 'default', '$escaped_brain_dir', '{}'::jsonb)
-   ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" \
-  >/dev/null 2>>"$LOG"
+# Tell gbrain to use this brain dir. v0.41 introduced the source registry
+# (sources table) as the canonical "where do pages come from" surface;
+# `sync.repo_path` is the legacy key and sync now reads the source row's
+# `local_path` column. Update the default source's local_path directly via
+# psql (mirrors how fm_wallclock.sh registers via the engine API — same
+# semantics, lower process-spawn overhead).
+psql "$DATABASE_URL" -c "INSERT INTO sources (id, name, local_path) VALUES ('default', 'default', '$BRAIN_DIR') ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path;" >>"$LOG" 2>&1
 # Keep the legacy config key set too — some code paths still read it, and
 # setting both is the belt-and-suspenders shape downstream callers expect.
 bun run src/cli.ts config set sync.repo_path "$BRAIN_DIR" >/dev/null 2>&1 || true
 
 # Step 3: spawn N parallel sync processes. Capture each one's exit code +
 # stdout/stderr. The race for the lock happens during their startup window.
-# Embeddings are unrelated to the writer-lock contract, so keep this scheduled
-# heavy test provider-free.
 PIDS=()
 EXIT_FILES=()
 OUT_FILES=()

@@ -536,7 +536,7 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
     }
   } catch (e) {
     const isNoConfig = e instanceof MigrateOnlyError && e.message.startsWith('No brain configured');
-    const msg = isNoConfig ? 'No brain configured.' : 'Schema migration failed.';
+    const msg = e instanceof Error ? e.message : String(e);
     if (opts.jsonOutput) {
       console.log(JSON.stringify({ status: 'error', reason: isNoConfig ? 'no_config' : 'migrate_failed', message: msg }));
     } else {

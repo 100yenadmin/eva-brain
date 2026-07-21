@@ -1,4 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 describe('doctor command', () => {
   test('doctor module exports runDoctor', async () => {
@@ -83,89 +86,6 @@ describe('doctor command', () => {
     expect(source).toContain('GBRAIN_DATABASE_URL');
   });
 
-  test('content-sanity doctor filters stale soft-block audit rows', async () => {
-    const {
-      classifyContentSanityAuditStatus,
-      filterCurrentContentSanityEvents,
-    } = await import('../src/commands/doctor.ts');
-    const events = [
-      {
-        ts: '2026-05-28T00:00:00.000Z',
-        event_type: 'soft_block' as const,
-        source_id: 'workspace-docs',
-        slug: 'removed/huge-export',
-        bytes: 900000,
-        junk_pattern_matches: [],
-        literal_substring_matches: [],
-        reason_messages: ['PAGE_OVERSIZED'],
-      },
-      {
-        ts: '2026-05-28T00:00:01.000Z',
-        event_type: 'soft_block' as const,
-        source_id: 'workspace-docs',
-        slug: 'current/huge-export',
-        bytes: 900000,
-        junk_pattern_matches: [],
-        literal_substring_matches: [],
-        reason_messages: ['PAGE_OVERSIZED'],
-      },
-      {
-        ts: '2026-05-28T00:00:02.000Z',
-        event_type: 'warn' as const,
-        source_id: 'workspace-docs',
-        slug: 'current/large-doc',
-        bytes: 90000,
-        junk_pattern_matches: [],
-        literal_substring_matches: [],
-        reason_messages: ['PAGE_OVERSIZE_WARN'],
-      },
-    ];
-    const engine = {
-      async executeRaw<T>(_sql: string, params: unknown[]): Promise<T[]> {
-        const slug = params[1];
-        if (slug === 'current/huge-export') return [{ embed_skip_present: true } as T];
-        return [];
-      },
-    };
-
-    const filtered = await filterCurrentContentSanityEvents(engine, events);
-    expect(filtered.map(e => e.slug)).toEqual([
-      'current/huge-export',
-      'current/large-doc',
-    ]);
-
-    expect(classifyContentSanityAuditStatus({
-      by_type: {
-        hard_block: 0,
-        reject: 0,
-        quarantine: 0,
-        soft_block: 0,
-        flag: 1,
-        warn: 57,
-      },
-    })).toBe('ok');
-    expect(classifyContentSanityAuditStatus({
-      by_type: {
-        hard_block: 0,
-        reject: 0,
-        quarantine: 0,
-        soft_block: 1,
-        flag: 0,
-        warn: 0,
-      },
-    })).toBe('warn');
-    expect(classifyContentSanityAuditStatus({
-      by_type: {
-        hard_block: 0,
-        reject: 0,
-        quarantine: 1,
-        soft_block: 0,
-        flag: 0,
-        warn: 0,
-      },
-    })).toBe('fail');
-  });
-
   // v0.12.2 reliability wave — doctor detects JSONB double-encode + truncated
   // bodies and points users at the standalone `gbrain repair-jsonb` command.
   // Detection only; repair lives in src/commands/repair-jsonb.ts.
@@ -182,6 +102,43 @@ describe('doctor command', () => {
     expect(source).toMatch(/table:\s*'raw_data'.*col:\s*'data'/);
     expect(source).toMatch(/table:\s*'ingest_log'.*col:\s*'pages_updated'/);
     expect(source).toMatch(/table:\s*'files'.*col:\s*'metadata'/);
+  });
+
+  test('pgvector and jsonb_integrity checks use the active PGLite engine', async () => {
+    const { PGLiteEngine } = await import('../src/core/pglite-engine.ts');
+    const { pgvectorCheck, jsonbIntegrityCheck } = await import('../src/commands/doctor.ts');
+    const engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+    try {
+      const pgvector = await pgvectorCheck(engine);
+      expect(pgvector.name).toBe('pgvector');
+      expect(pgvector.status).toBe('ok');
+
+      const jsonb = await jsonbIntegrityCheck(engine);
+      expect(jsonb.name).toBe('jsonb_integrity');
+      expect(jsonb.status).toBe('ok');
+    } finally {
+      await engine.disconnect();
+    }
+  });
+
+  test('skill conformance derives a valid host manifest when manifest.json is absent', async () => {
+    const { skillConformanceCheck } = await import('../src/commands/doctor.ts');
+    const skillsDir = join(tmpdir(), `gbrain-doctor-skills-${crypto.randomUUID()}`);
+    mkdirSync(join(skillsDir, 'host-only'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, 'host-only', 'SKILL.md'),
+      '---\nname: host-only\ndescription: host-owned skill\n---\n\n# Host-only\n',
+    );
+    try {
+      const check = skillConformanceCheck(skillsDir);
+      expect(check).toMatchObject({ name: 'skill_conformance', status: 'ok' });
+      expect(check.message).toContain('1/1 skills pass');
+      expect(check.message).toContain('derived from SKILL.md files');
+    } finally {
+      rmSync(skillsDir, { recursive: true, force: true });
+    }
   });
 
   // v0.31.2 — facts_extraction_health check added in PR1 commit 12.
@@ -547,16 +504,6 @@ describe('v0.32.4 — sync_freshness check', () => {
     expect(result.message).toContain('never been synced');
     expect(result.message).toContain(`'wiki'`); // source.id embedded
     expect(result.message).toContain('gbrain sync --source <id>');
-  });
-
-  test('config.sync_freshness=false skips updater-managed import sources', async () => {
-    const { checkSyncFreshness } = await import('../src/commands/doctor.ts');
-    const result = await checkSyncFreshness(makeStubEngine([
-      { id: 'workspace-docs', name: 'Workspace Docs', local_path: '/tmp/docs', last_sync_at: null, config: '{"sync_freshness":false}' },
-      { id: 'kb', name: '', local_path: '/tmp/kb', last_sync_at: agoMs(60 * 60 * 1000), config: '{}' },
-    ]));
-    expect(result.status).toBe('ok');
-    expect(result.message).toContain('1 updater-managed skipped');
   });
 
   test('last_sync_at > 72h ago → fail with day-rounded "Nd ago"', async () => {
@@ -1415,7 +1362,7 @@ describe('v0.42 (#1699) — quarantined_pages + flagged_pages checks', () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
     expect(source).toContain("progress.heartbeat('quarantined_pages')");
     expect(source).toContain("progress.heartbeat('flagged_pages')");
-    // quarantine HIDES (JSONB existence scan), content_flag is advisory.
+    // quarantine HIDES (JSONB existence scan), content_flag WARNS.
     expect(source).toContain("p.frontmatter ? 'quarantine'");
     expect(source).toContain("p.frontmatter ? 'content_flag'");
     // Each emits a named check.

@@ -488,15 +488,14 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
   if (!noEmbed) {
     const preview = await estimateReindexCost(engine, sourceId, 100);
     const costUsd = estimateEmbeddingCostUsd(preview.totalTokens);
-    const modelLabel = 'configured embedding model';
     const previewMsg =
       `reindex-code: ${preview.totalPages} code page(s), ` +
       `~${preview.totalTokens.toLocaleString()} tokens, ` +
-      `est. $${costUsd.toFixed(2)} on ${modelLabel}.`;
+      `est. $${costUsd.toFixed(2)} on ${getEmbeddingModelName()}.`;
 
     if (preview.totalPages === 0) {
       if (json) {
-        console.log(JSON.stringify({ status: 'ok', codePages: 0, reindexed: 0, skipped: 0, failed: 0, totalTokens: 0, costUsd: 0, model: modelLabel }));
+        console.log(JSON.stringify({ status: 'ok', codePages: 0, reindexed: 0, skipped: 0, failed: 0, totalTokens: 0, costUsd: 0, model: getEmbeddingModelName() }));
       } else {
         console.log('No code pages to reindex.');
       }
@@ -514,7 +513,7 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
       if (posture === 'tokenmax' || maxCostOff) {
         const gate = maxCostOff ? 'max_cost_off' : 'posture_tokenmax';
         if (json) {
-          console.log(JSON.stringify({ status: 'proceeding', gate, codePages: preview.totalPages, totalTokens: preview.totalTokens, costUsd, model: modelLabel }));
+          console.log(JSON.stringify({ status: 'proceeding', gate, codePages: preview.totalPages, totalTokens: preview.totalTokens, costUsd, model: getEmbeddingModelName() }));
         } else {
           console.log(`${previewMsg} ${maxCostOff ? '--max-cost off' : 'spend.posture=tokenmax'}: proceeding (informational). docs: docs/operations/spend-controls.md`);
         }
@@ -523,7 +522,7 @@ export async function runReindexCodeCli(engine: BrainEngine, args: string[]): Pr
         if (!isTTY || json) {
           // Guardrail unchanged: refuse + exit 2, no spend. Only the FORMAT splits
           // on --json now (human refusal on stderr otherwise) — #1784.
-          const refusal = buildCostRefusal({ json, previewMsg, preview, costUsd, model: modelLabel });
+          const refusal = buildCostRefusal({ json, previewMsg, preview, costUsd, model: getEmbeddingModelName() });
           if (refusal.stdout) console.log(refusal.stdout);
           if (refusal.stderr) console.error(refusal.stderr);
           process.exit(2);

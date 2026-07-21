@@ -25,7 +25,6 @@ export interface OnboardCheckResult {
     name: string;
     status: 'ok' | 'warn' | 'fail';
     message: string;
-    details?: Record<string, unknown>;
   };
   remediations: RemediationStep[];
 }
@@ -164,12 +163,15 @@ export async function checkEntityLinkCoverage(
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;
 
-  // v0.41.18.6: keep low coverage as a quality/remediation signal, but do not
-  // mark runtime health warn. Fresh/support-KB brains can be searchable and
-  // correctly embedded while still having low derived graph density.
+  // v0.41.18.0: warn-only, never fail. Empty entity link coverage is "needs
+  // work" not "broken" — doctor's exit code should not flip from a fresh
+  // brain with entity pages but no auto-extracted links yet. Fail status
+  // would break `gbrain doctor exits 0` contract; the recommendation
+  // surfaces the same fix via the onboard plan either way.
   if (coverage >= 0.7) {
     message = `Coverage ${pct}% ± ${ciPct}%${sampleNote}`;
   } else if (coverage >= 0.4) {
+    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 70%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_ner_links',
@@ -182,6 +184,7 @@ export async function checkEntityLinkCoverage(
       status: 'remediable',
     }));
   } else {
+    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 70%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_ner_links',
@@ -251,11 +254,13 @@ export async function checkTimelineCoverage(
   let status: 'ok' | 'warn' | 'fail' = 'ok';
   let message: string;
 
-  // v0.41.18.6: same posture as entity_link_coverage — remediation remains
-  // available, but derived timeline density does not dock runtime health.
+  // v0.41.18.0: warn-only, never fail. Same posture as entity_link_coverage —
+  // the recommendation still surfaces in onboard's plan, but doctor exit
+  // code doesn't flip on a fresh brain.
   if (coverage >= 0.9) {
     message = `Coverage ${pct}% ± ${ciPct}%${sampleNote}`;
   } else if (coverage >= 0.7) {
+    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 90%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_timeline_from_meetings',
@@ -268,6 +273,7 @@ export async function checkTimelineCoverage(
       status: 'remediable',
     }));
   } else {
+    status = 'warn';
     message = `Coverage ${pct}% ± ${ciPct}% (target 90%)${sampleNote}`;
     remediations.push(makeRemediationStep({
       id: 'onboard.extract_timeline_from_meetings',
@@ -316,8 +322,8 @@ export async function checkTakesCount(
   if (takesCount >= 100) {
     message = `${takesCount} takes (calibration ready)`;
   } else if (takesCount === 0) {
+    status = 'warn';
     if (bootstrapEnabled) {
-      status = 'warn';
       message = `0 takes (bootstrap eligible — gbrain takes extract --from-pages)`;
       remediations.push(makeRemediationStep({
         id: 'onboard.takes_bootstrap',
@@ -455,29 +461,15 @@ export async function checkTypeProliferation(
   engine: BrainEngine,
 ): Promise<OnboardCheckResult> {
   let declared = 15;  // fallback to gbrain-base-v2 default if pack unavailable
-  let activeName: string | null = null;
-  let activeIdentity: string | null = null;
-  let builtInRemediationAvailable = false;
-  let successorIdentity: string | null = null;
   try {
-    const { loadActivePack, findPackSuccessors } = await import('../schema-pack/load-active.ts');
+    const { loadActivePack } = await import('../schema-pack/load-active.ts');
     let dbConfig: string | undefined;
     try {
       dbConfig = (await engine.getConfig('schema_pack')) ?? undefined;
     } catch { /* tolerate pre-config brains */ }
     const active = await loadActivePack({ cfg: null, remote: false, dbConfig })
       .catch(() => null);
-    if (active) {
-      declared = active.manifest.page_types.length;
-      activeName = active.manifest.name;
-      activeIdentity = active.identity;
-      const successors = await findPackSuccessors(active.manifest.name, active.manifest.version)
-        .catch(() => []);
-      if (successors.length > 0) {
-        builtInRemediationAvailable = true;
-        successorIdentity = successors[0]!.identity;
-      }
-    }
+    if (active) declared = active.manifest.page_types.length;
   } catch {
     // Use fallback.
   }
@@ -487,28 +479,6 @@ export async function checkTypeProliferation(
   );
   const warn = declared + 5;
   const fail = declared * 2;
-  const details = {
-    distinct_type_count: n,
-    declared_type_count: declared,
-    active_pack_name: activeName,
-    active_pack_identity: activeIdentity,
-    built_in_remediation_available: builtInRemediationAvailable,
-    successor_identity: successorIdentity,
-  };
-  if (!builtInRemediationAvailable && n > warn) {
-    return {
-      check: {
-        name: 'type_proliferation',
-        status: 'ok',
-        message:
-          `${n} distinct page types (pack declares ${declared}); ` +
-          `active pack ${activeIdentity ?? activeName ?? 'unknown'} has no built-in type-unification successor. ` +
-          `Treat as custom taxonomy drift unless you define a custom pack with mapping_rules.`,
-        details,
-      },
-      remediations: [],
-    };
-  }
   if (n > fail) {
     return {
       check: {
@@ -516,10 +486,8 @@ export async function checkTypeProliferation(
         status: 'fail',
         message:
           `${n} distinct page types (pack declares ${declared}). ` +
-          (successorIdentity ? `Built-in successor available: ${successorIdentity}. ` : '') +
           `Run \`gbrain onboard --check --explain\` to preview a pack upgrade ` +
           `or define a custom pack with mapping_rules.`,
-        details,
       },
       remediations: [],  // pack_upgrade_available check emits the actionable step
     };
@@ -530,7 +498,6 @@ export async function checkTypeProliferation(
         name: 'type_proliferation',
         status: 'warn',
         message: `${n} distinct page types vs ${declared} declared in pack — consider unification.`,
-        details,
       },
       remediations: [],
     };
@@ -540,7 +507,6 @@ export async function checkTypeProliferation(
       name: 'type_proliferation',
       status: 'ok',
       message: `${n} distinct typed values (pack declares ${declared})`,
-      details,
     },
     remediations: [],
   };

@@ -168,11 +168,8 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // SCHEMA_SQL replay creates the index. Powers `gbrain extract --stale` + the
   // `links_extraction_lag` doctor check.
   { kind: 'column', table: 'pages', column: 'links_extracted_at' },
-  // v0.42.56.0 (v121) — forward-referenced by partial Chronicle event indexes
-  // `idx_timeline_event_page` and `idx_timeline_event_dedup`. Pre-v121 brains
-  // have timeline_entries without event_page_id; bootstrap adds the nullable
-  // column before SCHEMA_SQL replay creates the indexes. The v121 migration
-  // still owns the FK and canonical index creation.
+  // v121 — referenced by the timeline event lookup and dedup indexes before
+  // the numbered migration can add the column on an existing brain.
   { kind: 'column', table: 'timeline_entries', column: 'event_page_id' },
 ];
 
@@ -259,10 +256,6 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
       ALTER TABLE pages DROP COLUMN IF EXISTS generation;
       ALTER TABLE pages DROP COLUMN IF EXISTS contextual_retrieval_mode;
       ALTER TABLE pages DROP COLUMN IF EXISTS corpus_generation;
-
-      DROP INDEX IF EXISTS idx_timeline_event_page;
-      DROP INDEX IF EXISTS idx_timeline_event_dedup;
-      ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
     `);
 
     // Note: we don't strip sources.archived* here because they're inline in the
@@ -335,10 +328,6 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE pages DROP COLUMN IF EXISTS import_filename;
       ALTER TABLE pages DROP COLUMN IF EXISTS salience_touched_at;
       ALTER TABLE pages DROP COLUMN IF EXISTS emotional_weight;
-
-      DROP INDEX IF EXISTS idx_timeline_event_page;
-      DROP INDEX IF EXISTS idx_timeline_event_dedup;
-      ALTER TABLE timeline_entries DROP COLUMN IF EXISTS event_page_id;
     `);
 
     // Bootstrap, then schema replay. Either step crashing fails the test.

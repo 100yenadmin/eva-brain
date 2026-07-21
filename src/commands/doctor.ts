@@ -26,7 +26,6 @@ import { rankIssues, type RankedIssue } from '../core/doctor-cause-rank.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import type { DbUrlSource } from '../core/config.ts';
 import { gbrainPath, loadConfig } from '../core/config.ts';
-import type { ContentSanityAuditEvent } from '../core/audit/content-sanity-audit.ts';
 import { reflexEnabled } from '../core/context/reflex.ts';
 import { resolveSocketPath } from '../core/context/resolve-ipc.ts';
 import { homedir } from 'os';
@@ -86,60 +85,6 @@ export interface Check {
    * Source of truth: `src/core/doctor-categories.ts`.
    */
   category?: CheckCategory;
-}
-
-export async function filterCurrentContentSanityEvents(
-  engine: Pick<BrainEngine, 'executeRaw'>,
-  events: ReadonlyArray<ContentSanityAuditEvent>,
-): Promise<ContentSanityAuditEvent[]> {
-  const filtered: ContentSanityAuditEvent[] = [];
-
-  for (const ev of events) {
-    if (ev.event_type !== 'soft_block') {
-      filtered.push(ev);
-      continue;
-    }
-
-    try {
-      const rows = await engine.executeRaw<{ embed_skip_present: boolean | string | number | null }>(
-        `SELECT COALESCE(frontmatter, '{}'::jsonb) ? 'embed_skip' AS embed_skip_present
-         FROM pages
-         WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL
-         LIMIT 1`,
-        [ev.source_id, ev.slug],
-      );
-
-      if (rows.length === 0) continue;
-      const value = rows[0]?.embed_skip_present;
-      const embedSkipPresent =
-        value === true || value === 1 || value === 't' || value === 'true';
-      if (embedSkipPresent) filtered.push(ev);
-    } catch {
-      filtered.push(ev);
-    }
-  }
-
-  return filtered;
-}
-
-export function classifyContentSanityAuditStatus(summary: {
-  by_type: {
-    hard_block: number;
-    reject: number;
-    quarantine: number;
-    soft_block: number;
-    flag: number;
-    warn: number;
-  };
-}): 'ok' | 'warn' | 'fail' {
-  const hardBlocked =
-    summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
-  if (hardBlocked > 0) return 'fail';
-  // soft_block means a page landed with embed_skip and may be missing vector
-  // coverage. `flag` and `warn` are advisory only: the page is searchable and
-  // agents see a retrieval warning, so they should not lower runtime health.
-  if (summary.by_type.soft_block > 0) return 'warn';
-  return 'ok';
 }
 
 /**
@@ -247,27 +192,6 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
     checks: tagged,
     top_issues: rankIssues(tagged),
   };
-}
-
-function equivalentEmbeddingModelForDoctor(envModel: string, dbModel: string): boolean {
-  const env = envModel.trim();
-  const dbValue = dbModel.trim();
-  if (env === dbValue) return true;
-
-  const envSep = env.indexOf(':');
-  const dbSep = dbValue.indexOf(':');
-  const envHasProvider = envSep !== -1;
-  const dbHasProvider = dbSep !== -1;
-
-  if (envHasProvider && dbHasProvider) return false;
-
-  const envModelId = envSep === -1 ? env : env.slice(envSep + 1);
-  const dbModelId = dbSep === -1 ? dbValue : dbValue.slice(dbSep + 1);
-
-  // Legacy brains can store the DB config as a bare model id while runtime
-  // env uses the canonical provider:model string. If the model id is the same,
-  // this is config normalization, not an unsafe embedding override.
-  return envModelId.length > 0 && envModelId === dbModelId;
 }
 
 /**
@@ -399,6 +323,70 @@ export async function whoknowsHealthCheck(_engine: BrainEngine): Promise<Check> 
       status: 'warn',
       message: `Could not check whoknows fixture: ${msg}`,
     };
+  }
+}
+
+/**
+ * Doctor check: pgvector availability.
+ *
+ * Use the active engine instead of the module-level Postgres singleton.
+ * PGLite exposes pg_extension through its engine connection, but does not
+ * connect db.ts's Postgres singleton; using db.getConnection() here turns a
+ * healthy PGLite brain into a false warning.
+ */
+export async function pgvectorCheck(engine: BrainEngine): Promise<Check> {
+  try {
+    const ext = await engine.executeRaw<{ extname: string }>(
+      `SELECT extname FROM pg_extension WHERE extname = 'vector'`,
+    );
+    if (ext.length > 0) {
+      return { name: 'pgvector', status: 'ok', message: 'Extension installed' };
+    }
+    return { name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' };
+  } catch {
+    return { name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' };
+  }
+}
+
+/**
+ * Doctor check: JSONB columns are not double-encoded as strings.
+ *
+ * This check is valid on both Postgres and PGLite. Route through
+ * engine.executeRaw() so embedded PGLite brains are checked through their
+ * actual connection instead of the unrelated Postgres singleton.
+ */
+export async function jsonbIntegrityCheck(
+  engine: BrainEngine,
+  progress?: Pick<ProgressReporter, 'heartbeat'>,
+): Promise<Check> {
+  try {
+    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
+      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
+      { table: 'raw_data',      col: 'data',           expected: 'object' },
+      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
+      { table: 'files',         col: 'metadata',       expected: 'object' },
+      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+    ];
+    let totalBad = 0;
+    const breakdown: string[] = [];
+    for (const { table, col } of targets) {
+      progress?.heartbeat(`jsonb_integrity.${table}.${col}`);
+      const rows = await engine.executeRaw<{ n: number }>(
+        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+      );
+      const n = Number(rows[0]?.n ?? 0);
+      if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+    }
+    if (totalBad === 0) {
+      return { name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' };
+    }
+    return {
+      name: 'jsonb_integrity',
+      status: 'warn',
+      message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
+    };
+  } catch {
+    return { name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' };
   }
 }
 
@@ -647,8 +635,8 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
     const score = health.brain_score ?? 0;
     checks.push({
       name: 'brain_score',
-      status: 'ok',
-      message: `Brain score ${score}/100 (quality signal; not runtime health)`,
+      status: score >= 70 ? 'ok' : score >= 50 ? 'warn' : 'fail',
+      message: `Brain score ${score}/100`,
     });
   } catch (e) {
     checks.push({
@@ -2773,7 +2761,7 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
     };
   }
   const mismatches: Array<{ key: string; env: string; db: string }> = [];
-  if (envModel && dbModel && !equivalentEmbeddingModelForDoctor(envModel, dbModel)) {
+  if (envModel && dbModel && envModel !== dbModel) {
     mismatches.push({ key: 'GBRAIN_EMBEDDING_MODEL', env: envModel, db: dbModel });
   }
   if (envDim && dbDim && envDim !== dbDim) {
@@ -3068,7 +3056,7 @@ export async function computeConversationFactsBacklogCheck(
     const typesRaw = await engine.getConfig(
       'cycle.conversation_facts_backfill.types',
     );
-    let types = ['conversation', 'meeting', 'slack', 'email'];
+    let types = ['conversation', 'meeting', 'slack', 'email', 'imessage', 'imessage-daily'];
     if (typesRaw) {
       try {
         const parsed = JSON.parse(typesRaw);
@@ -3486,14 +3474,13 @@ export async function checkSyncFreshness(
       name: string;
       local_path: string | null;
       last_sync_at: Date | null;
-      config?: unknown;
       last_commit: string | null;
       chunker_version: string | null;
       newest_content_at: Date | null;
     }>(
       // v0.41.32.0: newest_content_at feeds the REMOTE (non-localOnly) lag so
       // doctorReportRemote never shells out to git on a DB-supplied local_path.
-      `SELECT id, name, local_path, last_sync_at, config, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL`,
+      `SELECT id, name, local_path, last_sync_at, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL`,
     );
 
     if (sources.length === 0) {
@@ -3543,7 +3530,6 @@ export async function checkSyncFreshness(
     let stale_count = 0;
     let hasWarnings = false;
     let hasFailures = false;
-    let skipped = 0;
 
     // BUG 4 (v0.42.x): a source with a LIVE, non-expired per-source sync lock is
     // actively syncing RIGHT NOW — it must not read as stale or never-synced.
@@ -3585,11 +3571,6 @@ export async function checkSyncFreshness(
       const display = source.name && source.name !== source.id
         ? `'${source.id}' (${source.name})`
         : `'${source.id}'`;
-      const config = parseDoctorSourceConfig(source.config);
-      if (config.sync_freshness === false) {
-        skipped++;
-        continue;
-      }
 
       // BUG 4: actively syncing (live lock) → healthy, count as synced_recently
       // and skip the staleness checks. Keeps the 3-bucket invariant intact.
@@ -3683,9 +3664,7 @@ export async function checkSyncFreshness(
       }
     }
 
-    // D6 invariant applies to sync-managed sources. Eva-managed updater
-    // sources opt out of sync freshness and are reported separately.
-    const processedCount = sources.length - skipped;
+    // D6 invariant: every source incremented exactly one bucket.
     const details = { unchanged_count, synced_recently_count, stale_count };
     // BUG 4: append in-progress context when any source is actively syncing.
     // Empty otherwise, so steady-state messages are byte-for-byte unchanged.
@@ -3710,13 +3689,11 @@ export async function checkSyncFreshness(
     // v0.41.27.0: D2 ok-message reshape. Three branches surface what the
     // git short-circuit actually did so operators understand "unchanged
     // since last sync" vs "synced recently".
-    if (processedCount > 0 && unchanged_count === processedCount) {
+    if (unchanged_count === sources.length) {
       return {
         name: 'sync_freshness',
         status: 'ok',
-        message: skipped > 0
-          ? `All ${processedCount} sync-managed source(s) up to date (no new commits since last sync; ${skipped} updater-managed skipped)${inProgressNote}`
-          : `All ${sources.length} federated source(s) up to date (no new commits since last sync)${inProgressNote}`,
+        message: `All ${sources.length} federated source(s) up to date (no new commits since last sync)${inProgressNote}`,
         details,
       };
     }
@@ -3724,20 +3701,14 @@ export async function checkSyncFreshness(
       return {
         name: 'sync_freshness',
         status: 'ok',
-        message: skipped > 0
-          ? `${processedCount} sync-managed source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync (${skipped} updater-managed skipped)${inProgressNote}`
-          : `${sources.length} federated source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync${inProgressNote}`,
+        message: `${sources.length} federated source(s): ${synced_recently_count} synced recently, ${unchanged_count} unchanged since last sync${inProgressNote}`,
         details,
       };
     }
     return {
       name: 'sync_freshness',
       status: 'ok',
-      message: processedCount === 0
-        ? `All ${skipped} updater-managed source(s) skipped`
-        : skipped > 0
-        ? `All ${sources.length - skipped} sync-managed source(s) synced recently (${skipped} updater-managed skipped)${inProgressNote}`
-        : `All ${sources.length} federated source(s) synced recently${inProgressNote}`,
+      message: `All ${sources.length} federated source(s) synced recently${inProgressNote}`,
       details,
     };
   } catch (e) {
@@ -3747,19 +3718,6 @@ export async function checkSyncFreshness(
       message: `Could not check sync freshness: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
-}
-
-function parseDoctorSourceConfig(raw: unknown): Record<string, unknown> {
-  if (!raw) return {};
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof raw === 'object' ? raw as Record<string, unknown> : {};
 }
 
 /**
@@ -3914,16 +3872,11 @@ export async function checkCycleFreshness(
     const issues: string[] = [];
     let hasWarnings = false;
     let hasFailures = false;
-    let skipped = 0;
 
     for (const source of sources) {
       const display = source.name && source.name !== source.id
         ? `'${source.id}' (${source.name})`
         : `'${source.id}'`;
-      if (source.config?.cycle_freshness === false) {
-        skipped++;
-        continue;
-      }
       const raw = source.config?.last_full_cycle_at;
       if (typeof raw !== 'string') {
         issues.push(`Source ${display} has never completed a full cycle`);
@@ -3969,9 +3922,7 @@ export async function checkCycleFreshness(
     return {
       name: 'cycle_freshness',
       status: 'ok',
-      message: skipped > 0
-        ? `All ${sources.length - skipped} cycle-managed federated source(s) cycled recently (${skipped} updater-managed source(s) skipped)`
-        : `All ${sources.length} federated source(s) cycled recently`,
+      message: `All ${sources.length} federated source(s) cycled recently`,
     };
   } catch (e) {
     return {
@@ -4209,8 +4160,8 @@ export function buildRetrievalReflexCheck(skillsDir: string | null): Check {
     if (!enabled) {
       return {
         name,
-        status: 'warn',
-        message: 'retrieval reflex disabled (config/env) — entity pointer layer off',
+        status: 'ok',
+        message: 'retrieval reflex intentionally disabled (config/env) — entity pointer layer off',
         details: { enabled: false, engine: engineKind, policy_skill_installed: skillInstalled },
       };
     }
@@ -4394,7 +4345,7 @@ export async function buildChecks(
 
   // 2. Skill conformance (SKILL group — gated)
   if (scope === 'all' && skillsDir) {
-    const conformanceResult = checkSkillConformance(skillsDir);
+    const conformanceResult = skillConformanceCheck(skillsDir);
     checks.push(conformanceResult);
   }
 
@@ -4974,9 +4925,10 @@ export async function buildChecks(
   // triage the misses interactively.
   if (engine) {
     try {
+      const { readConversationBodyForParsing } = await import('../core/conversation-parser/body.ts');
       const { parseConversation } = await import('../core/conversation-parser/parse.ts');
-      const allowedTypes = ['conversation', 'meeting', 'slack', 'email'] as const;
-      // PageFilters supports singular `type` only; iterate the 4 types
+      const allowedTypes = ['conversation', 'meeting', 'slack', 'email', 'imessage', 'imessage-daily'] as const;
+      // PageFilters supports singular `type` only; iterate the allowed types
       // and cap at ~50/each to land at ~200 total max.
       const sample: import('../core/types.ts').Page[] = [];
       for (const t of allowedTypes) {
@@ -4993,7 +4945,7 @@ export async function buildChecks(
         const hitsByPattern: Record<string, number> = {};
         let unmatched = 0;
         for (const page of sample) {
-          const body = `${page.compiled_truth ?? ''}\n${page.timeline ?? ''}`.trim();
+          const body = await readConversationBodyForParsing(engine, page);
           const result = parseConversation(body, { page, noPolish: true, noFallback: true });
           const id = result.matched_pattern_id ?? '_no_match';
           hitsByPattern[id] = (hitsByPattern[id] ?? 0) + 1;
@@ -5007,12 +4959,12 @@ export async function buildChecks(
         if (unmatchedPct > 10) {
           checks.push({
             name: 'conversation_format_coverage',
-            status: 'ok',
+            status: 'warn',
             message:
               `${unmatched}/${sample.length} conversation pages (${unmatchedPct.toFixed(1)}%) match NO built-in pattern. ` +
               `Breakdown: ${breakdown}. ` +
-              `Quality follow-up: gbrain conversation-parser scan <slug> | ` +
-              `optional LLM fallback: gbrain config set conversation_parser.llm_fallback_enabled true`,
+              `Investigate: gbrain conversation-parser scan <slug> | ` +
+              `Enable LLM fallback (opt-in): gbrain config set conversation_parser.llm_fallback_enabled true`,
           });
         } else {
           checks.push({
@@ -5025,8 +4977,8 @@ export async function buildChecks(
     } catch (err) {
       checks.push({
         name: 'conversation_format_coverage',
-        status: 'ok',
-        message: `Skipped conversation format coverage: ${(err as Error)?.message ?? String(err)}`,
+        status: 'warn',
+        message: `Could not check conversation format coverage: ${(err as Error)?.message ?? String(err)}`,
       });
     }
   }
@@ -5186,13 +5138,7 @@ export async function buildChecks(
         checks.push({
           name: 'multi_source_drift',
           status: 'warn',
-          message:
-            `${result.count} page slug(s) appear at 'default' but NOT at the intended source ` +
-            `(e.g., ${sampleStr}). Two possible causes: (1) pre-v0.30.3 putPage misroutes; ` +
-            `(2) source X never completed initial sync and the default page is unrelated. ` +
-            `Verify with 'gbrain sources status', then either re-sync with ` +
-            `'gbrain sync --source <id> --full' or 'gbrain delete <slug>' if the default-source ` +
-            `row is the misroute. (A 'gbrain sources rehome' cleanup command is tracked for v0.32.0.)`,
+          message: multiSourceDriftAdvice(result.count, sampleStr),
         });
       } else {
         checks.push({
@@ -5301,25 +5247,7 @@ export async function buildChecks(
 
   // 4. pgvector extension
   progress.heartbeat('pgvector');
-  if (engine.kind !== 'postgres') {
-    checks.push({
-      name: 'pgvector',
-      status: 'ok',
-      message: 'Skipped on PGLite (vector support is bundled, not a pg_extension row).',
-    });
-  } else {
-    try {
-      const sql = db.getConnection();
-      const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
-      if (ext.length > 0) {
-        checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
-      } else {
-        checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
-      }
-    } catch {
-      checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
-    }
-  }
+  checks.push(await pgvectorCheck(engine));
 
   // 4b. PgBouncer / prepared-statement compatibility.
   // URL-only inspection — no DB roundtrip — so this is cheap and works
@@ -5944,8 +5872,8 @@ export async function buildChecks(
     } else {
       checks.push({
         name: 'graph_coverage',
-        status: 'ok',
-        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${eligibleEntityCount} entity pages). Quality follow-up. Run: gbrain extract all`,
+        status: 'warn',
+        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${eligibleEntityCount} entity pages). Run: gbrain extract all`,
       });
     }
 
@@ -5963,14 +5891,14 @@ export async function buildChecks(
       ];
       checks.push({
         name: 'brain_score',
-        status: 'ok',
+        status: health.brain_score >= 70 ? 'ok' : 'warn',
         message: `Brain score ${health.brain_score}/100 (${parts.join(', ')})`,
       });
     } else {
       checks.push({ name: 'brain_score', status: 'ok', message: `Brain score 100/100` });
     }
   } catch {
-    checks.push({ name: 'graph_coverage', status: 'ok', message: 'Skipped graph coverage' });
+    checks.push({ name: 'graph_coverage', status: 'warn', message: 'Could not check graph coverage' });
   }
 
   // 9b. v0.41.18.0 — orphan_ratio check (migration #1 of #1409).
@@ -6105,45 +6033,7 @@ export async function buildChecks(
   // surface matches `repair-jsonb` (the previous 4-target scan missed a
   // repair target, per #254/Codex review).
   progress.heartbeat('jsonb_integrity');
-  if (engine.kind !== 'postgres') {
-    checks.push({
-      name: 'jsonb_integrity',
-      status: 'ok',
-      message: 'Skipped on PGLite (Postgres JSONB storage-class drift check is not applicable).',
-    });
-  } else {
-    try {
-      const sql = db.getConnection();
-      const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-        { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-        { table: 'raw_data',      col: 'data',           expected: 'object' },
-        { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-        { table: 'files',         col: 'metadata',       expected: 'object' },
-        { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
-      ];
-      let totalBad = 0;
-      const breakdown: string[] = [];
-      for (const { table, col } of targets) {
-        progress.heartbeat(`jsonb_integrity.${table}.${col}`);
-        const rows = await sql.unsafe(
-          `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
-        );
-        const n = Number((rows as any)[0]?.n ?? 0);
-        if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
-      }
-      if (totalBad === 0) {
-        checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
-      } else {
-        checks.push({
-          name: 'jsonb_integrity',
-          status: 'warn',
-          message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
-        });
-      }
-    } catch {
-      checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
-    }
-  }
+  checks.push(await jsonbIntegrityCheck(engine, progress));
 
   // 10b. Takes weight grid integrity (v0.32 — EXP-2).
   //
@@ -6474,10 +6364,7 @@ export async function buildChecks(
   try {
     const { readRecentContentSanityEvents, summarizeContentSanityEvents } =
       await import('../core/audit/content-sanity-audit.ts');
-    const events = await filterCurrentContentSanityEvents(
-      engine,
-      readRecentContentSanityEvents(7),
-    );
+    const events = readRecentContentSanityEvents(7);
     if (events.length === 0) {
       checks.push({
         name: 'content_sanity_audit_recent',
@@ -6492,17 +6379,29 @@ export async function buildChecks(
         .slice(0, 3)
         .map(([s, n]) => `${s}=${n}`)
         .join(', ');
-      // Audit events are evidence, not automatically breakage. Classification
-      // is centralized in classifyContentSanityAuditStatus(): hard dispositions
-      // fail, `soft_block` warns, and searchable `flag`/`warn` advisories stay ok.
+      // Audit events are evidence, not automatically breakage. A large code
+      // source can legitimately emit many WARN events (oversize/markup-heavy)
+      // while remaining searchable and intentionally flagged. Fail on hard
+      // dispositions (content actually blocked or hidden); warn on soft
+      // dispositions or volume. This keeps doctor from treating expected
+      // code-corpus telemetry as an unhealthy brain.
+      //
+      // v0.42 renamed the hard path: a rejected page emits `reject` and a
+      // quarantined (hidden) junk page emits `quarantine`; `hard_block` is now
+      // only the pre-v0.42 legacy alias. Counting `hard_block` alone let fresh
+      // junk-ingest evidence (`reject`/`quarantine`) clear as `ok` whenever
+      // fewer than 10 events landed. `flag` is a warn disposition (still
+      // searchable, agent warned on retrieval), so it joins `soft_block`.
       const hardBlocked =
         summary.by_type.hard_block + summary.by_type.reject + summary.by_type.quarantine;
-      const advisory = summary.by_type.flag + summary.by_type.warn;
-      const status = classifyContentSanityAuditStatus(summary);
+      const softBlocked = summary.by_type.soft_block + summary.by_type.flag;
+      const status: 'ok' | 'warn' | 'fail' =
+        hardBlocked > 0 ? 'fail' :
+          (softBlocked > 0 || events.length >= 10) ? 'warn' : 'ok';
       checks.push({
         name: 'content_sanity_audit_recent',
         status,
-        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft_block=${summary.by_type.soft_block} advisory=${advisory} [flag=${summary.by_type.flag} warn=${summary.by_type.warn}])${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
+        message: `${events.length} events (hard=${hardBlocked} [hard_block=${summary.by_type.hard_block} reject=${summary.by_type.reject} quarantine=${summary.by_type.quarantine}] soft=${softBlocked} [soft_block=${summary.by_type.soft_block} flag=${summary.by_type.flag}] warn=${summary.by_type.warn})${topPatterns ? ', patterns: ' + topPatterns : ''}${topSources ? ', sources: ' + topSources : ''}. (Local audit only — multi-host operators set GBRAIN_AUDIT_DIR.)`,
       });
     }
   } catch (err) {
@@ -6544,12 +6443,11 @@ export async function buildChecks(
       `SELECT COUNT(*)::int AS n FROM pages p WHERE p.deleted_at IS NULL AND p.frontmatter ? 'content_flag'`,
     );
     const n = Number(rows[0]?.n ?? 0);
-    // Flagged pages are "examine me", not "broken": they remain searchable and
-    // agents receive a retrieval warning. Surface the count, but don't lower
-    // runtime health unless a page is actually quarantined/hidden above.
+    // Flagged pages are "examine me", not "broken" — warn so they're visible
+    // but the message is non-alarming.
     checks.push({
       name: 'flagged_pages',
-      status: 'ok',
+      status: n > 0 ? 'warn' : 'ok',
       message: n > 0
         ? `${n} page(s) flagged (markup-heavy or oversize) — still searchable, agent warned on retrieval. Review with 'gbrain quarantine list --include-flagged'.`
         : 'No flagged pages',
@@ -7280,9 +7178,17 @@ export async function buildChecks(
       let vanished = 0;
       const vanishedPaths: string[] = [];
       const fs = await import('node:fs');
+      const nodePath = await import('node:path');
+      // storage_path is repo-relative for sync-ingested assets. Resolving
+      // against cwd made this check a false-positive WARN whenever doctor
+      // ran outside the brain repo.
+      const repoRoot = (await engine.getConfig('sync.repo_path')) ?? process.cwd();
       for (const r of rows) {
+        const abs = nodePath.isAbsolute(r.storage_path)
+          ? r.storage_path
+          : nodePath.join(repoRoot, r.storage_path);
         try {
-          fs.statSync(r.storage_path);
+          fs.statSync(abs);
         } catch {
           vanished++;
           if (vanishedPaths.length < 5) vanishedPaths.push(r.storage_path);
@@ -7526,15 +7432,13 @@ function printAutoFixReport(report: AutoFixReport, dryRun: boolean, jsonOutput: 
 
 
 /** Quick skill conformance check — frontmatter + required sections */
-function checkSkillConformance(skillsDir: string): Check {
-  const manifestPath = join(skillsDir, 'manifest.json');
-  if (!existsSync(manifestPath)) {
-    return { name: 'skill_conformance', status: 'warn', message: 'manifest.json not found' };
-  }
-
+export function skillConformanceCheck(skillsDir: string): Check {
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-    const skills = manifest.skills || [];
+    // Host workspaces are allowed to omit a gbrain-specific manifest. Keep
+    // conformance aligned with resolver_health and skill_brain_first by using
+    // the canonical fallback that derives entries from direct SKILL.md files.
+    const manifest = loadOrDeriveManifest(skillsDir);
+    const skills = manifest.skills;
     let passing = 0;
     const failing: string[] = [];
 
@@ -7554,7 +7458,8 @@ function checkSkillConformance(skillsDir: string): Check {
     }
 
     if (failing.length === 0) {
-      return { name: 'skill_conformance', status: 'ok', message: `${passing}/${skills.length} skills pass` };
+      const derivedNote = manifest.derived ? ' (derived from SKILL.md files)' : '';
+      return { name: 'skill_conformance', status: 'ok', message: `${passing}/${skills.length} skills pass${derivedNote}` };
     }
     return {
       name: 'skill_conformance',
@@ -7562,7 +7467,7 @@ function checkSkillConformance(skillsDir: string): Check {
       message: `${passing}/${skills.length} pass. Failing: ${failing.join(', ')}`,
     };
   } catch {
-    return { name: 'skill_conformance', status: 'warn', message: 'Could not parse manifest.json' };
+    return { name: 'skill_conformance', status: 'warn', message: 'Could not load or derive skills manifest' };
   }
 }
 
@@ -8169,4 +8074,25 @@ async function checkSchemaPackSourceDrift(engine: BrainEngine): Promise<Check> {
       message: `Skipped: ${(e as Error).message}`,
     };
   }
+}
+
+/**
+ * #1123 — multi_source_drift remediation advice. Exported so the regression
+ * test can pin that it only references CLI surfaces that actually exist
+ * (the pre-fix text pointed at 'gbrain sources rehome', which was never
+ * built, and at 'gbrain delete <slug>' without explaining that delete
+ * targets the ACTIVE source — following it literally on a multi-source
+ * brain deletes the correctly-routed row).
+ */
+export function multiSourceDriftAdvice(count: number, sampleStr: string): string {
+  return (
+    `${count} page slug(s) appear at 'default' but NOT at the intended source ` +
+    `(e.g., ${sampleStr}). Two possible causes: (1) pre-v0.30.3 putPage misroutes; ` +
+    `(2) the intended source never completed initial sync and the default page is unrelated. ` +
+    `Verify with 'gbrain sources status', then re-sync with ` +
+    `'gbrain sync --source <id> --full' (reconciles drift without deleting data). ` +
+    `If a misrouted default-source row remains after re-sync, remove it with ` +
+    `'GBRAIN_SOURCE=default gbrain delete <slug>' — delete targets the active source, ` +
+    `so pin it to 'default' explicitly.`
+  );
 }
