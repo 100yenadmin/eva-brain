@@ -2,7 +2,7 @@
 
 > GBrain is a personal knowledge brain and GStack mod for agent platforms. Pluggable engines (PGLite default, Postgres+pgvector for scale), contract-first operations, 26 fat-markdown skills. Teaches agents brain ops, ingestion, enrichment, scheduling, identity, and access control.
 
-Repo: https://github.com/garrytan/gbrain
+Repo: https://github.com/electricsheephq/eva-brain
 
 ## Core entry points
 
