@@ -37,6 +37,8 @@ export/
 
 # Local OpenClaw bundle output. Release jobs rebuild this from source.
 dist/
+!admin/dist/
+!admin/dist/**
 
 # Tier 3 PGLite snapshot fixture (built on demand by build:pglite-snapshot)
 test/fixtures/pglite-snapshot.tar
