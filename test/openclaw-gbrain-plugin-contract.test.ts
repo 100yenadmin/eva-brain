@@ -80,4 +80,11 @@ describe('OpenClaw GBrain plugin boundary', () => {
     expect(pluginSource).toContain('process.env.BUN_INSTALL ?? fileEnv.BUN_INSTALL');
     expect(pluginSource).toContain('process.env.PATH ?? fileEnv.PATH');
   });
+
+  test('escalates timed-out helper processes that ignore SIGTERM', () => {
+    expect(pluginSource).toContain('child.kill("SIGTERM")');
+    expect(pluginSource).toContain('child.exitCode === null && child.signalCode === null');
+    expect(pluginSource).toContain('child.kill("SIGKILL")');
+    expect(pluginSource).not.toContain('if (!child.killed) child.kill("SIGKILL")');
+  });
 });

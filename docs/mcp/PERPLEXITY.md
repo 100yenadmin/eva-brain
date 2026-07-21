@@ -56,9 +56,8 @@ gbrain connect https://YOUR-DOMAIN.ngrok.app/mcp --agent perplexity --oauth \
   --client-id gbrain_cl_xxx --client-secret gbrain_cs_xxx
 ```
 
-`connect --oauth` validates the credentials and prints a redacted connector
-template. Paste the real client ID and client secret from your secure credential
-store or the one-time `auth register-client` output.
+`connect --oauth` prints the **Issuer URL + Client ID + Client Secret** to paste
+in step 4.
 
 **Legacy bearer token (simplest, best for local/personal):**
 
@@ -67,8 +66,8 @@ gbrain auth create "perplexity"
 gbrain connect https://YOUR-DOMAIN.ngrok.app/mcp --token gbrain_xxx --agent perplexity
 ```
 
-(Perplexity is a GUI connector, so there's no `--install` — `connect` prints a
-redacted template for step 4.)
+(Perplexity is a GUI connector, so there's no `--install` — `connect` prints the
+exact values to paste in step 4.)
 
 ## 4. Add the connector in Perplexity
 

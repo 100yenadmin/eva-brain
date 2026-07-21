@@ -2,12 +2,6 @@
 
 Eva Brain uses upstream GBrain as its core. Core changes in this file are temporary and must be removed when upstream ships equivalent behavior.
 
-## Connect output secret redaction
-
-- Files: `src/commands/connect.ts`, `test/connect.test.ts`
-- Reason: generated setup output must not print bearer tokens, client IDs, or client secrets into agent logs or transcripts.
-- Removal condition: upstream always redacts these values from print and JSON modes while retaining the explicit install path.
-
 ## Extraction freshness watermark
 
 - Files: `src/commands/extract.ts`, `test/extract-stale.test.ts`

@@ -218,7 +218,9 @@ function runCommand(command, args, config, options = {}) {
       timedOut = true;
       child.kill("SIGTERM");
       setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+        // child.killed only means kill() accepted the signal, not that the
+        // process exited. Escalate while Node still reports a live child.
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }, 2_000).unref();
     }, timeoutMs);
     timer.unref();

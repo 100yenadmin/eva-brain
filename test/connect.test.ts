@@ -219,10 +219,9 @@ describe('redactToken', () => {
 });
 
 describe('buildConnectBlock', () => {
-  test('claude-code with a literal token redacts it + learn instruction', () => {
+  test('claude-code with a literal token inlines it + learn instruction', () => {
     const block = buildConnectBlock({ agent: 'claude-code', name: 'gbrain', url: 'https://h/mcp', token: 'TOK' });
-    expect(block).toContain(`claude mcp add gbrain -t http https://h/mcp -H 'Authorization: Bearer ${REDACTED}'`);
-    expect(block).not.toContain('Bearer TOK');
+    expect(block).toContain("claude mcp add gbrain -t http https://h/mcp -H 'Authorization: Bearer TOK'");
     expect(block).toContain(LEARN_INSTRUCTION);
     expect(block).not.toContain(PLACEHOLDER_TOKEN);
     expect(block).toMatch(/long-lived, full-access secret/);
@@ -235,32 +234,28 @@ describe('buildConnectBlock', () => {
   test('generic agent emits URL + header lines, no claude command', () => {
     const block = buildConnectBlock({ agent: 'generic', name: 'gbrain', url: 'https://h/mcp', token: 'TOK' });
     expect(block).toContain('URL:    https://h/mcp');
-    expect(block).toContain(`Authorization: Bearer ${REDACTED}`);
-    expect(block).not.toContain('Bearer TOK');
+    expect(block).toContain('Authorization: Bearer TOK');
     expect(block).not.toContain('claude mcp add');
     expect(block).toContain(LEARN_INSTRUCTION);
   });
-  test('codex emits the codex command + redacted env-var export', () => {
+  test('codex emits the codex command + env-var export, token only in export', () => {
     const block = buildConnectBlock({ agent: 'codex', name: 'gbrain', url: 'https://h/mcp', token: 'TOK' });
     expect(block).toContain('codex mcp add gbrain --url https://h/mcp --bearer-token-env-var GBRAIN_REMOTE_TOKEN');
-    expect(block).toContain(`export GBRAIN_REMOTE_TOKEN='${REDACTED}'`);
-    expect(block).not.toContain('GBRAIN_REMOTE_TOKEN=TOK');
+    expect(block).toContain('export GBRAIN_REMOTE_TOKEN=TOK');
     // the codex command itself must not carry the token
     expect(block).toMatch(/codex mcp add[^\n]*$/m);
     expect(block).toContain(LEARN_INSTRUCTION);
     expect(block).toMatch(/reads the token from \$GBRAIN_REMOTE_TOKEN/);
   });
-  test('codex redacts a metachar token in the export line', () => {
+  test('codex single-quotes a metachar token in the export line', () => {
     const block = buildConnectBlock({ agent: 'codex', name: 'gbrain', url: 'https://h/mcp', token: 'gbrain_$(x)`y`' });
-    expect(block).toContain(`export GBRAIN_REMOTE_TOKEN='${REDACTED}'`);
-    expect(block).not.toContain('gbrain_$(x)`y`');
+    expect(block).toContain("export GBRAIN_REMOTE_TOKEN='gbrain_$(x)`y`'");
   });
   test('perplexity emits GUI connector steps with URL + token, no CLI command', () => {
     const block = buildConnectBlock({ agent: 'perplexity', name: 'gbrain', url: 'https://h/mcp', token: 'TOK' });
     expect(block).toMatch(/Settings.+Connectors/);
     expect(block).toContain('URL:    https://h/mcp');
-    expect(block).toContain(`Token:  ${REDACTED}`);
-    expect(block).not.toContain('TOK');
+    expect(block).toContain('Token:  TOK');
     expect(block).not.toContain('mcp add');
     expect(block).toContain(LEARN_INSTRUCTION);
     // surfaces the v0.34 remote-reachability footgun (serve --bind 0.0.0.0)
@@ -280,11 +275,10 @@ describe('buildJson', () => {
     expect(JSON.stringify(j)).not.toContain('SeKrEt9');
     expect(JSON.stringify(j)).toContain(REDACTED);
   });
-  test('--show-token remains redacted for log safety', () => {
+  test('--show-token reveals the literal token', () => {
     const j = buildJson({ url: 'https://h/mcp', name: 'gbrain', agent: 'claude-code', token: 'SeKrEt9', showToken: true });
-    expect(j.token_redacted).toBe(true);
-    expect(JSON.stringify(j)).not.toContain('SeKrEt9');
-    expect(JSON.stringify(j)).toContain(`Authorization: Bearer ${REDACTED}`);
+    expect(j.token_redacted).toBe(false);
+    expect(JSON.stringify(j)).toContain('Authorization: Bearer SeKrEt9');
   });
   test('no token → placeholder, token_present false', () => {
     const j = buildJson({ url: 'https://h/mcp', name: 'gbrain', agent: 'claude-code', token: null, showToken: false });
@@ -295,7 +289,7 @@ describe('buildJson', () => {
     const j = buildJson({ url: 'https://h/mcp', name: 'gbrain', agent: 'codex', token: 'SeKrEt9', showToken: true });
     expect(j.command).toContain('--bearer-token-env-var GBRAIN_REMOTE_TOKEN');
     expect(j.command).not.toContain('SeKrEt9'); // token is in the env-var, not the command
-    expect(j.header).toContain(`Authorization: Bearer ${REDACTED}`);
+    expect(j.header).toContain('Authorization: Bearer SeKrEt9'); // header field carries it under --show-token
   });
   test('perplexity has no runnable command', () => {
     const j = buildJson({ url: 'https://h/mcp', name: 'gbrain', agent: 'perplexity', token: 'TOK', showToken: false });
@@ -319,8 +313,7 @@ describe('OAuth helpers', () => {
     expect(block).toMatch(/Settings.+Connectors/);
     expect(block).toContain('Issuer URL:    https://h');
     expect(block).toContain('Client ID:     gbrain_cl_x');
-    expect(block).toContain(`Client Secret: ${REDACTED}`);
-    expect(block).not.toContain('gbrain_cs_y');
+    expect(block).toContain('Client Secret: gbrain_cs_y');
     expect(block).toContain('OAuth 2.1 (client credentials)');
     expect(block).not.toContain('Authorization: Bearer');
     expect(block).toContain(LEARN_INSTRUCTION);
@@ -333,8 +326,7 @@ describe('OAuth helpers', () => {
     });
     expect(block).toContain('Issuer URL:    https://h');
     expect(block).toContain('Client ID:     gbrain_cl_x');
-    expect(block).toContain(`Client Secret: ${REDACTED}`);
-    expect(block).not.toContain('gbrain_cs_y');
+    expect(block).toContain('Client Secret: gbrain_cs_y');
   });
 
   test('oauth block placeholders a missing secret', () => {
@@ -360,13 +352,12 @@ describe('OAuth helpers', () => {
     expect(JSON.stringify(j)).not.toContain('SeKrEt9');
   });
 
-  test('buildJson oauth --show-token remains redacted for log safety', () => {
+  test('buildJson oauth --show-token reveals the secret', () => {
     const j = buildJson({
       url: 'https://h/mcp', name: 'gbrain', agent: 'perplexity', token: null, showToken: true,
       oauth: { issuer: 'https://h', clientId: 'gbrain_cl_x', clientSecret: 'SeKrEt9' },
     });
-    expect(j.client_secret).toBe(REDACTED);
-    expect(JSON.stringify(j)).not.toContain('SeKrEt9');
+    expect(j.client_secret).toBe('SeKrEt9');
     expect(j.scopes).toBe(DEFAULT_SCOPES);
   });
 });
@@ -469,18 +460,11 @@ function captureConsole() {
   const err: string[] = [];
   const origLog = console.log;
   const origErr = console.error;
-  const origStdoutWrite = process.stdout.write.bind(process.stdout);
   console.log = (...a: unknown[]) => { out.push(a.join(' ')); };
   console.error = (...a: unknown[]) => { err.push(a.join(' ')); };
-  process.stdout.write = ((chunk: unknown, ...args: unknown[]) => {
-    out.push(String(chunk).replace(/\n$/, ''));
-    const cb = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
-    if (cb) cb();
-    return true;
-  }) as typeof process.stdout.write;
   return {
     out, err,
-    restore() { console.log = origLog; console.error = origErr; process.stdout.write = origStdoutWrite; },
+    restore() { console.log = origLog; console.error = origErr; },
   };
 }
 
@@ -690,25 +674,22 @@ describe('runConnect --install', () => {
 });
 
 describe('runConnect print mode', () => {
-  test('prints a placeholder block without consuming the token', async () => {
+  test('prints the block to stdout with the literal token', async () => {
     const r = await runWithExitCapture(
       ['https://brain.example.com/mcp', '--token', 'gbrain_tok'],
       installDeps(),
     );
     expect(r.exitCode).toBeUndefined();
-    expect(r.out.join('\n')).toContain(`claude mcp add gbrain -t http https://brain.example.com/mcp -H 'Authorization: Bearer ${PLACEHOLDER_TOKEN}'`);
-    expect(r.out.join('\n')).not.toContain('gbrain_tok');
+    expect(r.out.join('\n')).toContain("claude mcp add gbrain -t http https://brain.example.com/mcp -H 'Authorization: Bearer gbrain_tok'");
   });
 
-  test('--json prints a placeholder template without consuming the token', async () => {
+  test('--json redacts the token', async () => {
     const r = await runWithExitCapture(
       ['https://brain.example.com/mcp', '--token', 'gbrain_secret', '--json'],
       installDeps(),
     );
     const j = JSON.parse(r.out.join('\n'));
-    expect(j.token_present).toBe(false);
-    expect(j.token_redacted).toBe(false);
-    expect(j.header).toContain(PLACEHOLDER_TOKEN);
+    expect(j.token_redacted).toBe(true);
     expect(r.out.join('\n')).not.toContain('gbrain_secret');
   });
 
@@ -755,8 +736,7 @@ describe('runConnect print mode', () => {
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
     expect(out).toContain('codex mcp add gbrain --url https://brain.example.com/mcp --bearer-token-env-var GBRAIN_REMOTE_TOKEN');
-    expect(out).toContain(`export GBRAIN_REMOTE_TOKEN='${PLACEHOLDER_TOKEN}'`);
-    expect(out).not.toContain('gbrain_tok');
+    expect(out).toContain('export GBRAIN_REMOTE_TOKEN=gbrain_tok');
   });
 
   test('--agent perplexity print mode emits GUI connector steps', async () => {
@@ -798,10 +778,8 @@ describe('runConnect --oauth', () => {
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
     expect(out).toContain('Issuer URL:    https://brain.example.com');
-    expect(out).toContain(`Client ID:     ${REDACTED}`);
-    expect(out).not.toContain('gbrain_cl_x');
-    expect(out).toContain(`Client Secret: ${REDACTED}`);
-    expect(out).not.toContain('gbrain_cs_y');
+    expect(out).toContain('Client ID:     gbrain_cl_x');
+    expect(out).toContain('Client Secret: gbrain_cs_y');
   });
 
   test('perplexity --oauth --register mints a client via the host and prints it', async () => {
@@ -811,10 +789,8 @@ describe('runConnect --oauth', () => {
     );
     expect(r.exitCode).toBeUndefined();
     const out = r.out.join('\n');
-    expect(out).toContain(`Client ID:     ${REDACTED}`);
-    expect(out).not.toContain('gbrain_cl_minted');
-    expect(out).toContain(`Client Secret: ${REDACTED}`);
-    expect(out).not.toContain('gbrain_cs_minted');
+    expect(out).toContain('Client ID:     gbrain_cl_minted');
+    expect(out).toContain('Client Secret: gbrain_cs_minted');
   });
 
   test('perplexity --oauth --register --json redacts the secret by default', async () => {
@@ -824,9 +800,7 @@ describe('runConnect --oauth', () => {
     );
     const j = JSON.parse(r.out.join('\n'));
     expect(j.auth).toBe('oauth');
-    expect(j.client_id).toBe(REDACTED);
     expect(j.client_secret).toBe(REDACTED);
-    expect(r.out.join('\n')).not.toContain('gbrain_cl_x');
     expect(r.out.join('\n')).not.toContain('gbrain_cs_secret');
   });
 
