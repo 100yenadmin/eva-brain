@@ -301,11 +301,9 @@ When done, your final message should contain ONLY the \`## Chapter ${chapter.ind
 }
 
 function escapeYamlDoubleQuoted(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n');
+  // JSON strings are valid YAML 1.2 double-quoted scalars and escape every
+  // control character that YAML rejects in source text, not only quotes.
+  return JSON.stringify(value);
 }
 
 export function buildAssembledPage(opts: {
@@ -316,16 +314,16 @@ export function buildAssembledPage(opts: {
   chapterAnalyses: Array<{ index: number; result: string; failed: boolean; error?: string }>;
 }): string {
   const today = new Date().toISOString().split('T')[0];
-  const authorLine = opts.author ? `\nauthor: "${escapeYamlDoubleQuoted(opts.author)}"` : '';
+  const authorLine = opts.author ? `\nauthor: ${escapeYamlDoubleQuoted(opts.author)}` : '';
   const contextSummary = opts.contextPack
     ? opts.contextPack.split('\n').slice(0, 3).join(' ').slice(0, 200)
     : 'No reader-context pack supplied.';
 
   const frontmatter = `---
-title: "${escapeYamlDoubleQuoted(`${opts.title} — Personalized`)}"
+title: ${escapeYamlDoubleQuoted(`${opts.title} — Personalized`)}
 type: book-analysis${authorLine}
 date: ${today}
-context: "${escapeYamlDoubleQuoted(contextSummary)}"
+context: ${escapeYamlDoubleQuoted(contextSummary)}
 tags: [book, personalized, two-column-htmltable-valign-top]
 ---`;
 
